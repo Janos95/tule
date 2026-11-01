@@ -520,6 +520,20 @@ and removed again: the agent works with files over SSH, and going back to a
 snapshot is `tule restore` (or asking the agent). Settings and
 usage are server pages (see "Accounts").
 
+### Colors
+
+One palette, "Reed", in `web/src/palette.css`; nothing else defines a color.
+From the logo: **navy** ink (`#23344a`) for text, **reed** gold (`#c98a3a`,
+lighter `#e0a45a`) for actions, selection and focus (buttons are reed with
+dark text; links a darker reed), **stem** green (`#4f8a3c`, lighter
+`#8fc46a`) for running, on warm paper surfaces. Status colors come in text,
+fill and background shades (ok, warn, danger, info). The pages import the file
+as text (wrangler `rules`), the viewer's stylesheet starts with it, and the
+viewer's overlay colors read the same variables at runtime. Dark mode flips
+the same names (pages only for now; the viewer opts out). The logo uses navy,
+reed-light and stem-light on its tile; reed and stem without it
+(`tools/logo.py`).
+
 ## Python API (`tule`)
 
 A thin, opinionated layer over OCP (no build123d dependency; build123d's

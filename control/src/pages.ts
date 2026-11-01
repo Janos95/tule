@@ -2,6 +2,7 @@
 // static app in web/): the landing page, the projects list, Settings (RunPod,
 // API keys, SSH keys, usage), and the pages auth.ts shows.
 import type { ProjectRef, User } from "./accounts";
+import PALETTE from "../../web/src/palette.css"; // Tule's colors, shared with the viewer
 
 export const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -20,30 +21,31 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Html 
   return new Html(strings.reduce((out, s, i) => out + s + (i < values.length ? part(values[i]) : ""), ""));
 }
 
-const CSS = `
-:root{--bg:#fff;--panel:#f6f7f9;--line:#e3e6ea;--text:#1f2933;--muted:#6b7682;--accent:#2f6fb3;--warn:#a3610b;--danger:#c2453a;
---sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
-@media (prefers-color-scheme:dark){:root{--bg:#14181d;--panel:#1b2027;--line:#2b323b;--text:#e4e8ec;--muted:#98a2ad;--accent:#6fa6e0}}
+const CSS = `${PALETTE}
+:root{--sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color-scheme:light dark}
 *{box-sizing:border-box}body{margin:0;font:15px/1.5 var(--sans);color:var(--text);background:var(--bg)}
 header{display:flex;align-items:center;gap:14px;height:52px;padding:0 16px;border-bottom:1px solid var(--line)}
 header .brand{display:flex;gap:8px;align-items:center;color:inherit;text-decoration:none;font-weight:700;font-size:17px}
-header nav{display:flex;gap:14px;margin-left:auto;align-items:center}header nav a{color:var(--muted);text-decoration:none}
+header nav{display:flex;gap:14px;margin-left:auto;align-items:center}header nav a{color:var(--muted);text-decoration:none}header nav a:not(.button):hover{color:var(--text)}
 main{max-width:860px;margin:0 auto;padding:24px 16px 64px}h1{font-size:22px;margin:0 0 16px}h2{font-size:17px;margin:32px 0 10px}
-a{color:var(--accent)}code{font:13px var(--mono);background:var(--panel);padding:1px 5px;border-radius:4px}
+a{color:var(--link)}code{font:13px var(--mono);background:var(--panel);padding:1px 5px;border-radius:4px}
 pre{font:13px/1.45 var(--mono);background:var(--panel);padding:12px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
-.muted{color:var(--muted)}.warn{color:var(--warn)}.ok{color:#2f8a4c}
+.muted{color:var(--muted)}.warn{color:var(--warn)}.ok{color:var(--ok)}
 button,.button{font:inherit;font-size:14px;padding:6px 14px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);cursor:pointer;text-decoration:none;display:inline-block}
-button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:500}
+button.primary:hover,.button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+button:focus-visible,.button:focus-visible,input:focus-visible,a:focus-visible{outline:none;box-shadow:0 0 0 3px var(--focus)}
+input:focus{border-color:var(--accent)}
 .button.small{padding:3px 10px;font-size:13px}button.danger{color:var(--danger)}
 input{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);width:100%}
 label{display:flex;flex-direction:column;gap:4px;font-size:14px}
 .stack{display:flex;flex-direction:column;gap:12px;max-width:520px}.row{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.row>label{flex:1;min-width:200px}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted);font-weight:500}
 .card{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--panel)}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#b8c0c8;margin-right:6px}.dot.running{background:#3aa45b}.dot.starting{background:#e0a526}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--idle);margin-right:6px}.dot.running{background:var(--ok-fill)}.dot.starting{background:var(--warn-fill)}
 .plist{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .prow{display:grid;grid-template-columns:1fr auto 96px;align-items:center;gap:16px;padding:12px 8px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
-.prow:hover{background:var(--panel)}
+.prow:hover{background:var(--hover)}
 .pname{font-weight:500}.pstate{color:var(--muted);font-size:14px}.pdate{color:var(--muted);font-size:13px;text-align:right}
 .newp{border-bottom:1px solid var(--line)}
 .newp summary{list-style:none;cursor:pointer;padding:12px 8px;color:var(--muted)}
@@ -59,15 +61,17 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .item{display:grid;grid-template-columns:minmax(120px,auto) 1fr auto;align-items:center;gap:16px;padding:10px 8px;border-bottom:1px solid var(--line);min-height:44px}
 .item-label{font-weight:500;overflow:hidden;text-overflow:ellipsis}.item-meta{color:var(--muted);font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item-action form{margin:0}.item-block{grid-template-columns:1fr auto}.item-block pre{grid-column:1/-1;margin:0}
-.newkey{background:var(--panel)}
+.newkey{background:var(--selected)}
 button.small{padding:3px 10px;font-size:13px}
+.guestbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:6px 14px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--muted);font-size:13px;white-space:nowrap;box-shadow:0 2px 8px var(--shadow)}
+body:has(.guestbar) main{padding-bottom:64px}
 .notice{padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
 @media (max-width:600px){.item{grid-template-columns:1fr auto}.item-meta{grid-column:1/-1;grid-row:2}}
 .hero{padding:48px 0 24px}.hero h1{font-size:30px}.hero p{font-size:17px;color:var(--muted);max-width:620px}
 @media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow{grid-template-columns:1fr auto}.pdate{display:none}}
 `;
 
-const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#a8cf74" stroke-width="32" stroke-linecap="round"/></svg>`;
+const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#8fc46a" stroke-width="32" stroke-linecap="round"/></svg>`;
 
 export function layout(title: string, body: Html | string, user?: User | null): string {
   const nav = user
@@ -77,7 +81,9 @@ export function layout(title: string, body: Html | string, user?: User | null): 
     : html`<nav><a class="button" href="/auth/login">Sign in</a></nav>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}</style></head>
-<body><header><a class="brand" href="/">${LOGO}tule</a>${nav}</header><main><h1>${esc(title)}</h1>${body}</main></body></html>`;
+<body><header><a class="brand" href="/">${LOGO}tule</a>${nav}</header><main><h1>${esc(title)}</h1>${body}</main>${
+    user?.guest ? `<div class="guestbar">Guest projects are deleted after a day.</div>` : ""
+  }</body></html>`;
 }
 
 export function page(title: string, body: Html | string, status = 200, user?: User | null): Response {
@@ -129,12 +135,8 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
       </form>
       ${error ? html`<p class="warn">${error}</p>` : ""}
     </details>`;
-  const L = limits ?? { projects: 1, minutesPerDay: 30, days: 1 };
-  const guest = user.guest
-    ? html`<p class="notice">You're trying Tule as a guest: ${L.projects} project, ${L.minutesPerDay} machine minutes a day, deleted ${L.days === 1 ? "a day" : `${L.days} days`} after your last visit. <a href="/auth/login">Sign in</a> to keep your work.</p>`
-    : "";
   const body = rows.length
-    ? html`${guest}<div class="plist">
+    ? html`<div class="plist">
         ${rows.map(
           (p) => html`<a class="prow" href="/p/${p.name}">
             <span class="pname">${p.name}</span>
@@ -143,8 +145,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
         )}
         ${create}
       </div>`
-    : html`${guest}<p class="muted">Start your first project, or ask your agent to ("start a Tule project for a camera bracket").</p>
-      <div class="plist">${create}</div>
+    : html`<div class="plist">${create}</div>
       <h2>Connect your agent</h2>
       ${connect(origin)}`;
   return page("Your projects", body, 200, user);

@@ -12,17 +12,22 @@
 //      "arrows": [{"at": [x, y, z], "dir": [dx, dy, dz], "label": "500 N"}]}
 //
 // A face with a severity takes its color (red, amber, blue); with a role, the
-// role's (fixed: blue hatch, load: orange, others: the next series color);
+// role's (fixed: blue hatch, load: reed, others: the next series color);
 // with only a number `value`, a color on the scale (blue low, red high; min and
 // max from "scale" or from the values). The rest of the part is greyed. Arrows
 // are 3D glyphs whose tip touches `at`. The strip lists it all (hover a row:
 // only its faces stay colored); hovering a face or arrow shows its label.
 // Extra fields are ignored.
 
-const SEVERITY = { error: "#d93d3d", warning: "#e39a12", info: "#2a78d6" };
-const ROLES = { fixed: { color: "#2f6fb3", hatch: true }, load: { color: "#eb6834" } };
-const MORE = ["#1baf7a", "#e87ba4", "#008300", "#8a5cd0"]; // further roles, in order of appearance
-const ARROW = "#eb6834";
+import { color } from "./colors.js";
+
+// severities, the two known roles and arrows mean something: palette.css variables, read when drawn
+const SEVERITY = { error: "--danger-fill", warning: "--warn-fill", info: "--info-fill" };
+const ROLES = { fixed: { color: "--info-fill", hatch: true }, load: { color: "--reed" } };
+const ARROW = "--reed";
+// further roles, in order of appearance: plain series colors (stem green, purple, teal, pink),
+// apart from the status and role colors above
+const MORE = ["#4f8a3c", "#8a6bb8", "#2f9a95", "#c8689a"];
 const RANK = { error: 0, warning: 1, info: 2 };
 // a diverging blue-yellow-red ramp, low to high
 const RAMP = ["#3b4cc0", "#6f92f3", "#aac7fd", "#f2e5a0", "#f7a889", "#e26952", "#b40426"];
@@ -58,11 +63,11 @@ export function initOverlay({ viewer, legend, marks }) {
         continue;
       }
       const role = sev ? null : String(f.role ?? "note");
-      if (role && !roles.has(role)) roles.set(role, ROLES[role] ?? { color: MORE[roles.size % MORE.length] });
+      if (role && !roles.has(role)) roles.set(role, ROLES[role] ? { ...ROLES[role], color: color(ROLES[role].color) } : { color: MORE[roles.size % MORE.length] });
       const label = String(f.label ?? "");
       const key = `${sev ?? "role:" + role}|${label}`;
       if (!groups.has(key)) {
-        const style = sev ? { color: SEVERITY[sev] } : roles.get(role);
+        const style = sev ? { color: color(SEVERITY[sev]) } : roles.get(role);
         groups.set(key, { kind: sev ?? role, severity: sev, label, faces: [], ...style });
       }
       groups.get(key).faces.push(+id);
@@ -130,7 +135,7 @@ export function initOverlay({ viewer, legend, marks }) {
       arrows.forEach((a) => {
         const row = el("div", "legend-row");
         const sw = el("span", "swatch arrow");
-        sw.style.setProperty("--c", ARROW);
+        sw.style.setProperty("--c", `var(${ARROW})`);
         row.append(sw, el("span", "legend-kind role", "arrow"), el("span", "legend-label", a.label || "—"), el("small", "legend-faces", a.at.map((v) => +v.toPrecision(4)).join(", ")));
         list.append(row);
       });
@@ -157,7 +162,7 @@ export function initOverlay({ viewer, legend, marks }) {
       parse(isOverlay && meta ? meta : {});
       viewer.setDim(isOverlay && !!meta);
       paint();
-      viewer.setArrows(arrows.map((a) => ({ at: a.at, dir: a.dir, color: ARROW })));
+      viewer.setArrows(arrows.map((a) => ({ at: a.at, dir: a.dir, color: color(ARROW) })));
       for (const c of chips) c.remove();
       chips = arrows.map((a) => {
         const c = el("div", "mark-chip", a.label || "");

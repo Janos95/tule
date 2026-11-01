@@ -17,9 +17,10 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { color as palette } from "./colors.js";
 
 const GHOST_OPACITY = 0.12; // the other parts while one is highlighted
-const DIM = "#d4d8dd"; // faces an overlay does not mention
+const DIM = "--line-strong"; // faces an overlay does not mention (a palette.css variable)
 const LAYERS = ["overlay", "annotate", "hover"];
 // surfaces sit a little behind their edges and behind opaque parts they touch
 const BEHIND = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 };
@@ -71,7 +72,8 @@ export class Viewer {
     this.gridStep = null;
     this.scene.add(this.grid, this.group, this.arrows);
     this.materials = new Map();
-    this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x18202a, transparent: true, opacity: 0.75 });
+    // the CAD edges: the palette's navy (--navy in palette.css), a constant since the 3D view stays light
+    this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x23344a, transparent: true, opacity: 0.75 });
     this.depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, ...BEHIND });
     this.style = { hidden: null, lit: null };
     this.layers = new Map(); // layer -> [{part: index | null (all), faces: [ids], color, hatch}]
@@ -268,14 +270,17 @@ export class Viewer {
         }
       }
     };
-    const GRID = [0.36, 0.41, 0.47];
+    // palette.css: the lines in --faint (at the opacities below, about as light as --line-strong),
+    // the X axis in --danger-fill, Y in --ok-fill
+    const rgb = (name) => new THREE.Color(palette(name)).toArray();
+    const GRID = rgb("--faint"), AXIS_X = rgb("--danger-fill"), AXIS_Y = rgb("--ok-fill");
     for (let i = -n; i <= n; i++) {
       const v = i * step;
       const strong = (Math.round((cx + v) / step) % 5) === 0;
       const onAxisX = Math.abs(cy + v) < step / 1000; // the line y = 0: the X axis
       const onAxisY = Math.abs(cx + v) < step / 1000; // x = 0: the Y axis
-      add(onAxisX ? axes : strong ? major : minor, onAxisX ? [0.85, 0.25, 0.22] : GRID, cx - half, cy + v, cx + half, cy + v);
-      add(onAxisY ? axes : strong ? major : minor, onAxisY ? [0.25, 0.65, 0.3] : GRID, cx + v, cy - half, cx + v, cy + half);
+      add(onAxisX ? axes : strong ? major : minor, onAxisX ? AXIS_X : GRID, cx - half, cy + v, cx + half, cy + v);
+      add(onAxisY ? axes : strong ? major : minor, onAxisY ? AXIS_Y : GRID, cx + v, cy - half, cx + v, cy + half);
     }
     const lines = (data, opacity) => {
       const a = new Float32Array(data);
@@ -314,7 +319,7 @@ export class Viewer {
       for (const layer of LAYERS)
         for (const s of this.layers.get(layer) ?? [])
           if (s.part == null || s.part === index) for (const f of s.faces) pick.set(+f, this.faceMaterial(s.color, s.hatch));
-      const base = this.dim ? this.material(DIM) : this.material(color);
+      const base = this.dim ? this.material(palette(DIM)) : this.material(color);
       geometry.clearGroups();
       if (!pick.size) {
         solid.material = base;
@@ -352,7 +357,7 @@ export class Viewer {
       const dir = new THREE.Vector3(...a.dir);
       if (!(dir.lengthSq() > 0)) return;
       const g = new THREE.Group();
-      const m = this.material(a.color ?? "#f07c1a");
+      const m = this.material(a.color ?? palette("--reed"));
       g.add(new THREE.Mesh(shaft.clone(), m), new THREE.Mesh(head.clone(), m));
       // the glyph points along +y with its tip at the origin: turn +y onto dir
       g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
@@ -499,7 +504,7 @@ export class Viewer {
   }
 
   /** The view as drawn, on a plain background: a canvas at the device's resolution. */
-  capture(background = "#eef1f4") {
+  capture(background = palette("--view-mid")) {
     const src = this.renderer.domElement;
     this.renderer.render(this.scene, this.camera);
     const out = document.createElement("canvas");

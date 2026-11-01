@@ -1,0 +1,91 @@
+/* Tule's palette ("Reed"): the only place colors are defined. The pages
+   (control/src/pages.ts) and the viewer (style.css, overlay colors) use these
+   variables, never hex values of their own. From the logo: navy ink, reed gold
+   for actions and highlights, stem green for running. Dark mode flips the
+   same names; the viewer opts out with <html class="light-only"> for now. */
+:root {
+  /* brand (the logo uses navy, reed-light and stem-light) */
+  --navy: #23344a;
+  --reed: #c98a3a;
+  --reed-light: #e0a45a;
+  --stem: #4f8a3c;
+  --stem-light: #8fc46a;
+
+  /* surfaces and lines */
+  --bg: #fffefb;
+  --panel: #faf8f3;
+  --hover: #f3efe6;
+  --line: #ebe6da;
+  --line-strong: #d6cfbf;
+
+  /* text */
+  --text: #23344a;
+  --muted: #7a7568;
+  --faint: #a39d90;
+
+  /* actions: reed buttons with dark text, darker reed for links */
+  --accent: #c98a3a;
+  --accent-hover: #b67a2e;
+  --on-accent: #1b1408;
+  --link: #94601f;
+  --selected: #f6ecda;
+  --focus: rgba(201, 138, 58, 0.35);
+
+  /* status: text color, fill (dots, bars), background (chips, banners) */
+  --ok: #3f7a2f;
+  --ok-fill: #4f8a3c;
+  --ok-bg: #eaf2e3;
+  --warn: #8a5300;
+  --warn-fill: #d9a23a;
+  --warn-bg: #fbf0de;
+  --danger: #b03a28;
+  --danger-fill: #d4574a;
+  --danger-bg: #fbecea;
+  --danger-line: #f0c2ba;
+  --info: #35659a;
+  --info-fill: #4a7fb8;
+  --info-bg: #e8eff7;
+  --idle: #cfc9bb;
+
+  /* elevation */
+  --shadow: rgba(35, 52, 74, 0.16);
+
+  /* the 3D view: a soft backdrop, dark edges, the floor grid */
+  --view-center: #fdfcf9;
+  --view-mid: #f1eee7;
+  --view-edge: #e5e0d5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light-only) {
+    --bg: #14171c;
+    --panel: #1b1f25;
+    --hover: #232831;
+    --line: #2a2e35;
+    --line-strong: #3a3f47;
+    --text: #ece7dc;
+    --muted: #a39d90;
+    --faint: #6f6a60;
+    --accent: #e0a45a;
+    --accent-hover: #e8b673;
+    --on-accent: #1b1408;
+    --link: #e8b673;
+    --selected: #3a2f1f;
+    --focus: rgba(224, 164, 90, 0.4);
+    --ok: #8fc46a;
+    --ok-fill: #8fc46a;
+    --ok-bg: #1f2a1a;
+    --warn: #e0a526;
+    --warn-fill: #e0a526;
+    --warn-bg: #33280f;
+    --danger: #ec6a5c;
+    --danger-fill: #e5484d;
+    --danger-bg: #3a1d1a;
+    --danger-line: #5a2a24;
+    --info: #7aa7d9;
+    --info-fill: #7aa7d9;
+    --info-bg: #1a2433;
+    --idle: #4d4a44;
+    --shadow: rgba(0, 0, 0, 0.4);
+  }
+}

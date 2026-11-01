@@ -16,7 +16,8 @@ def spikelet(x, y, ang, length, width):
     f = lambda p: f"{p[0]:.1f} {p[1]:.1f}"
     return f"M{f((x, y))} C{f(c1)} {f(c2)} {f(tip)} C{f(c3)} {f(c4)} {f((x, y))}Z"
 
-def mark(P, tile=True, bg="#23344a", stem="#a8cf74", seed="#e0a45a"):
+# colors from web/src/palette.css: navy, reed-light and stem-light on the tile; reed and stem without it
+def mark(P, tile=True, bg="#23344a", stem="#8fc46a", seed="#e0a45a"):
     s = []
     if tile:
         s.append(f'<rect width="512" height="512" rx="{P["rx"]}" fill="{bg}"/>')
@@ -45,11 +46,11 @@ for kv in sys.argv[1:]:
 
 svg = lambda inner, size: f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 512 512">{inner}</svg>'
 dark = mark(P)
-light = mark(P, tile=False, stem="#5d8a3a", seed="#b9772e")
+light = mark(P, tile=False, stem="#4f8a3c", seed="#c98a3a")
 open("mark.svg", "w").write(svg(dark, 512))
 open("mark-light.svg", "w").write(svg(light, 512))
 row = "".join(f'<div style="display:inline-block;margin:8px;vertical-align:bottom">{svg(dark, n)}</div>' for n in (256, 96, 48, 32, 16))
 rowl = "".join(f'<div style="display:inline-block;margin:8px;vertical-align:bottom">{svg(light, n)}</div>' for n in (256, 96, 48, 32, 16))
-head = f'<div style="display:flex;align-items:center;gap:8px;font:600 20px system-ui;color:#1f2933;margin:16px">{svg(dark, 28)}tule</div>'
-open("preview.html", "w").write(f'<!doctype html><body style="margin:0;background:#fff">{head}<div>{row}</div><div style="background:#f4f1ea">{rowl}</div><div style="background:#14181d;padding:8px">{row}</div></body>')
+head = f'<div style="display:flex;align-items:center;gap:8px;font:600 20px system-ui;color:#23344a;margin:16px">{svg(dark, 28)}tule</div>'
+open("preview.html", "w").write(f'<!doctype html><body style="margin:0;background:#fff">{head}<div>{row}</div><div style="background:#faf8f3">{rowl}</div><div style="background:#14171c;padding:8px">{row}</div></body>')
 print(P)

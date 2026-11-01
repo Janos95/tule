@@ -14,11 +14,15 @@
 // goes back to theirs and their strokes are drawn over the view until it
 // moves.
 
+import { color as palette } from "./colors.js";
+
+// pens (named in annotation.json for the agent), the picked-face highlight and pick colors:
+// fixed data colors, chosen to stand out on a part, not palette.css roles
 const COLORS = [
   { name: "red", hex: "#e5484d" },
   { name: "blue", hex: "#2a78d6" },
   { name: "green", hex: "#1baf7a" },
-  { name: "black", hex: "#1f2933" },
+  { name: "black", hex: "#23344a" }, // the palette's navy (palette.css)
 ];
 const SELECTED = "#9b5de5"; // faces picked but not labeled yet
 const PICKS = ["#2a78d6", "#eb6834", "#1baf7a", "#e87ba4", "#008300", "#eda100"];
@@ -63,7 +67,7 @@ export function initAnnotate(ctx) {
     c.lineCap = "round";
     c.lineJoin = "round";
     for (const s of list) {
-      c.strokeStyle = s.hex ?? COLORS.find((x) => x.name === s.color)?.hex ?? "#e5484d";
+      c.strokeStyle = s.hex ?? COLORS.find((x) => x.name === s.color)?.hex ?? COLORS[0].hex;
       c.lineWidth = (s.width ?? WIDTH) * scale;
       c.beginPath();
       const pts = s.points.map(map);
@@ -288,7 +292,7 @@ export function initAnnotate(ctx) {
       for (const p of [...picks].reverse()) {
         c.fillStyle = p.color;
         c.fillRect(10 * k, y - 10 * k, 10 * k, 10 * k);
-        c.fillStyle = "#1f2933";
+        c.fillStyle = palette("--text");
         c.fillText(`${p.label}: ${p.faces.map((f) => `${describe(f).part} f${f.face}`).join(", ")}`, 26 * k, y);
         y -= 18 * k;
       }

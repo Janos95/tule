@@ -24,7 +24,9 @@ const out = path.join(dist, dev ? "assets-dev" : ".next");
 const RELOAD = `<script>(()=>{let v;setInterval(async()=>{try{const r=await fetch("/__dev/version",{cache:"no-store"});const t=await r.text();if(v&&t!==v)location.reload();v=t}catch{}},700)})()</script>`;
 
 async function finish() {
-  await fs.copyFile(path.join(web, "src/style.css"), path.join(out, "style.css"));
+  // the palette's variables first, then the viewer's rules that use them
+  const css = await Promise.all(["palette.css", "style.css"].map((f) => fs.readFile(path.join(web, "src", f), "utf8")));
+  await fs.writeFile(path.join(out, "style.css"), css.join("\n"));
   let v = "assets-dev";
   if (!dev) {
     const h = crypto.createHash("sha256");

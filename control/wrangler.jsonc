@@ -5,6 +5,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tule",
   "main": "src/index.ts",
+  // web/src/palette.css is imported by pages.ts as text
+  "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "compatibility_date": "2026-10-30",
   "workers_dev": true,
   "routes": [{ "pattern": "tule.janosmeny.com", "custom_domain": true }],
