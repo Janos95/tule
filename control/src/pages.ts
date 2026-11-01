@@ -52,6 +52,15 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .newp-form{display:flex;gap:8px;padding:0 8px 12px}
 .newp-form input{max-width:360px}
 .newp .warn{padding:0 8px}
+.sect{margin-top:28px}.sect h2{margin:0 0 2px}.hint{color:var(--muted);font-size:13.5px;margin:0 0 8px}
+.list{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.item{display:grid;grid-template-columns:minmax(120px,auto) 1fr auto;align-items:center;gap:16px;padding:10px 8px;border-bottom:1px solid var(--line);min-height:44px}
+.item-label{font-weight:500;overflow:hidden;text-overflow:ellipsis}.item-meta{color:var(--muted);font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item-action form{margin:0}.item-block{grid-template-columns:1fr auto}.item-block pre{grid-column:1/-1;margin:0}
+.newkey{background:var(--panel)}
+button.small{padding:3px 10px;font-size:13px}
+.notice{padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
+@media (max-width:600px){.item{grid-template-columns:1fr auto}.item-meta{grid-column:1/-1;grid-row:2}}
 .hero{padding:48px 0 24px}.hero h1{font-size:30px}.hero p{font-size:17px;color:var(--muted);max-width:620px}
 @media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow{grid-template-columns:1fr auto}.pdate{display:none}}
 `;
@@ -144,55 +153,78 @@ export type SettingsData = {
 
 const day = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : "never");
 
+/** A settings section: a heading, one line of help, then rows. */
+const section = (title: string, hint: Html | string, rows: Html | string) =>
+  html`<section class="sect"><h2>${title}</h2>${hint ? html`<p class="hint">${hint}</p>` : ""}<div class="list">${rows}</div></section>`;
+
+/** A row: what it is, details, and an action (a small button or form). */
+const item = (label: Html | string, meta: Html | string = "", action: Html | string = "") =>
+  html`<div class="item"><span class="item-label">${label}</span><span class="item-meta">${meta}</span><span class="item-action">${action}</span></div>`;
+
+/** A post button for one row. */
+const rowButton = (actionUrl: string, text: string, id?: string, danger = false) =>
+  html`<form method="post" action="${actionUrl}">${id ? html`<input type="hidden" name="id" value="${id}">` : ""}<button class="small${danger ? " danger" : ""}">${text}</button></form>`;
+
+/** "+ Something" that opens into a one-line form. */
+const addRow = (label: string, button: string, actionUrl: string, field: Html, open = false, note: Html | string = "") =>
+  html`<details class="newp"${open ? html` open` : ""}><summary><span class="plus">+</span> ${label}</summary>
+    <form method="post" action="${actionUrl}" class="newp-form" autocomplete="off">${field}<button class="primary">${button}</button></form>
+    ${note ? html`<p class="hint" style="padding:0 8px 10px">${note}</p>` : ""}</details>`;
+
+const copyButton = (text: string) => html`<button type="button" class="small" data-copy="${text}">Copy</button>`;
+
 export function settingsPage(user: User, d: SettingsData): Response {
-  const rp = d.runpod.connected
-    ? html`<p><span class="ok">Connected</span> since ${day(d.runpod.updated)}${d.runpod.balance ? html` · balance <b>${d.runpod.balance}</b>` : ""}.</p>
-        <form method="post" action="/settings/runpod/remove"><button class="danger">Disconnect</button></form>`
-    : html`<p class="muted">Not connected. GPU machines run on your RunPod account and are paid from its balance;
-        RunPod's own limits (prepaid balance, spend limit) are the budget.</p>`;
-  const body = html`
-    ${d.message ? html`<p class="ok">${d.message}</p>` : ""}
-    <h2>Connect your agent</h2>
-    ${connect(d.origin)}
-    <h2>RunPod (GPU machines)</h2>
-    ${rp}
-    <form method="post" action="/settings/runpod" class="row" autocomplete="off">
-      <label>API key<input name="key" type="password" placeholder="rpa_..." required /></label>
-      <button class="primary">${d.runpod.connected ? "Replace key" : "Connect"}</button>
-    </form>
-    <p class="muted">Create a key with read/write access at runpod.io → Settings → API Keys (a dedicated key is best).
-      Tule encrypts it and uses it only to create, check and stop your pods; it never enters a machine.
-      ${d.runpod.error ? html`<br><span class="warn">${d.runpod.error}</span>` : ""}</p>
+  const cli = `pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"\ntule login --url ${d.origin}\ntule ssh -p <project>`;
+  const agent = section(
+    "Connect your agent",
+    "The connector manages projects and machines; the CLI does the work over SSH.",
+    html`${item("MCP connector", html`<code>${d.origin}/mcp</code>`, copyButton(`${d.origin}/mcp`))}
+      <div class="item item-block"><span class="item-label">CLI</span><span class="item-action">${copyButton(cli)}</span><pre>${cli}</pre></div>`,
+  );
 
-    <h2>Usage this month (${d.usage.month})</h2>
-    <p>CPU machines: <b>${d.usage.cpuHours} h</b> of ${d.quota} h · GPU machines: <b>${d.usage.gpuHours} h</b>${d.usage.gpuCost ? html` (about $${d.usage.gpuCost.toFixed(2)} on RunPod)` : ""}</p>
+  const rp = d.runpod;
+  const runpod = section(
+    "GPU machines",
+    "GPU machines run on your RunPod account and are paid from its balance. Tule stores the key encrypted and never passes it to a machine.",
+    html`${rp.connected
+        ? item("RunPod", html`connected${rp.balance ? html` · ${rp.balance} balance` : ""}`, rowButton("/settings/runpod/remove", "Disconnect", undefined, true))
+        : item("RunPod", "not connected")}
+      ${addRow(
+        rp.connected ? "Replace key" : "Connect RunPod",
+        rp.connected ? "Replace" : "Connect",
+        "/settings/runpod",
+        html`<input name="key" type="password" placeholder="rpa_…" aria-label="RunPod API key" required />`,
+        !!rp.error,
+        rp.error ? html`<span class="warn">${rp.error}</span>` : "A read/write key from runpod.io → Settings → API Keys.",
+      )}`,
+  );
 
-    <h2>SSH keys</h2>
-    ${d.sshKeys.length
-      ? html`<table>${d.sshKeys.map(
-          (k) => html`<tr><td>${k.name}</td><td class="muted"><code>${k.key.slice(0, 28)}…</code></td><td class="muted">${day(k.created)}</td>
-            <td style="text-align:right"><form method="post" action="/settings/ssh/remove"><input type="hidden" name="id" value="${k.id}"><button class="danger">Remove</button></form></td></tr>`,
-        )}</table>`
-      : html`<p class="muted">None yet: <code>tule ssh</code> adds its own key.</p>`}
-    <form method="post" action="/settings/ssh/add" class="row">
-      <label>Public key<input name="key" placeholder="ssh-ed25519 AAAA... you@laptop" required /></label>
-      <button>Add</button>
-    </form>
+  const u = d.usage;
+  const usage = section(
+    "Usage",
+    `This month (${u.month}).`,
+    html`${item("CPU machines", `${u.cpuHours} h of ${d.quota} h`)}
+      ${item("GPU machines", u.gpuCost ? `${u.gpuHours} h · about $${u.gpuCost.toFixed(2)} on RunPod` : `${u.gpuHours} h`)}`,
+  );
 
-    <h2>API keys</h2>
-    ${d.newKey ? html`<div class="card"><p><b>Your new key</b> (shown once): </p><pre>${d.newKey}</pre></div>` : ""}
-    ${d.apiKeys.length
-      ? html`<table><tr><th>Name</th><th>Key</th><th>Last used</th><th></th></tr>${d.apiKeys.map(
-          (k) => html`<tr><td>${k.name}</td><td class="muted"><code>${k.prefix}…</code></td><td class="muted">${day(k.last_used)}</td>
-            <td style="text-align:right"><form method="post" action="/settings/keys/revoke"><input type="hidden" name="id" value="${k.id}"><button class="danger">Revoke</button></form></td></tr>`,
-        )}</table>`
-      : html`<p class="muted">None yet. <code>tule login</code> makes one for the CLI.</p>`}
-    <form method="post" action="/settings/keys/new" class="row">
-      <label>Name<input name="name" placeholder="CI" required /></label>
-      <button>Create key</button>
-    </form>`;
-  const account = html`<h2>Account</h2>
-    <div class="row" style="align-items:center"><span class="muted">Signed in as ${user.email}</span>
-      <form method="post" action="/auth/logout" style="margin:0 0 0 auto"><button>Sign out</button></form></div>`;
-  return page("Settings", html`${body}${account}`, 200, user);
+  const ssh = section(
+    "SSH keys",
+    "They work on every project's machine. tule ssh adds its own.",
+    html`${d.sshKeys.map((k) => item(k.name, html`<code>${k.key.slice(0, 24)}…</code> · ${day(k.created)}`, rowButton("/settings/ssh/remove", "Remove", k.id, true)))}
+      ${addRow("Add SSH key", "Add", "/settings/ssh/add", html`<input name="key" placeholder="ssh-ed25519 AAAA… you@laptop" aria-label="Public key" required />`)}`,
+  );
+
+  const api = section(
+    "API keys",
+    "For the CLI and scripts. tule login makes one for you.",
+    html`${d.newKey ? html`<div class="item item-block newkey"><span class="item-label">New key, shown once</span><span class="item-action">${copyButton(d.newKey)}</span><pre>${d.newKey}</pre></div>` : ""}
+      ${d.apiKeys.map((k) => item(k.name, html`<code>${k.prefix}…</code> · used ${day(k.last_used)}`, rowButton("/settings/keys/revoke", "Revoke", k.id, true)))}
+      ${addRow("Create API key", "Create", "/settings/keys/new", html`<input name="name" placeholder="CI" aria-label="Key name" required />`)}`,
+  );
+
+  const account = section("Account", "", item(user.email, "", html`<form method="post" action="/auth/logout"><button class="small">Sign out</button></form>`));
+
+  const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${runpod}${usage}${ssh}${api}${account}
+    <script>document.addEventListener("click",(e)=>{const b=e.target.closest("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)})</script>`;
+  return page("Settings", body, 200, user);
 }
