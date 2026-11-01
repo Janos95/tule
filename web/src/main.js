@@ -13,6 +13,18 @@
 //
 // Output kinds (output.json "kind"): part, assembly, sequence, overlay
 // (overlay.js has its format).
+//
+// Assembly placement: a part entry of an assembly's output.json may carry
+// "transform", a 4x4 matrix in row-major order that maps the file's
+// coordinates to the assembly's (rotation in the upper left 3x3, the
+// translation in the last column, in the file's units):
+//
+//   {"kind": "assembly", "parts": [{"file": "finger.step", "name": "finger_l",
+//     "transform": [[1, 0, 0, 20], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]]}]}
+//
+// (4 rows of 4 numbers, numpy's M.tolist(); a flat list of 16 numbers in the
+// same order is read the same way). Without it a part stays where its file
+// puts it.
 import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
 import { initFiles, save, size } from "./files.js";
@@ -257,13 +269,21 @@ function renderList() {
     b.role = "option";
     b.setAttribute("aria-selected", String(o.name === state.selected));
     const kind = kindOf(o);
-    const n = kind === "sequence" ? `${frames(o).length} frames${o.meta?.status === "running" ? " · running" : ""}` : kind === "assembly" ? `${o.files.length} parts` : o.files[0]?.file ?? "";
+    const n = kind === "sequence" ? `${frames(o).length} frames${o.meta?.status === "running" ? " · running" : ""}` : kind === "assembly" ? `${Array.isArray(o.meta?.parts) ? o.meta.parts.length : o.files.length} parts` : o.files[0]?.file ?? "";
     b.innerHTML = `<span class="output-name"></span><small></small>`;
     b.firstChild.textContent = o.meta?.title || o.name;
     b.lastChild.textContent = o.error ? o.error : `${kind} · ${n}`;
     b.addEventListener("click", () => select(o.name));
     list.append(b);
   }
+}
+
+/** An assembly part's "transform" as 16 numbers, row-major; throws saying what is wrong. */
+function placement(t, file) {
+  const flat = Array.isArray(t) && t.length === 4 && t.every(Array.isArray) ? t.flat() : t;
+  if (!Array.isArray(flat) || flat.length !== 16 || !flat.every(Number.isFinite))
+    throw new Error(`output.json: the transform of ${file} must be a 4x4 matrix, row-major: [[r00, r01, r02, tx], [r10, r11, r12, ty], [r20, r21, r22, tz], [0, 0, 0, 1]]`);
+  return flat;
 }
 
 /** Shows an output by name; resolves once it is drawn. */
@@ -313,7 +333,11 @@ async function show() {
     const f = o.files.find((x) => x.file === o.meta?.file) ?? o.files[0];
     shownFiles = f ? [f] : [];
   }
-  const key = o.name + "|" + shownFiles.map((f) => f.hash).join(",");
+  // an assembly's parts: output.json's list when it has one (a file may be placed more than once)
+  const entries = kind === "assembly" && Array.isArray(o.meta?.parts) ? o.meta.parts.filter((p) => o.files.some((f) => f.file === p?.file)) : null;
+  if (entries?.length) shownFiles = entries.map((p) => o.files.find((f) => f.file === p.file));
+  // what is drawn: the files and, but for a growing sequence, output.json (overlay faces, placements)
+  const key = o.name + "|" + shownFiles.map((f) => f.hash).join(",") + (kind === "sequence" ? "" : "|" + JSON.stringify(o.meta ?? null));
   if (key === state.shown) return;
   const first = !state.shown || !state.shown.startsWith(o.name + "|");
   state.shown = key;
@@ -322,11 +346,12 @@ async function show() {
   try {
     const loaded = await Promise.all(shownFiles.map(request));
     if (state.shown !== key) return;
-    const named = (m, f) => {
-      const entry = o.meta?.parts?.find((p) => p.file === f.file);
-      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color };
+    const named = (m, f, i) => {
+      const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
+      const matrix = kind === "assembly" && entry?.transform != null ? placement(entry.transform, f.file) : null;
+      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color, matrix };
     };
-    const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i])));
+    const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first ? true : "auto", style);
     overlay?.apply(kind === "overlay" ? o.meta : null);
