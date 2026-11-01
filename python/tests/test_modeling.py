@@ -84,6 +84,41 @@ def test_feature_selection_survives_union():
     assert len(part.faces["fillet"]) == 1
 
 
+def two_bosses():
+    plate = rect(80, 40, center=True).round(5).extrude(6)
+    b0, b1 = [circle(7).extrude(14).at(x, 0, 6) for x in (-22, 22)]
+    return plate | b0 | b1, b0, b1
+
+
+def test_fillet_keeps_roles_of_untouched_edges():
+    # OCCT's fillet reports untouched edges as deleted; they must still resolve.
+    part, b0, b1 = two_bosses()
+    one = part.fillet(b0.edges["bottom"], 2)
+    assert len(one.edges[b1.edges["bottom"]]) == 1
+    assert len(one.edges[part.edges.parallel(Z)]) == len(part.edges.parallel(Z))
+
+
+def test_fillets_of_two_features_of_the_same_kind():
+    part, b0, b1 = two_bosses()
+    ab = part.fillet(b0.edges["bottom"], 2).fillet(b1.edges["bottom"], 2)
+    ba = part.fillet(b1.edges["bottom"], 2).fillet(b0.edges["bottom"], 2)
+    both = part.fillet(part.edges[b0.edges["bottom"]] | part.edges[b1.edges["bottom"]], 2)
+    for s in (ab, ba, both):
+        assert s.is_valid
+        assert approx(s.volume, both.volume, rel=1e-6)
+    assert both.volume > part.volume
+    assert len(both.faces["fillet"]) == 2
+    with pytest.raises(TuleError, match="no longer exist"):
+        ab.fillet(b0.edges["bottom"], 1)  # the fillet consumed it
+
+    # a later Boolean and features still resolve both bosses' roles
+    out = ab - [cylinder(3.2, 50, center=True).at(x, 0, 0) for x in (-22, 22)]
+    out = out.chamfer(b0.edges["top"], 1).chamfer(b1.edges["top"], 1)
+    assert out.is_valid
+    assert len(out.faces[b0.faces["side"]]) == 1 and len(out.faces[b1.faces["side"]]) == 1
+    assert len(out.faces[ab.faces["fillet"]]) == 1
+
+
 def test_consumed_selection_raises():
     plate, boss = bracket()
     u = plate | boss

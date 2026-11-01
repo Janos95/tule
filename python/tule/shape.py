@@ -3,7 +3,7 @@
 Groups are how tags and feature provenance survive modeling. Each group is a
 key (``"tag:load"`` for a tag, ``"#7.top"`` for the top faces of feature 7)
 mapped to sub-shapes. Every operation rebuilds the groups from the OCCT
-builder's history (``Modified``, ``IsDeleted``), so a group always refers to
+builder's history (``Modified``), so a group always refers to
 sub-shapes of the current shape.
 
 Names a user can type are *aliases*: ``boss.faces["top"]`` looks up the alias
@@ -57,9 +57,15 @@ def carry(
     groups: Groups,
     result: TopoDS_Shape,
     modified: Callable[[TopoDS_Shape], list],
-    deleted: Callable[[TopoDS_Shape], bool] | None = None,
 ) -> Groups:
-    """Map every group onto ``result`` using an operation's history."""
+    """Map every group onto ``result`` using an operation's ``Modified`` history.
+
+    A sub-shape survives if it is still in ``result`` (``IsSame``); a modified
+    one is replaced by its images that are in ``result``; anything else was
+    consumed. Membership in the result is the authority, not ``IsDeleted``:
+    OCCT's fillet and chamfer builders report every edge and vertex without
+    images as deleted, including the untouched ones that are still there.
+    """
     targets = {k: subshapes(result, k) for k in ("face", "edge", "vertex")}
     out: Groups = {}
     for key, items in groups.items():
@@ -73,23 +79,12 @@ def carry(
                 mods = modified(s)
             except Standard_Failure:
                 mods = []
-            if mods:
-                for m in mods:
-                    if kind_of(m) == kind and m in target:
-                        found.add(target[target.index(m)])
-                if s in target:
-                    found.add(target[target.index(s)])
-            elif not (deleted and _safe(deleted, s)) and s in target:
-                found.add(target[target.index(s)])
+            for m in [*mods, s]:
+                i = target.index(m) if kind_of(m) == kind else -1
+                if i >= 0:
+                    found.add(target[i])
         out[key] = tuple(found)
     return out
-
-
-def _safe(fn, s) -> bool:
-    try:
-        return bool(fn(s))
-    except Standard_Failure:
-        return False
 
 
 def _merge_groups(*shapes: "Shape") -> Groups:
@@ -448,7 +443,7 @@ class Shape:
             raise TuleError(f"could not {op} with {size:g}", op=op, edges=sel.ids, hint=hint,
                             **({"max_radius": round(lo, 6)} if op == "fillet" else {"max_distance": round(lo, 6)}))
         res = mk.Shape()
-        groups = carry(self._groups, res, lambda s: from_list(mk.Modified(s)), mk.IsDeleted)
+        groups = carry(self._groups, res, lambda s: from_list(mk.Modified(s)))
         new_faces = []
         for e in sel.items:
             new_faces.extend(f for f in from_list(mk.Generated(e)) if kind_of(f) == "face")
@@ -477,7 +472,7 @@ class Shape:
                 hint="try a smaller thickness, remove different faces, or shell before filleting",
             )
         res = mk.Shape()
-        groups = carry(self._groups, res, lambda s: from_list(mk.Modified(s)), mk.IsDeleted)
+        groups = carry(self._groups, res, lambda s: from_list(mk.Modified(s)))
         inner = []
         for f in self._sub("face"):
             inner.extend(g for g in from_list(mk.Generated(f)) if kind_of(g) == "face")
@@ -586,13 +581,13 @@ def _boolean(op_cls, op_name: str, args: list[Shape], tools: list[Shape], simpli
         )
     res = op.Shape()
     inputs = args + tools
-    groups = carry(_merge_groups(*inputs), res, lambda s: from_list(op.Modified(s)), op.IsDeleted)
+    groups = carry(_merge_groups(*inputs), res, lambda s: from_list(op.Modified(s)))
     if simplify:
         u = ShapeUpgrade_UnifySameDomain(res, True, True, False)
         u.Build()
         res2 = u.Shape()
         hist = u.History()
-        groups = carry(groups, res2, lambda s: from_list(hist.Modified(s)), hist.IsRemoved)
+        groups = carry(groups, res2, lambda s: from_list(hist.Modified(s)))
         res = res2
     first = args[0]
     return Shape(res, groups, _tag_aliases(*inputs), first.name, first.color)
