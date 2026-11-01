@@ -1223,46 +1223,6 @@ button.copy.done {
   .menu button {
     height: 38px;
   }
-  main {
-    flex-direction: column;
-  }
-  #right {
-    order: 0;
-    flex: none;
-    height: 50%;
-  }
-  main:not(.code-open) #right {
-    flex: 1;
-    height: auto !important;
-  }
-  main:not(.code-open) #left {
-    display: none;
-  }
-  #split {
-    order: 1;
-    width: auto;
-    height: 1px;
-    cursor: row-resize;
-  }
-  /* a taller grip area for fingers */
-  #split::before {
-    inset: -8px 0;
-  }
-  #split::after {
-    top: -2px;
-    left: 50%;
-    width: 36px;
-    height: 5px;
-    margin: 0 0 0 -18px;
-  }
-  #left {
-    order: 2;
-    width: 100%;
-    max-width: none;
-    min-width: 0;
-    flex: 1;
-    transition: none;
-  }
   #controls {
     padding-left: 8px;
     padding-right: 8px;
@@ -1773,3 +1733,8 @@ main {
 }
 .snapshot-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .snapshot-bar button { height: 26px; font-size: 12px; flex: none; }
+
+/* medium widths (tablets, a narrow window): the sidebar gets narrower; phones stack (640px below) */
+@media (max-width: 900px) and (min-width: 641px) {
+  #outputs { width: 200px; }
+}

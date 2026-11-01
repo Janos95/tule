@@ -30,9 +30,10 @@ async function finish() {
     v = `assets-${h.digest("hex").slice(0, 10)}`;
     await fs.rename(out, path.join(dist, v));
   }
+  const bust = dev ? `?v=${Date.now()}` : ""; // dev file names never change: make the browser fetch them again
   let html = (await fs.readFile(path.join(web, "src/index.html"), "utf8"))
-    .replace('href="style.css"', `href="/${v}/style.css"`)
-    .replace('src="app.js"', `src="/${v}/app.js"`);
+    .replace('href="style.css"', `href="/${v}/style.css${bust}"`)
+    .replace('src="app.js"', `src="/${v}/app.js${bust}"`);
   if (dev) html = html.replace("</body>", `${RELOAD}</body>`);
   await fs.writeFile(path.join(dist, "index.html"), html);
   for (const f of ["favicon.svg", "logo-light.svg"]) await fs.copyFile(path.join(web, "src", f), path.join(dist, f));
