@@ -298,9 +298,12 @@ work inside them (the same limit as RunPod).
 
 ### Skills and the Claude plugin
 
-The agent instructions are written once and shipped three ways: as a Claude
-plugin (connector plus skills), in every project as `AGENTS.md`/`CLAUDE.md`,
-and on the machine as `tule docs`. Content:
+The agent instructions are written once and shipped through the MCP server
+itself (server instructions plus a `guide(topic)` tool, so the bare connector
+URL is self-sufficient in any app), in every project as `AGENTS.md`/`CLAUDE.md`,
+and on the machine as `tule docs`. v0 ships only the connector URL; a Claude
+plugin (the same URL plus auto-loading skills) and directory listings come
+later. Content:
 
 - a router (start here): when to use the MCP, when the CLI and SSH;
 - setup: `tule login`, SSH key, connect, machines and GPUs;
