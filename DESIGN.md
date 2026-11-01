@@ -351,11 +351,12 @@ source and tests are a reference for OCCT edge cases).
 from tule import *
 
 plate = rect(80, 40, center=True).round(5).extrude(6)
+plate = plate.tag("mount", plate.faces["bottom"])
 boss  = circle(9).extrude(12).at(0, 0, 6)
-part  = (plate | boss).fillet(boss.edges.bottom, 2)      # provenance survives the union
+part  = (plate | boss).fillet(boss.edges["bottom"], 2)   # provenance survives the union
 part -= cylinder(3.2, 50, center=True)
-part  = part.shell(part.faces.top(), 1.5)
-part.named("bracket", "#4a8").export_step("outputs/bracket/bracket.step")
+part  = part.shell(part.faces["mount"], 1.5)
+outputs.part("bracket", part.named("bracket", "#4a8"))
 ```
 
 - Primitives: `box`, `cube`, `sphere`, `cylinder`, `cone`, `torus`, `wedge`,
@@ -377,15 +378,18 @@ part.named("bracket", "#4a8").export_step("outputs/bracket/bracket.step")
 ### Selection, tags, parameters
 
 - **Queries:** `s.faces.planar().normal(+Z)`, `.cylindrical(r=3.2)`,
-  `.top()`, `s.edges.parallel(Z).on(face)`, `.longest()`, `.within(box)`,
-  `.convex()` / `.concave()`.
-- **Provenance:** feature results know their faces (`boss.faces.side`,
-  `ex.faces.cap_end`); OCCT's builder history (`Modified`, `Generated`,
-  `IsDeleted`) carries them through later operations, so
-  `part.faces[boss.faces.side]` finds the faces after a union.
-- **Tags:** `plate.tag(top="load")`, `part.faces["load"]`; they flow with
-  provenance, are written into STEP files, and are what the analysis
-  libraries read.
+  `.top()`, `s.edges.parallel(Z)`, `.on(faces)`, `.circles(r=)`,
+  `.longest()`, `.within(lo, hi)`, `.nearest(p)`; `.ids` and `.info()` give
+  stable ids and facts for agents. Seam edges are never selected.
+- **Roles (provenance):** feature results name their faces
+  (`boss.faces["side"]`, `box(...).faces["top"]`, `fillet`, `inner`, …);
+  OCCT's builder history (`Modified`, `Generated`, `IsDeleted`) carries them
+  through later operations, so `part.fillet(boss.edges["bottom"], 2)` finds
+  the boss's edge after a union. Roles do not carry through Booleans as names
+  on the result (they would collide); the feature's own selection resolves.
+- **Tags:** `plate.tag("load", plate.faces["top"])`, `part.faces["load"]`;
+  they flow through every operation, are written into STEP files, and are
+  what the analysis libraries read.
 - **Parameters:** `param("wall", 2.0, min=1.0, max=5.0, unit="mm")`, set from
   `tule.toml` or `tule run --param wall=2.5`.
 
@@ -462,6 +466,6 @@ tule/
 | Default machine | `cpu-1` (1 vCPU / 6 GiB), up to `cpu-4` (4 vCPU / 12 GiB) |
 | Outbound network | package registries + per-project allowlist |
 | First GPU backend | RunPod |
-| Python version | 3.12 (match the OCP wheels) |
+| Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |

@@ -1,0 +1,623 @@
+"""The immutable Shape: an OCCT shape plus named face/edge groups.
+
+Groups are how tags and feature provenance survive modeling. Each group is a
+key (``"tag:load"`` for a tag, ``"#7.top"`` for the top faces of feature 7)
+mapped to sub-shapes. Every operation rebuilds the groups from the OCCT
+builder's history (``Modified``, ``IsDeleted``), so a group always refers to
+sub-shapes of the current shape.
+
+Names a user can type are *aliases*: ``boss.faces["top"]`` looks up the alias
+``top`` of ``boss``. Tags travel with the geometry through every operation;
+feature roles (``top``, ``side``, ``fillet``, …) are aliases of the shape that
+created them and of shapes derived from it by unary operations (transforms,
+fillets, …), but not of Boolean results. To use a feature's role after a
+Boolean, pass the feature's selection: ``part.fillet(boss.edges["bottom"], 2)``.
+"""
+
+from __future__ import annotations
+
+import itertools
+import math
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence
+
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+from OCP.BRepBndLib import BRepBndLib
+from OCP.BRepBuilderAPI import BRepBuilderAPI_GTransform, BRepBuilderAPI_Transform
+from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
+from OCP.BRepGProp import BRepGProp
+from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
+from OCP.Bnd import Bnd_Box
+from OCP.gp import gp_Ax2, gp_GTrsf, gp_Mat, gp_Pnt, gp_Trsf, gp_XYZ
+from OCP.GProp import GProp_GProps
+from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+from OCP.Standard import Standard_Failure
+from OCP.StdFail import StdFail_NotDone
+from OCP.TopoDS import TopoDS_Shape
+
+from ._occ import ShapeSet, from_list, kind_of, shape_list, static, subshapes
+from .errors import TuleError
+from .geom import Vec, VecLike, from_pnt, gdir, pnt, translation, vec, xyz_rotation
+from .selection import SELECTION_TYPES, Edges, Faces, Selection, Vertices
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .assembly import Assembly
+
+_ids = itertools.count(1)
+
+
+def new_feature_id() -> int:
+    return next(_ids)
+
+
+Groups = dict  # str -> tuple of sub-shapes
+
+
+def carry(
+    groups: Groups,
+    result: TopoDS_Shape,
+    modified: Callable[[TopoDS_Shape], list],
+    deleted: Callable[[TopoDS_Shape], bool] | None = None,
+) -> Groups:
+    """Map every group onto ``result`` using an operation's history."""
+    targets = {k: subshapes(result, k) for k in ("face", "edge", "vertex")}
+    out: Groups = {}
+    for key, items in groups.items():
+        found = ShapeSet()
+        for s in items:
+            kind = kind_of(s)
+            target = targets.get(kind)
+            if target is None:
+                continue
+            try:
+                mods = modified(s)
+            except Standard_Failure:
+                mods = []
+            if mods:
+                for m in mods:
+                    if kind_of(m) == kind and m in target:
+                        found.add(target[target.index(m)])
+                if s in target:
+                    found.add(target[target.index(s)])
+            elif not (deleted and _safe(deleted, s)) and s in target:
+                found.add(target[target.index(s)])
+        out[key] = tuple(found)
+    return out
+
+
+def _safe(fn, s) -> bool:
+    try:
+        return bool(fn(s))
+    except Standard_Failure:
+        return False
+
+
+def _merge_groups(*shapes: "Shape") -> Groups:
+    merged: dict[str, ShapeSet] = {}
+    for sh in shapes:
+        for k, items in sh._groups.items():
+            st = merged.setdefault(k, ShapeSet())
+            for s in items:
+                st.add(s)
+    return {k: tuple(v) for k, v in merged.items()}
+
+
+def _tag_aliases(*shapes: "Shape") -> dict:
+    out = {}
+    for sh in shapes:
+        for name, key in sh._alias.items():
+            if key.startswith("tag:"):
+                out[name] = key
+    return out
+
+
+class Shape:
+    """An immutable solid (or compound) with tags, provenance and metadata."""
+
+    __slots__ = ("_s", "_groups", "_alias", "name", "color", "_cache")
+
+    def __init__(
+        self,
+        shape: TopoDS_Shape,
+        groups: Groups | None = None,
+        alias: dict | None = None,
+        name: str | None = None,
+        color: str | None = None,
+    ):
+        self._s = shape
+        self._groups: Groups = dict(groups or {})
+        self._alias: dict = dict(alias or {})
+        self.name = name
+        self.color = color
+        self._cache: dict = {}
+
+    # ------------------------------------------------------------ basics
+    @property
+    def wrapped(self) -> TopoDS_Shape:
+        """The underlying OCCT shape."""
+        return self._s
+
+    def _derive(self, shape, groups, alias=None, keep_meta=True) -> "Shape":
+        return Shape(
+            shape,
+            groups,
+            self._alias if alias is None else alias,
+            self.name if keep_meta else None,
+            self.color if keep_meta else None,
+        )
+
+    def named(self, name: str, color: str | None = None) -> "Shape":
+        """The same shape with a part name and (optionally) a color like ``"#4a8"``."""
+        return Shape(self._s, self._groups, self._alias, name, color or self.color)
+
+    def colored(self, color: str) -> "Shape":
+        return Shape(self._s, self._groups, self._alias, self.name, color)
+
+    def __repr__(self) -> str:
+        n = f" {self.name!r}" if self.name else ""
+        nf = len(self._sub("face"))
+        try:
+            v = f", volume {self.volume:.6g}"
+        except Exception:  # pragma: no cover
+            v = ""
+        return f"<Shape{n}: {nf} faces{v}>"
+
+    # ------------------------------------------------------------ topology
+    def _sub(self, kind: str) -> ShapeSet:
+        key = ("sub", kind)
+        if key not in self._cache:
+            self._cache[key] = subshapes(self._s, kind)
+        return self._cache[key]
+
+    def _seams(self) -> ShapeSet:
+        """Seam edges (an edge closing a periodic face onto itself, e.g. a cylinder's seam)."""
+        key = ("seams",)
+        if key not in self._cache:
+            from OCP.BRep import BRep_Tool
+
+            seams = ShapeSet()
+            for f in self._sub("face"):
+                for e in subshapes(f, "edge"):
+                    if static(BRep_Tool, "IsClosed")(e, f):
+                        seams.add(e)
+            self._cache[key] = seams
+        return self._cache[key]
+
+    @property
+    def faces(self) -> Faces:
+        return Faces(self, self._sub("face"))
+
+    @property
+    def edges(self) -> Edges:
+        return Edges(self, self._sub("edge"))
+
+    @property
+    def vertices(self) -> Vertices:
+        return Vertices(self, self._sub("vertex"))
+
+    @property
+    def solids(self) -> list["Shape"]:
+        return [Shape(s) for s in self._sub("solid")]
+
+    def _ids(self, kind: str, items) -> list[int]:
+        sub = self._sub(kind)
+        return [sub.index(s) for s in items]
+
+    def face(self, i: int) -> Faces:
+        """The face with stable id ``i`` (as shown in the viewer: ``f12``)."""
+        return Faces(self, [self._sub("face")[i]])
+
+    def edge(self, i: int) -> Edges:
+        return Edges(self, [self._sub("edge")[i]])
+
+    # ------------------------------------------------------------ groups, tags
+    @property
+    def tags(self) -> list[str]:
+        return sorted(n for n, k in self._alias.items() if k.startswith("tag:"))
+
+    @property
+    def roles(self) -> list[str]:
+        return sorted(n for n, k in self._alias.items() if not k.startswith("tag:"))
+
+    def _group_items(self, key: str, kind: str) -> list:
+        items = [s for s in self._groups.get(key, ()) if kind_of(s) == kind]
+        if kind == "edge":
+            items += [s for s in self._groups.get(key + ":edges", ()) if kind_of(s) == kind]
+            if not items:
+                for f in self._groups.get(key, ()):
+                    if kind_of(f) == "face":
+                        items.extend(subshapes(f, "edge"))
+        elif kind == "vertex" and not items:
+            for s in self._groups.get(key, ()):
+                items.extend(subshapes(s, "vertex"))
+        return items
+
+    def _named(self, kind: str, name: str) -> Selection:
+        key = self._alias.get(name)
+        if key is None:
+            avail = ", ".join(sorted(self._alias)) or "none"
+            raise TuleError(
+                f"this shape has no {kind} group named {name!r}",
+                op="select",
+                hint=f"available names: {avail}; a feature's roles do not carry through Booleans, "
+                f"so select on the feature itself (e.g. boss.{kind}s[{name!r}]) or tag it",
+            )
+        keys = (key,)
+        if kind == "edge" and key + ":edges" in self._groups:
+            keys = (key + ":edges",)
+        return SELECTION_TYPES[kind](self, self._group_items(key, kind), keys)
+
+    def _resolve(self, sel: Selection, kind: str | None = None) -> Selection:
+        """Find a selection made on another shape in this shape."""
+        kind = kind or sel.kind
+        cls = SELECTION_TYPES[kind]
+        if sel.owner is self:
+            return sel if sel.kind == kind else cls(self, sel.items, sel.keys)
+        if sel.keys and all(k in self._groups or k.removesuffix(":edges") in self._groups for k in sel.keys):
+            items = []
+            for k in sel.keys:
+                if k.endswith(":edges"):
+                    items += [s for s in self._groups.get(k, ()) if kind_of(s) == kind]
+                else:
+                    items += self._group_items(k, kind)
+            if not items:
+                raise TuleError(
+                    f"the selected {kind}s no longer exist in this shape",
+                    op="select",
+                    hint="an earlier operation consumed them; select on the current shape instead",
+                )
+            return cls(self, items, sel.keys)
+        target = self._sub(kind)
+        found = [s for s in sel.items if s in target]
+        if found and len(found) == len(sel.items):
+            return cls(self, found)
+        raise TuleError(
+            f"this {kind} selection belongs to another shape and cannot be found here",
+            op="select",
+            hint="select on this shape (e.g. part.edges...), use a feature's role selection, or tag it",
+        )
+
+    def _canonical(self, s):
+        """The occurrence of sub-shape ``s`` in this shape (with its orientation here)."""
+        sub = self._sub(kind_of(s))
+        i = sub.index(s)
+        return sub[i] if i >= 0 else None
+
+    def _tags_of(self, s) -> list[str]:
+        return sorted(n for n, k in self._alias.items() if k.startswith("tag:") and s in ShapeSet(self._groups.get(k, ())))
+
+    def tag(self, name: str, selection: Selection) -> "Shape":
+        """Tag faces or edges with a name that survives later operations.
+
+        ``plate.tag("load", plate.faces.top())`` then ``part.faces["load"]``.
+        """
+        sel = self._resolve(selection, selection.kind)
+        key = f"tag:{name}"
+        groups = dict(self._groups)
+        groups[key] = tuple(ShapeSet(list(groups.get(key, ())) + list(sel.items)))
+        alias = dict(self._alias)
+        alias[name] = key
+        return Shape(self._s, groups, alias, self.name, self.color)
+
+    def _with_roles(self, roles: dict[str, Iterable], fid: int | None = None) -> "Shape":
+        """Attach feature roles (``{"top": faces, ...}``) as groups and aliases."""
+        fid = fid or new_feature_id()
+        groups = dict(self._groups)
+        alias = dict(self._alias)
+        for role, items in roles.items():
+            items = [self._canonical(x) for x in ShapeSet(items)]
+            items = [x for x in items if x is not None]
+            key = f"#{fid}.{role}"
+            groups[key] = tuple(items)
+            faces = [s for s in items if kind_of(s) == "face"]
+            if faces:
+                edges = ShapeSet()
+                for f in faces:
+                    for e in subshapes(f, "edge"):
+                        edges.add(e)
+                groups[key + ":edges"] = tuple(edges)
+            if role not in alias or not alias[role].startswith("tag:"):
+                alias[role] = key
+        return Shape(self._s, groups, alias, self.name, self.color)
+
+    # ------------------------------------------------------------ Booleans
+    def __or__(self, other: "Shape") -> "Shape":
+        return union(self, other)
+
+    __add__ = __or__
+
+    def __radd__(self, other):
+        if other == 0:  # sum([...])
+            return self
+        return union(other, self)
+
+    def __sub__(self, other: "Shape") -> "Shape":
+        return difference(self, other)
+
+    def __and__(self, other: "Shape") -> "Shape":
+        return intersection(self, other)
+
+    def __xor__(self, other: "Shape") -> "Shape":
+        return union(self, other) - intersection(self, other)
+
+    # ------------------------------------------------------------ transforms
+    def _apply_trsf(self, t: gp_Trsf, copy: bool = False) -> "Shape":
+        b = BRepBuilderAPI_Transform(self._s, t, copy)
+        res = b.Shape()
+        return self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
+
+    def at(self, x: float | VecLike = 0, y: float = 0, z: float = 0) -> "Shape":
+        """Translate by ``(x, y, z)``; ``s.at((1, 2, 3))`` works too."""
+        v = vec(x) if isinstance(x, (tuple, list, Vec)) else Vec(x, y, z)
+        return self._apply_trsf(translation(v))
+
+    translate = at
+
+    def rotate(self, x: float = 0, y: float = 0, z: float = 0, about: VecLike = (0, 0, 0)) -> "Shape":
+        """Rotate by degrees about x, then y, then z, around ``about``."""
+        return self._apply_trsf(xyz_rotation(x, y, z, about))
+
+    def rotate_about(self, axis_dir: VecLike, degrees: float, origin: VecLike = (0, 0, 0)) -> "Shape":
+        from .geom import rotation
+
+        return self._apply_trsf(rotation(axis_dir, degrees, origin))
+
+    def scale(self, x: float, y: float | None = None, z: float | None = None, about: VecLike = (0, 0, 0)) -> "Shape":
+        """Uniform ``scale(f)`` or per-axis ``scale(fx, fy, fz)``."""
+        if y is None and z is None:
+            t = gp_Trsf()
+            t.SetScale(pnt(about), float(x))
+            return self._apply_trsf(t, copy=True)
+        y = x if y is None else y
+        z = x if z is None else z
+        g = gp_GTrsf()
+        g.SetVectorialPart(gp_Mat(float(x), 0, 0, 0, float(y), 0, 0, 0, float(z)))
+        a = vec(about)
+        g.SetTranslationPart(gp_XYZ(a[0] * (1 - x), a[1] * (1 - y), a[2] * (1 - z)))
+        b = BRepBuilderAPI_GTransform(self._s, g, True)
+        res = b.Shape()
+        return self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
+
+    def mirror(self, nx: float | VecLike = 1, ny: float = 0, nz: float = 0, origin: VecLike = (0, 0, 0)) -> "Shape":
+        """Mirror across the plane through ``origin`` with normal ``(nx, ny, nz)``."""
+        n = vec(nx) if isinstance(nx, (tuple, list, Vec)) else Vec(nx, ny, nz)
+        t = gp_Trsf()
+        t.SetMirror(gp_Ax2(pnt(origin), gdir(n)))
+        return self._apply_trsf(t, copy=True)
+
+    def transform(self, matrix: Sequence[Sequence[float]]) -> "Shape":
+        """Apply a 3x3, 3x4 or 4x4 (affine) matrix."""
+        m = [list(map(float, r)) for r in matrix]
+        if len(m) == 3 and len(m[0]) == 3:
+            m = [r + [0.0] for r in m]
+        t = gp_Trsf()
+        try:
+            t.SetValues(*m[0][:4], *m[1][:4], *m[2][:4])
+        except Standard_Failure:
+            g = gp_GTrsf()
+            g.SetVectorialPart(gp_Mat(*m[0][:3], *m[1][:3], *m[2][:3]))
+            g.SetTranslationPart(gp_XYZ(m[0][3], m[1][3], m[2][3]))
+            b = BRepBuilderAPI_GTransform(self._s, g, True)
+            res = b.Shape()
+            return self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
+        return self._apply_trsf(t, copy=True)
+
+    # ------------------------------------------------------------ features
+    def fillet(self, edges: Selection, radius: float) -> "Shape":
+        """Round ``edges`` with ``radius``. New faces get the role ``fillet``."""
+        return self._edge_feature("fillet", edges, radius)
+
+    def chamfer(self, edges: Selection, distance: float) -> "Shape":
+        """Bevel ``edges`` by ``distance``. New faces get the role ``chamfer``."""
+        return self._edge_feature("chamfer", edges, distance)
+
+    def _edge_feature(self, op: str, edges: Selection, size: float) -> "Shape":
+        sel = self._resolve(edges, "edge")
+        if not sel.items:
+            raise TuleError("no edges selected", op=op)
+
+        def attempt(r: float):
+            mk = BRepFilletAPI_MakeFillet(self._s) if op == "fillet" else BRepFilletAPI_MakeChamfer(self._s)
+            for e in sel.items:
+                mk.Add(float(r), e)
+            try:
+                mk.Build()
+            except (Standard_Failure, StdFail_NotDone):
+                return None
+            if not mk.IsDone():
+                return None
+            res = mk.Shape()
+            if res.IsNull() or not BRepCheck_Analyzer(res).IsValid():
+                return None
+            return mk
+
+        mk = attempt(size)
+        if mk is None:
+            lo, hi = 0.0, float(size)
+            for _ in range(10):
+                mid = (lo + hi) / 2
+                if attempt(mid) is not None:
+                    lo = mid
+                else:
+                    hi = mid
+            hint = (
+                f"largest {('radius' if op == 'fillet' else 'distance')} that works ≈ {lo:.3g}"
+                if lo > 0
+                else "no size works for this edge set; try fewer edges or fillet them in separate steps"
+            )
+            raise TuleError(f"could not {op} with {size:g}", op=op, edges=sel.ids, hint=hint,
+                            **({"max_radius": round(lo, 6)} if op == "fillet" else {"max_distance": round(lo, 6)}))
+        res = mk.Shape()
+        groups = carry(self._groups, res, lambda s: from_list(mk.Modified(s)), mk.IsDeleted)
+        new_faces = []
+        for e in sel.items:
+            new_faces.extend(f for f in from_list(mk.Generated(e)) if kind_of(f) == "face")
+        out = self._derive(res, groups)
+        return out._with_roles({op: new_faces})
+
+    def shell(self, remove: Selection | None, thickness: float, inward: bool = True) -> "Shape":
+        """Hollow the solid: remove the ``remove`` faces and keep walls of ``thickness``.
+
+        Inner faces get the role ``inner``.
+        """
+        faces = self._resolve(remove, "face").items if remove is not None else []
+        mk = BRepOffsetAPI_MakeThickSolid()
+        off = -abs(thickness) if inward else abs(thickness)
+        try:
+            mk.MakeThickSolidByJoin(self._s, shape_list(faces), off, 1e-4)
+            mk.Build()
+            ok = mk.IsDone()
+        except (Standard_Failure, StdFail_NotDone):
+            ok = False
+        if not ok:
+            raise TuleError(
+                f"could not shell with thickness {thickness:g}",
+                op="shell",
+                faces=self._ids("face", faces),
+                hint="try a smaller thickness, remove different faces, or shell before filleting",
+            )
+        res = mk.Shape()
+        groups = carry(self._groups, res, lambda s: from_list(mk.Modified(s)), mk.IsDeleted)
+        inner = []
+        for f in self._sub("face"):
+            inner.extend(g for g in from_list(mk.Generated(f)) if kind_of(g) == "face")
+        return self._derive(res, groups)._with_roles({"inner": inner})
+
+    # ------------------------------------------------------------ measurements
+    @property
+    def volume(self) -> float:
+        p = GProp_GProps()
+        static(BRepGProp, "VolumeProperties")(self._s, p)
+        return p.Mass()
+
+    @property
+    def area(self) -> float:
+        p = GProp_GProps()
+        static(BRepGProp, "SurfaceProperties")(self._s, p)
+        return p.Mass()
+
+    @property
+    def center_of_mass(self) -> Vec:
+        p = GProp_GProps()
+        static(BRepGProp, "VolumeProperties")(self._s, p)
+        return from_pnt(p.CentreOfMass())
+
+    @property
+    def bounds(self) -> tuple[Vec, Vec]:
+        """Tight axis-aligned bounds ``(lo, hi)``."""
+        b = Bnd_Box()
+        static(BRepBndLib, "AddOptimal")(self._s, b, False, False)
+        return from_pnt(b.CornerMin()), from_pnt(b.CornerMax())
+
+    @property
+    def size(self) -> Vec:
+        lo, hi = self.bounds
+        return hi - lo
+
+    def mass(self, density: float) -> float:
+        """Mass for a density in mass per unit volume (e.g. g/mm³: aluminium ≈ 0.0027)."""
+        return self.volume * density
+
+    @property
+    def is_valid(self) -> bool:
+        return BRepCheck_Analyzer(self._s).IsValid()
+
+    # ------------------------------------------------------------ export
+    def export_step(self, path: str) -> str:
+        from .io import export_step
+
+        return export_step(self, path)
+
+    def export_stl(self, path: str, tolerance: float = 0.05, angular: float = 0.2) -> str:
+        from .io import export_stl
+
+        return export_stl(self, path, tolerance, angular)
+
+    def export_gltf(self, path: str) -> str:
+        from .io import export_gltf
+
+        return export_gltf(self, path)
+
+    def tessellate(self, tolerance: float = 0.05, angular: float = 0.2):
+        from .io import tessellate
+
+        return tessellate(self, tolerance, angular)
+
+
+# ---------------------------------------------------------------- Booleans
+
+
+def _as_shape(x) -> Shape:
+    if isinstance(x, Shape):
+        return x
+    from .assembly import Assembly
+
+    if isinstance(x, Assembly):
+        return x.to_shape()
+    raise TypeError(f"expected a Shape, got {type(x).__name__}")
+
+
+def _flatten(shapes) -> list[Shape]:
+    out = []
+    for s in shapes:
+        if isinstance(s, (list, tuple)):
+            out.extend(_flatten(s))
+        else:
+            out.append(_as_shape(s))
+    return out
+
+
+def _boolean(op_cls, op_name: str, args: list[Shape], tools: list[Shape], simplify: bool = True) -> Shape:
+    op = op_cls()
+    op.SetArguments(shape_list([a._s for a in args]))
+    op.SetTools(shape_list([t._s for t in tools]))
+    op.SetRunParallel(True)
+    try:
+        op.Build()
+    except Standard_Failure as e:  # pragma: no cover - OCCT internal failure
+        raise TuleError(str(e), op=op_name) from None
+    has_errors = getattr(op, "HasErrors", None)
+    if not op.IsDone() or (has_errors is not None and has_errors()):
+        raise TuleError(
+            "OpenCascade reported an error",
+            op=op_name,
+            hint="check that inputs are valid solids (s.is_valid); nearly coincident faces can fail, "
+            "try moving one input by a small amount",
+        )
+    res = op.Shape()
+    inputs = args + tools
+    groups = carry(_merge_groups(*inputs), res, lambda s: from_list(op.Modified(s)), op.IsDeleted)
+    if simplify:
+        u = ShapeUpgrade_UnifySameDomain(res, True, True, False)
+        u.Build()
+        res2 = u.Shape()
+        hist = u.History()
+        groups = carry(groups, res2, lambda s: from_list(hist.Modified(s)), hist.IsRemoved)
+        res = res2
+    first = args[0]
+    return Shape(res, groups, _tag_aliases(*inputs), first.name, first.color)
+
+
+def union(*shapes) -> Shape:
+    """Union of any number of shapes (``union(a, b, c)`` or ``union([a, b, c])``)."""
+    s = _flatten(shapes)
+    if len(s) == 1:
+        return s[0]
+    return _boolean(BRepAlgoAPI_Fuse, "union", s[:1], s[1:])
+
+
+def difference(first, *others) -> Shape:
+    """``first`` minus all ``others``."""
+    o = _flatten(others)
+    f = _as_shape(first)
+    if not o:
+        return f
+    return _boolean(BRepAlgoAPI_Cut, "difference", [f], o)
+
+
+def intersection(*shapes) -> Shape:
+    s = _flatten(shapes)
+    out = s[0]
+    for t in s[1:]:
+        out = _boolean(BRepAlgoAPI_Common, "intersection", [out], [t])
+    return out
