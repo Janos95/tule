@@ -21,6 +21,7 @@ type Result = Record<string, unknown>;
 
 const SESSION_DAYS = 30;
 const DEVICE_MINUTES = 10;
+const HOST_KEY_MINUTES = 60;
 const LOGIN_MINUTES = 10;
 
 export const rand = (bytes = 24) =>
@@ -68,6 +69,7 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS guest_ips (ip TEXT, day TEXT, n INTEGER, PRIMARY KEY (ip, day));
       CREATE TABLE IF NOT EXISTS running (project_id TEXT PRIMARY KEY, user_id TEXT, guest INTEGER, since INTEGER);
       CREATE TABLE IF NOT EXISTS hosts (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, token_hash TEXT UNIQUE, created INTEGER, specs TEXT, UNIQUE(user_id, name));
+      CREATE TABLE IF NOT EXISTS host_keys (hash TEXT PRIMARY KEY, user_id TEXT, expires INTEGER);
     `);
     // columns added after the first deploy
     for (const [table, col] of [["users", "guest INTEGER DEFAULT 0"], ["users", "last_seen INTEGER"], ["devices", "kind TEXT"], ["devices", "host_name TEXT"]]) {
@@ -320,6 +322,29 @@ export class Accounts extends DurableObject<Env> {
   }
 
   // ------------------------------------------------------------ hosts (the user's own computers)
+
+  /** A one-time key that adds one computer to the account: Settings puts it in the install command. */
+  async createHostKey(userId: string): Promise<{ key: string; expires: number }> {
+    const key = `tulep_${rand(24)}`;
+    const expires = Date.now() + HOST_KEY_MINUTES * 60_000;
+    this.sql.exec("DELETE FROM host_keys WHERE expires < ?", Date.now());
+    this.sql.exec("INSERT INTO host_keys VALUES (?, ?, ?)", await sha256hex(key), userId, expires);
+    return { key, expires };
+  }
+
+  /** The computer redeems a key (once): it becomes one of the account's computers. */
+  async pairHost(key: string, name: string, token?: string): Promise<Result> {
+    const hash = await sha256hex(key);
+    const r = this.one<{ user_id: string; expires: number }>("SELECT user_id, expires FROM host_keys WHERE hash = ?", hash);
+    this.sql.exec("DELETE FROM host_keys WHERE hash = ?", hash);
+    const u = r && r.expires > Date.now() ? this.user(r.user_id) : null;
+    if (!u) return { error: "this key is used up or expired", hint: "copy a fresh command from Settings → Your computers → Add a computer" };
+    // the install command run again on a computer that is already this account's: keep it
+    const known = token ? await this.hostByToken(token) : null;
+    if (known && known.userId === u.id) return { hostId: known.id, hostToken: token, name: known.name, email: u.email, already: true };
+    const h = await this.createHost(u.id, name);
+    return { hostId: h.id, hostToken: h.token, name: h.name, email: u.email };
+  }
 
   async createHost(userId: string, wanted: string): Promise<{ id: string; name: string; token: string }> {
     const base = wanted.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "computer";

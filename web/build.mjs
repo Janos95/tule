@@ -6,8 +6,10 @@
 //                            version file the dev page polls to reload itself
 //   node build.mjs --watch   --dev, rebuilt on every change in src/
 import { context } from "esbuild";
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import { watch as watchDir } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +40,24 @@ async function finish() {
   await fs.writeFile(path.join(dist, "index.html"), html);
   for (const f of ["favicon.svg", "logo-light.svg"]) await fs.copyFile(path.join(web, "src", f), path.join(dist, f));
   if (dev) await fs.writeFile(path.join(dist, "assets-dev", "version.txt"), String(Date.now()));
+  await installer();
   console.log(`web/dist/${v}`);
+}
+
+// dist/install: the tule CLI as a wheel and install.sh naming it (served as /install.sh, see
+// control/src/index.ts). Built once per run; the CLI's sources are outside web/src.
+let wheel;
+async function installer() {
+  const dir = path.join(dist, "install");
+  await fs.mkdir(dir, { recursive: true });
+  if (!wheel) {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tule-wheel-"));
+    execFileSync("uv", ["build", "--wheel", "--quiet", "--out-dir", tmp, path.join(web, "../cli")], { stdio: "inherit" });
+    wheel = path.join(tmp, (await fs.readdir(tmp)).find((f) => f.endsWith(".whl")));
+  }
+  await fs.copyFile(wheel, path.join(dir, path.basename(wheel)));
+  const sh = await fs.readFile(path.join(web, "src/install.sh"), "utf8");
+  await fs.writeFile(path.join(dir, "install.sh"), sh.replaceAll("__WHEEL__", path.basename(wheel)));
 }
 
 // empty dist but keep the folder, so a running `wrangler dev` sees the new files

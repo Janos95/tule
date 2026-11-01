@@ -150,13 +150,24 @@ A user can plug in their own computers (a Linux box with a GPU, a Mac mini)
 as machines, modelled on T3 Code's remote machines (`t3 up`) but
 containerized:
 
-- **Install and pair:** `pip install tule-cli`, then **`tule host up`** on the
-  computer. It checks Docker (and NVIDIA's container runtime when there is a
-  GPU), pairs the computer with the account by device code (the user approves
-  it in the browser; the computer keeps a host-only credential, `tuleh_…`,
-  that can do nothing but serve as that computer), and installs a background
-  service: a systemd user unit on Linux (with lingering, so it runs from
-  boot), a LaunchAgent on macOS (while the user is logged in).
+- **One command:** Settings → Your computers → **Add a computer** shows
+  `curl -fsSL <site>/install.sh | sh -s -- tulep_…`, with a one-time key
+  (an hour, one computer) in it. Pasted into a terminal on the computer,
+  `install.sh` (web/src/install.sh, served by the Worker) installs what is
+  missing: Docker Engine on Linux (plus NVIDIA's container toolkit when
+  `nvidia-smi` sees a GPU, and lingering so the service runs from boot),
+  OrbStack on macOS (memory raised to all but 2 GB); then the tule CLI with
+  uv (which brings its own Python; the wheel is served from `/install/`).
+  Then it runs **`tule host up --key`**: the key buys the computer a
+  host-only credential (`tuleh_…`, it can do nothing but serve as that
+  computer), and a background service is installed: a systemd user unit on
+  Linux, a LaunchAgent on macOS (while the user is logged in). Running the
+  command again is safe (an already added computer stays as it is). Windows:
+  inside WSL 2. Without a key, `tule host up` pairs by device code instead
+  (approve in the browser).
+- **Docker wherever it is:** the service finds the docker command on PATH or
+  in OrbStack / Docker Desktop, their sockets when DOCKER_HOST is unset, and
+  goes through `sg docker` right after Linux added the user to the group.
 - **Connected by dialing out:** the service (`tule host run`) keeps one
   WebSocket to the computer's **Host** Durable Object and reports its specs
   (cores, memory, GPUs, architecture). No inbound ports, no tunnel software.
@@ -176,8 +187,11 @@ containerized:
 - **Accounts:** computers belong to a user, are listed in Settings ("Your
   computers": online state, specs, remove) and in `tule hosts`; no quota
   applies (the user's hardware). Guests cannot add computers.
-- **Images:** `ghcr.io/janos95/tule-runtime:cpu` (amd64 and arm64, so Apple
-  Silicon runs natively) and `:cuda` (amd64) for computers with NVIDIA GPUs.
+- **Images:** `ghcr.io/janos95/tule-runtime:cpu` (amd64), `:cpu-arm64`
+  (Apple Silicon and ARM Linux, natively) and `:cuda` (amd64) for computers
+  with NVIDIA GPUs (when a computer has a GPU, its machines always get it).
+  The host pulls before every start (a quick check when nothing changed) and
+  uses the image it has if the registry is unreachable.
 
 Every machine runs the same entrypoint, so nothing above the backend cares
 where it runs:

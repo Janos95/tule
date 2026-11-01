@@ -48,7 +48,8 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .newp{border-bottom:1px solid var(--line)}
 .newp summary{list-style:none;cursor:pointer;padding:12px 8px;color:var(--muted)}
 .newp summary::-webkit-details-marker{display:none}
-.newp summary:hover{color:var(--text)}
+.newp summary:hover,.newp-go:hover{color:var(--text)}
+.newp-go{all:unset;box-sizing:border-box;display:block;width:100%;cursor:pointer;padding:12px 8px;color:var(--muted)}
 .newp .plus{display:inline-block;width:14px}
 .newp-form{display:flex;gap:8px;padding:0 8px 12px}
 .newp-form input{max-width:360px}
@@ -157,6 +158,7 @@ export type SettingsData = {
   usage: { month: string; cpuHours: number; gpuHours: number; gpuCost: number };
   quota: number;
   newKey?: string;
+  hostKey?: string;
   message?: string;
   origin: string;
 };
@@ -215,17 +217,19 @@ export function settingsPage(user: User, d: SettingsData): Response {
     const x = (s ?? {}) as { cpus?: number; memoryGb?: number; gpus?: string[]; arch?: string };
     return [x.cpus ? `${x.cpus} cores` : "", x.memoryGb ? `${x.memoryGb} GB` : "", ...(x.gpus ?? []), x.arch ?? ""].filter(Boolean).join(" · ");
   };
+  const cmd = (key: string) => `curl -fsSL ${d.origin}/install.sh | sh -s -- ${key}`;
   const computers = user.guest
     ? ""
     : section(
         "Your computers",
         "Run machines on your own hardware: Tule starts its container there, using the whole computer.",
         html`${d.hosts.map((h) => item(h.name, html`<span class="dot ${h.online ? "running" : ""}"></span>${h.online ? "online" : "offline"}${spec(h.specs) ? ` · ${spec(h.specs)}` : ""}`, rowButton("/settings/hosts/remove", "Remove", h.id, true)))}
-          <details class="newp"><summary><span class="plus">+</span> Add a computer</summary>
-            <div style="padding:0 8px 12px"><p class="hint">On the computer (it needs Docker; for NVIDIA GPUs also NVIDIA's container toolkit):</p>
-            <pre>pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"
-tule host up --url ${d.origin}</pre>
-            <p class="hint">It shows a code to approve here, then runs as a background service.</p></div></details>`,
+          ${
+            d.hostKey
+              ? html`<div class="item item-block newkey" id="add-computer"><span class="item-label">Paste this into a terminal on the computer</span><span class="item-action">${copyButton(cmd(d.hostKey))}</span><pre>${cmd(d.hostKey)}</pre>
+                  <p class="hint">It installs what is missing (Docker, the tule CLI), adds the computer to your account and runs it as a background service. Linux, macOS, or Windows in WSL. The key works once, for an hour.</p></div>`
+              : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span> Add a computer</button></form>`
+          }`,
       );
 
   const u = d.usage;

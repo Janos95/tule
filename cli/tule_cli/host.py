@@ -1,9 +1,14 @@
 """Your own computer as a Tule machine host (DESIGN.md, "Your own computers").
 
-    tule host up [--name rechenknecht] [--url https://tule.example]
-        check Docker (and the NVIDIA runtime if the computer has a GPU), pair
-        the computer with your account (approve the code in the browser), and
-        install the background service (systemd user unit / LaunchAgent)
+    tule host up --key tulep_…  [--name rechenknecht] [--url https://tule.example]
+        check Docker (and the NVIDIA runtime if the computer has a GPU), add
+        the computer to your account (with the one-time key from Settings, or
+        without one by approving a code in the browser), and install the
+        background service (systemd user unit / LaunchAgent)
+
+Usually install.sh runs it: Settings → Your computers → Add a computer gives
+`curl -fsSL <site>/install.sh | sh -s -- tulep_…`, which first installs Docker
+and this CLI where they are missing.
     tule host status      the pairing, the service and the machines running here
     tule host down        stop and remove the service (--forget: unpair too)
     tule host run         the service itself: one WebSocket to Tule, starting and
@@ -22,6 +27,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -47,11 +53,55 @@ def log(*a):
 # ---------------------------------------------------------------- this computer
 
 
-def docker(*args: str, check: bool = True, capture: bool = True) -> str:
-    exe = shutil.which("docker")
+_DOCKER: list[str] | None = None
+DOCKER_PLACES = [
+    "/Applications/OrbStack.app/Contents/MacOS/xbin/docker",
+    os.path.expanduser("~/.orbstack/bin/docker"),
+    "/Applications/Docker.app/Contents/Resources/bin/docker",
+    "/usr/local/bin/docker",
+    "/opt/homebrew/bin/docker",
+]
+SOCKETS = [os.path.expanduser("~/.orbstack/run/docker.sock"), os.path.expanduser("~/.docker/run/docker.sock")]
+
+
+def find_docker() -> list[str]:
+    """The docker command to use: on PATH or where OrbStack / Docker Desktop put it, talking to
+    a running engine (setting DOCKER_HOST to the Mac apps' sockets, or going through `sg docker`
+    right after Linux added you to the docker group)."""
+    global _DOCKER
+    if _DOCKER:
+        return _DOCKER
+    exe = shutil.which("docker") or next((p for p in DOCKER_PLACES if os.access(p, os.X_OK)), None)
     if not exe:
-        raise CliError("Docker is not installed: install Docker Engine (Linux), or OrbStack / Docker Desktop (macOS)")
-    r = subprocess.run([exe, *args], capture_output=capture, text=True)
+        raise CliError("Docker is not installed: install Docker Engine (Linux), or OrbStack / Docker Desktop (macOS); install.sh does it for you")
+
+    def works(cmd: list[str]) -> str:
+        r = subprocess.run([*cmd, "info", "--format", "{{.ServerVersion}}"] if cmd[0] != "sg" else
+                           ["sg", "docker", "-c", f"{cmd[3]} info --format '{{{{.ServerVersion}}}}'"], capture_output=True, text=True)
+        return "" if r.returncode == 0 else (r.stderr or r.stdout).strip()
+
+    err = works([exe])
+    if err and not os.environ.get("DOCKER_HOST"):
+        for sock in SOCKETS:
+            if os.path.exists(sock):
+                os.environ["DOCKER_HOST"] = f"unix://{sock}"
+                if not (err := works([exe])):
+                    break
+                del os.environ["DOCKER_HOST"]
+    if err and "permission denied" in err.lower() and shutil.which("sg"):
+        if not works(["sg", "docker", "-c", exe]):
+            _DOCKER = ["sg", "docker", "-c", exe]
+            return _DOCKER
+    if err:
+        raise CliError(f"Docker is installed but not running ({err[:200]}): start Docker Desktop / OrbStack, or `sudo systemctl start docker`")
+    _DOCKER = [exe]
+    return _DOCKER
+
+
+def docker(*args: str, check: bool = True, capture: bool = True) -> str:
+    cmd = find_docker()
+    full = ["sg", "docker", "-c", shlex.join([cmd[3], *args])] if cmd[0] == "sg" else [*cmd, *args]
+    r = subprocess.run(full, capture_output=capture, text=True)
     if check and r.returncode != 0:
         raise CliError(f"docker {args[0]}: {(r.stderr or r.stdout).strip()[:300]}")
     return r.stdout if capture else ""
@@ -100,6 +150,25 @@ def write_config(cfg: dict):
 # ---------------------------------------------------------------- pairing
 
 
+def pair_with_key(url: str, name: str, key: str, token: str | None) -> dict:
+    body = {"key": key, "name": name, **({"token": token} if token else {})}
+    req = urllib.request.Request(f"{url}/api/hosts/pair", data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "User-Agent": "tule-host/0.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            t = json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.load(e)
+        except ValueError:
+            body = {}
+        raise CliError(f"{body.get('error', e)}; {body.get('hint', '')}".rstrip("; ")) from None
+    except urllib.error.URLError as e:
+        raise CliError(f"cannot reach {url}: {getattr(e, 'reason', e)}") from None
+    log(f"{'already' if t.get('already') else 'added'} as {t['name']} in {t['email']}'s computers")
+    return {"url": url, "id": t["hostId"], "name": t["name"], "token": t["hostToken"]}
+
+
 def pair(url: str, name: str, open_browser: bool) -> dict:
     def post(path: str, body: dict) -> dict:
         req = urllib.request.Request(f"{url}{path}", data=json.dumps(body).encode(), method="POST",
@@ -136,8 +205,10 @@ def pair(url: str, name: str, open_browser: bool) -> dict:
 def install_service():
     exe = shutil.which("tule") or ""
     cmd = [exe, "host", "run"] if exe else [sys.executable, "-m", "tule_cli", "host", "run"]
-    path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-    env = {"PATH": path, **{k: v for k, v in os.environ.items() if k in ("TULE_HOST_IMAGE", "TULE_CONFIG_DIR")}}
+    find_docker()  # sets DOCKER_HOST for the Mac apps' engines; the service gets it below
+    docker_dir = next((os.path.dirname(p) for p in [shutil.which("docker") or "", *DOCKER_PLACES] if p and os.access(p, os.X_OK)), "")
+    path = ":".join(dict.fromkeys(filter(None, [docker_dir, *os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin").split(":")])))
+    env = {"PATH": path, **{k: v for k, v in os.environ.items() if k in ("TULE_HOST_IMAGE", "TULE_CONFIG_DIR", "DOCKER_HOST", "DOCKER_CONTEXT")}}
     if sys.platform == "darwin":
         os.makedirs(os.path.dirname(PLIST), exist_ok=True)
         logf = os.path.expanduser("~/Library/Logs/tule-host.log")
@@ -311,9 +382,10 @@ def cmd_up(args):
     sp = specs()  # fails early without Docker
     cfg = read_config()
     url = (args.url or (cfg or {}).get("url") or load().get("url") or DEFAULT_URL).rstrip("/")
-    if not cfg or cfg.get("url") != url or args.name and args.name != cfg.get("name"):
+    if not cfg or cfg.get("url") != url or args.name and args.name != cfg.get("name") or args.key:
         name = args.name or socket.gethostname().split(".")[0]
-        cfg = pair(url, name, not args.no_browser)
+        same = cfg and cfg.get("url") == url
+        cfg = pair_with_key(url, name, args.key, cfg["token"] if same else None) if args.key else pair(url, name, not args.no_browser)
         write_config(cfg)
     install_service()
     gpus = f", GPUs: {', '.join(sp['gpus'])}" if sp["gpus"] else ""
@@ -357,6 +429,7 @@ def add_commands(sub):
     sp = sub.add_parser("host", help="this computer as a Tule machine host: tule host up | status | down")
     hs = sp.add_subparsers(dest="host_cmd", required=True)
     up = hs.add_parser("up", help="pair this computer and install its service")
+    up.add_argument("--key", help="the one-time key from Settings → Your computers (else: approve a code in the browser)")
     up.add_argument("--name", help="the computer's name in Tule (default: its hostname)")
     up.add_argument("--url", help=f"the Tule site (default {DEFAULT_URL})")
     up.add_argument("--no-browser", action="store_true")

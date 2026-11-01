@@ -215,6 +215,7 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
   const a = accounts(env);
   let message: string | undefined;
   let newKey: string | undefined;
+  let hostKey: string | undefined;
   let rpError: string | undefined;
   if (req.method === "POST") {
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403, user);
@@ -241,6 +242,8 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
       const r = await ops.addSshKey(env, user, f("key"));
       message = r.error ? undefined : "SSH key added.";
       if (r.error) rpError = undefined, (message = `${r.error}${r.hint ? ` (${r.hint})` : ""}`);
+    } else if (action === "hosts/new") {
+      hostKey = (await a.createHostKey(user.id)).key;
     } else if (action === "hosts/remove") {
       const r = await ops.removeHost(env, user, f("id"));
       message = r.error ? String(r.error) : `${r.removed} removed.`;
@@ -264,6 +267,7 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
     usage: await a.usage(user.id),
     quota: Number(env.CPU_HOURS_MONTH || 100),
     newKey,
+    hostKey,
     message,
     origin: env.PUBLIC_URL || url.origin,
   });
@@ -297,6 +301,19 @@ async function route(req: Request, env: Env): Promise<Response> {
   const auth = await authRoutes(req, env, url);
   if (auth) return auth;
   if (path === "/api/device/code" || path === "/api/device/token") return deviceApi(req, env, path.split("/").pop()!);
+  // a computer joins with the one-time key from Settings (install.sh runs `tule host up --key`)
+  if (path === "/api/hosts/pair" && req.method === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { key?: unknown; name?: unknown; token?: unknown };
+    if (typeof b.key !== "string" || !b.key.startsWith("tulep_")) return error("expected {key: \"tulep_…\", name}", 400, "copy the command from Settings → Your computers");
+    return reply(await accounts(env).pairHost(b.key, typeof b.name === "string" ? b.name : "computer", typeof b.token === "string" ? b.token : undefined));
+  }
+  // the one command that adds a computer: curl -fsSL <origin>/install.sh | sh -s -- <key>
+  if (path === "/install.sh") {
+    const r = await env.ASSETS.fetch(new Request(new URL("/install/install.sh", url)));
+    if (!r.ok) return error("install.sh is missing from this deploy", 500);
+    const text = (await r.text()).replaceAll("__TULE_URL__", env.PUBLIC_URL || url.origin);
+    return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+  }
   // a computer's `tule host run` service, by its host token
   if (path === "/api/hosts/connect") {
     if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error("expected a WebSocket", 426);
