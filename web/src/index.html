@@ -8,17 +8,12 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header>
-      <a class="brand" href="/" title="Your projects"><img src="/favicon.svg" alt="" /><b>tule</b></a>
-      <div class="actions">
-        <span id="machine" class="machine" data-state="unknown" title="The project's machine"><span class="dot"></span><span id="machine-text">connecting…</span></span>
-      </div>
-    </header>
     <main>
       <aside id="outputs" aria-label="Outputs">
         <div class="project-head">
-          <a class="back" href="/"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>Projects</a>
+          <a class="back" href="/" title="Your projects"><img class="mark" src="/favicon.svg" alt="" /><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>Projects</a>
           <div id="project-name" class="project-name"></div>
+          <span id="machine" class="machine" data-state="unknown" title="The project's machine"><span class="dot"></span><span id="machine-text">connecting…</span></span>
         </div>
         <div class="outputs-head">Outputs</div>
         <div id="tab-outputs" class="side-pane">

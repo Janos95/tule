@@ -1294,7 +1294,9 @@ main {
 }
 
 /* the sidebar's top: back to your projects, and this project's name */
-.project-head { flex: none; padding: 10px 10px 4px; }
+.project-head { flex: none; padding: 12px 12px 6px; }
+.project-head .mark { width: 20px; height: 20px; margin-right: 6px; }
+.project-head .machine { margin-top: 2px; font-size: 12px; }
 .project-head .back {
   display: inline-flex;
   align-items: center;
@@ -1308,7 +1310,7 @@ main {
 }
 .project-head .back:hover { color: var(--text); }
 .project-head .back svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.project-name { margin-top: 4px; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-name { margin-top: 8px; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .machine {
   display: inline-flex;
