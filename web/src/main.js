@@ -59,7 +59,7 @@ const state = {
   shown: null, // the key of what is drawn (output name and file hashes)
   frame: 0,
   meshes: [], // what is drawn
-  record: null, // what is drawn, for an annotation: {name, kind, title, files, frame}
+  record: null, // what is drawn, for an annotation: {name, kind, title, files, frame, snapshot}
 };
 const meshes = new Map(); // hash -> Promise<parts>
 const pending = new Map(); // rid -> {resolve, reject, raw: bytes wanted as they are}
