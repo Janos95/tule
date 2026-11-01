@@ -23,10 +23,17 @@ Wire protocol on the one WebSocket (text frames are JSON, binary frames are
                 {"t": "ssh-close", "sid": n}
                 {"t": "mesh-error", "rid": n, "error": "..."}
                 {"t": "beat"} every 30 s
+                {"t": "ready", "snapshot": id, "files": n, "restoreMs": ms}  /workspace is restored
+                {"t": "reply", "rid": n, ...}  the answer to stop / snapshot / restore
+                {"t": "res", "rid": n, ...}  the answer to a viewer's request
+                {"t": "broadcast", ...}  an event for every viewer
                 binary kind 1: SSH bytes for stream id; kind 2: a mesh for request id
   DO -> agent   {"t": "config", "keys": [...], "hostKey": {...} | null}
                 {"t": "ssh-open", "sid": n} / {"t": "ssh-close", "sid": n}
                 {"t": "mesh", "rid": n, "path": "bracket/bracket.step", "hash": "..."}
+                {"t": "stop" | "snapshot", "rid": n}  save now (stop: the machine is going away)
+                {"t": "restore", "rid": n, "id": "..."}  make /workspace match a snapshot
+                {"t": "req", "rid": n, "op": "...", "args": {...}}  a viewer's request (REQUESTS)
                 binary kind 1: SSH bytes for stream id
 """
 
@@ -37,6 +44,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -44,11 +52,15 @@ import time
 
 import websockets
 
+from workspace import Api, Workspace
+
 VERSION = 1
 SSH, MESH = 1, 2
 WORKSPACE = os.environ.get("TULE_WORKSPACE", "/workspace")
 OUTPUTS = os.path.join(WORKSPACE, "outputs")
 ETC = os.environ.get("TULE_ETC", "/etc/tule")
+TEMPLATE = os.environ.get("TULE_TEMPLATE", "/opt/tule/template")
+BOOT_LOG = os.environ.get("TULE_BOOT_LOG", "/var/log/tule-boot.log")
 SSHD_PORT = int(os.environ.get("TULE_SSHD_PORT", "22"))
 GEOMETRY = (".step", ".stp", ".stl")
 STARTED = int(time.time() * 1000)
@@ -317,6 +329,9 @@ class Agent:
         self.outputs = Outputs(OUTPUTS)
         self.streams: dict[int, Stream] = {}
         self.ws = None
+        self.workspace = Workspace(WORKSPACE, Api(url, project, token), log=lambda *a: log(*a))
+        self.lock = asyncio.Lock()  # one snapshot or restore at a time
+        self.booted: dict | None = None  # the ready message, once /workspace is restored
 
     async def run(self):
         delay = 1.0
@@ -359,10 +374,19 @@ class Agent:
         m = json.loads(msg)
         t = m.get("t")
         if t == "config":
+            if self.booted is None:
+                async with self.lock:
+                    self.booted = await asyncio.to_thread(self.boot)
+                asyncio.create_task(self.sync())
             new = await asyncio.to_thread(self.sshd.configure, m.get("keys", []), m.get("hostKey"))
             if new:
                 await self.send({"t": "hostkey", **new})
             self.outputs.stamp = None  # resend the index
+            await self.send(self.booted)
+        elif t in ("stop", "snapshot", "restore"):
+            asyncio.create_task(self.command(m))
+        elif t == "req":
+            asyncio.create_task(self.request(m))
         elif t == "ssh-open":
             self.streams[m["sid"]] = Stream()
             asyncio.create_task(self.ssh(m["sid"]))
@@ -403,6 +427,89 @@ class Agent:
         except Exception as e:  # report every failure to the viewer
             await self.send({"t": "mesh-error", "rid": rid, "error": f"{type(e).__name__}: {e}"})
 
+    def boot(self) -> dict:
+        """Restores the newest snapshot, or starts a new project from the template."""
+        t0 = time.time()
+        m = self.workspace.api.manifest("latest")
+        sid, n = None, 0
+        if m is not None:
+            sid = m.get("id")
+            n = self.workspace.restore(m)
+        else:
+            new_project(WORKSPACE)
+            sid = self.workspace.snapshot("new project", force=True)
+        os.makedirs(OUTPUTS, exist_ok=True)
+        ms = int((time.time() - t0) * 1000)
+        log(f"workspace ready: snapshot {sid}, {n} files written, {ms} ms")
+        install_packages(WORKSPACE)
+        return {"t": "ready", "snapshot": sid, "files": n, "restoreMs": ms}
+
+    async def sync(self):
+        """Saves /workspace a few seconds after it stops changing, and at least every minute while it changes."""
+        stamp = await asyncio.to_thread(self.workspace.stamp)
+        changed_at, saved_at, dirty = 0.0, time.time(), False
+        while True:
+            await asyncio.sleep(2)
+            s = await asyncio.to_thread(self.workspace.stamp)
+            now = time.time()
+            if s != stamp:
+                stamp, changed_at, dirty = s, now, True
+            if dirty and (now - changed_at >= 3 or now - saved_at >= 60):
+                try:
+                    async with self.lock:
+                        await asyncio.to_thread(self.workspace.snapshot, "change")
+                    dirty, saved_at = False, now
+                except Exception as e:  # keep the changes dirty; the next round retries
+                    log("snapshot failed:", repr(e))
+
+    async def command(self, m: dict):
+        t, rid = m["t"], m.get("rid")
+        if self.booted is None:
+            await self.send({"t": "reply", "rid": rid, "error": "the workspace is not restored yet"})
+            return
+        try:
+            async with self.lock:
+                if t == "restore":
+                    await asyncio.to_thread(self.workspace.snapshot, "before restore")
+                    manifest = await asyncio.to_thread(self.workspace.api.manifest, m["id"])
+                    if manifest is None:
+                        raise RuntimeError(f"no snapshot {m['id']}")
+                    n = await asyncio.to_thread(self.workspace.restore, manifest)
+                    reply = {"snapshot": m["id"], "files": n}
+                else:
+                    sid = await asyncio.to_thread(self.workspace.snapshot, t if t == "stop" else m.get("reason", "manual"))
+                    reply = {"snapshot": sid or self.workspace.last_id, "changed": sid is not None}
+            await self.send({"t": "reply", "rid": rid, **reply})
+        except Exception as e:
+            await self.send({"t": "reply", "rid": rid, "error": f"{type(e).__name__}: {e}"})
+
+    async def final(self):
+        """SIGTERM: save, then exit (never before /workspace was restored: that would save an empty project)."""
+        if self.booted is None:
+            os._exit(0)
+        try:
+            async with self.lock:
+                await asyncio.wait_for(asyncio.to_thread(self.workspace.snapshot, "shutdown"), 600)
+        except Exception as e:
+            log("final snapshot failed:", repr(e))
+        os._exit(0)
+
+    async def request(self, m: dict):
+        """A viewer's request ({t: "req", rid, op, args}): REQUESTS[op](self, args) runs in a
+        thread and returns a dict (sent as {t: "res", rid, ...}) or bytes (binary kind 2)."""
+        rid, op = m.get("rid"), m.get("op")
+        fn = REQUESTS.get(op)
+        try:
+            if fn is None:
+                raise ValueError(f"unknown request {op!r}; known: {', '.join(sorted(REQUESTS))}")
+            out = await asyncio.to_thread(fn, self, m.get("args") or {})
+            if isinstance(out, (bytes, bytearray)):
+                await self.send(frame(MESH, rid, bytes(out)))
+            else:
+                await self.send({"t": "res", "rid": rid, **(out or {})})
+        except Exception as e:  # every failure goes back to the page
+            await self.send({"t": "res", "rid": rid, "error": f"{type(e).__name__}: {e}"})
+
     async def beat(self):
         """Keeps the Durable Object awake (protocol pings do not wake it), so the platform does not stop the machine."""
         while True:
@@ -418,12 +525,56 @@ class Agent:
             await asyncio.sleep(0.5)
 
 
+def _ping(agent: "Agent", args: dict) -> dict:
+    return {"pong": True, "workspace": WORKSPACE}
+
+
+# viewer requests by op (see Agent.request)
+REQUESTS = {"ping": _ping}
+
+
+def new_project(root: str):
+    """A new project: the template (AGENTS.md, CLAUDE.md, tule.toml, main.py) and a git repository."""
+    os.makedirs(root, exist_ok=True)
+    if os.path.isdir(TEMPLATE):
+        shutil.copytree(TEMPLATE, root, dirs_exist_ok=True)
+    if shutil.which("git") and not os.path.exists(os.path.join(root, ".git")):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "Tule", "GIT_AUTHOR_EMAIL": "tule@localhost",
+               "GIT_COMMITTER_NAME": "Tule", "GIT_COMMITTER_EMAIL": "tule@localhost"}
+        for cmd in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"], ["git", "commit", "-q", "-m", "New Tule project"]):
+            subprocess.run(cmd, cwd=root, env=env, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def install_packages(root: str):
+    """pip packages from tule.toml, in the background (logged to BOOT_LOG)."""
+    try:
+        import tomllib
+
+        with open(os.path.join(root, "tule.toml"), "rb") as f:
+            pkgs = tomllib.load(f).get("packages", {}).get("pip", [])
+    except (OSError, ValueError, ImportError):
+        return
+    if not pkgs:
+        return
+    try:
+        out = open(BOOT_LOG, "a")
+    except OSError:
+        out = subprocess.DEVNULL
+    subprocess.Popen([sys.executable, "-m", "pip", "install", "--quiet", *pkgs], stdout=out, stderr=out)
+    log("installing from tule.toml:", " ".join(pkgs))
+
+
 def main():
     url, project, token = (os.environ.get(k) for k in ("TULE_URL", "TULE_PROJECT", "TULE_JOIN_TOKEN"))
     if not (url and project and token):
         sys.exit("tule-agent: set TULE_URL, TULE_PROJECT and TULE_JOIN_TOKEN")
-    os.makedirs(OUTPUTS, exist_ok=True)
-    asyncio.run(Agent(url, project, token).run())
+
+    async def run():
+        agent = Agent(url, project, token)
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: asyncio.ensure_future(agent.final()))
+        await agent.run()
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

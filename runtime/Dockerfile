@@ -16,7 +16,10 @@ RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy websockets==17.4 py
 
 COPY python /opt/tule/python
 RUN pip install --no-cache-dir --no-deps /opt/tule/python
-COPY runtime/tule_agent.py /opt/tule/tule_agent.py
+COPY templates/project /opt/tule/template
+COPY runtime/tule_agent.py runtime/workspace.py /opt/tule/
+RUN git config --system init.defaultBranch main \
+ && git config --system user.name "Tule agent" && git config --system user.email "agent@tule.local"
 
 ENV TULE_WORKSPACE=/workspace PYTHONUNBUFFERED=1
 WORKDIR /workspace

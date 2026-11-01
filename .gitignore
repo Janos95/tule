@@ -5,3 +5,4 @@ __pycache__/
 /python/dist/
 /scratch/
 /.venv/
+/.claude/worktrees/

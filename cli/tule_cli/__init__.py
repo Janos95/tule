@@ -5,6 +5,7 @@
     tule ssh [-p bracket] [cmd ...]          a shell or a command on the machine
     tule ssh --config [-p bracket]           write ~/.ssh/config so plain `ssh tule-bracket` works
     tule proxy tule-bracket                  the SSH ProxyCommand: stdin/stdout over the WebSocket tunnel
+    tule snapshot | snapshots | restore <id>   save /workspace now, list snapshots, go back to one
     tule status | down | open | join | keys add <file>
 
 The project comes from -p, else $TULE_PROJECT, else the last one used.
@@ -309,6 +310,26 @@ def cmd_open(args):
         webbrowser.open(link)
 
 
+def cmd_snapshot(args):
+    p = project_of(args, load())
+    r = api("POST", f"/api/projects/{p}/snapshot")
+    print(f"tule: {p}: snapshot {r['snapshot']}" + ("" if r.get("changed", True) else " (nothing changed since)"))
+
+
+def cmd_snapshots(args):
+    p = project_of(args, load())
+    r = api("GET", f"/api/projects/{p}/snapshots?limit={args.limit}")
+    for s in r["snapshots"]:
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s["at"] / 1000))
+        print(f"{s['id']}  {when}  {s['files']:>6} files  {s['bytes'] / 2**20:>9.1f} MiB  {s['reason']}")
+
+
+def cmd_restore(args):
+    p = project_of(args, load())
+    r = api("POST", f"/api/projects/{p}/restore", {"id": args.id})
+    print(f"tule: {p}: /workspace is now snapshot {r['snapshot']} ({r['files']} files written; the state before is saved too)")
+
+
 def cmd_keys(args):
     p = project_of(args, load())
     key = open(os.path.expanduser(args.file)).read()
@@ -343,6 +364,11 @@ def main(argv=None):
     sp = add("open", cmd_open, "open the viewer")
     sp.add_argument("--print", action="store_true", help="only print the link")
     add("join", cmd_join, "a join token for a machine you start yourself")
+    add("snapshot", cmd_snapshot, "save /workspace now")
+    sp = add("snapshots", cmd_snapshots, "list the snapshots of /workspace, newest first")
+    sp.add_argument("--limit", type=int, default=20)
+    sp = add("restore", cmd_restore, "make /workspace match a snapshot (saves the current state first)")
+    sp.add_argument("id")
     sp = add("keys", cmd_keys, "add an SSH public key: tule keys add ~/.ssh/id_ed25519.pub")
     sp.add_argument("action", choices=["add"])
     sp.add_argument("file")

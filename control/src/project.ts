@@ -10,8 +10,21 @@
 // gets meshes as [rid u32][payload] with its own request id.
 //
 // Stored: the project's state (machine, timings, join token hash), its SSH
-// keys and host key (so the host key survives restarts), and the last
-// outputs index (so the viewer lists outputs while the machine is down).
+// keys and host key (so the host key survives restarts), the last outputs
+// index (so the viewer lists outputs while the machine is down) and the index
+// of workspace snapshots ("snap:<id>": when, why, how many files and bytes;
+// the manifests and chunks are in R2, see index.ts).
+//
+// Viewer requests to the machine are relayed generically, so new ones need no
+// change here: the page sends {t: "req", rid, op, args}, the agent gets
+// {t: "req", rid, op, args} (with the project's own rid) and answers
+// {t: "res", rid, ...} (or binary kind 2 for bytes), which the page gets back
+// with its rid. {t: "broadcast", ...} from the agent goes to every page as
+// {t: "event", ...}. ("mesh" requests predate this and work the same way.)
+//
+// Commands for the agent (stop, snapshot, restore) carry a request id; the
+// agent answers {t: "reply", rid, ...}. A machine is "running" once its agent
+// has restored /workspace and sent {t: "ready"}.
 import { DurableObject } from "cloudflare:workers";
 
 /** Machine names (DESIGN.md) to Cloudflare instance types. */
@@ -32,10 +45,16 @@ type State = {
   upAt?: number; // start() called
   helloAt?: number; // the agent connected after the last start
   agentStarted?: number; // the agent process started (its clock)
+  readyAt?: number; // the agent restored /workspace
+  restoreMs?: number;
   lastActive?: number;
   stoppedAt?: number;
 };
 type HostKey = { private: string; public: string };
+type Snapshot = { id: string; at: number; reason: string; files: number; bytes: number };
+
+/** A snapshot's manifest in R2. */
+export const snapshotKey = (p: string, id: string) => `projects/${p}/snapshots/${id}.json`;
 type Result = Record<string, unknown>;
 
 const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -58,6 +77,7 @@ export class Project extends DurableObject<Env> {
   keys: string[] = [];
   outputs: unknown[] = [];
   pending = new Map<number, { ws: WebSocket; rid: number }>(); // mesh requests in flight
+  asks = new Map<number, (reply: Result) => void>(); // commands to the agent awaiting a reply
   lastSaved = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -104,16 +124,20 @@ export class Project extends DurableObject<Env> {
     const agent = !!this.agent();
     const running = !!c?.running;
     const s = this.state;
+    const ready = agent && !!s.readyAt && !!s.helloAt && s.readyAt >= s.helloAt;
     const hostKey = await this.ctx.storage.get<HostKey>("hostKey");
     return {
       project: name,
       machine: running || agent ? (s.machine ?? null) : null,
-      state: agent ? "running" : running ? "starting" : "stopped",
+      state: ready ? "running" : agent || running ? "starting" : "stopped",
       sessions: this.sessions(),
       // the cold start: start() to the agent's hello, and the agent process's own start
       startedAt: s.upAt ?? null,
       coldStartMs: s.helloAt && s.upAt && s.helloAt >= s.upAt ? s.helloAt - s.upAt : null,
       agentStartMs: s.agentStarted && s.upAt && s.agentStarted >= s.upAt ? s.agentStarted - s.upAt : null,
+      readyMs: s.readyAt && s.upAt && s.readyAt >= s.upAt ? s.readyAt - s.upAt : null,
+      restoreMs: s.restoreMs ?? null,
+      snapshot: (await this.latestSnapshot()) ?? null,
       hostKey: hostKey?.public ?? null,
       keys: this.keys.length,
       outputs: this.outputs.length,
@@ -134,11 +158,11 @@ export class Project extends DurableObject<Env> {
       };
     if (c.running) {
       if (this.state.machine === machine) return this.status(name);
-      // resize: the workspace does not move yet (milestone 3), so this is a fresh machine
+      // resize: the old machine saves /workspace, the new one restores it
       await this.stopMachine("resize");
     }
     const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
-    this.state = { ...this.state, machine, joinHash: await sha256(token), upAt: Date.now(), helloAt: undefined, agentStarted: undefined, lastActive: Date.now() };
+    this.state = { ...this.state, machine, joinHash: await sha256(token), upAt: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lastActive: Date.now() };
     await this.save();
     c.start({
       image: c.images.cpu,
@@ -160,7 +184,7 @@ export class Project extends DurableObject<Env> {
   async join(name: string): Promise<Result> {
     this.state.name = name;
     const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
-    this.state = { ...this.state, machine: this.ctx.container?.running ? this.state.machine : "external", joinHash: await sha256(token), upAt: Date.now(), helloAt: undefined, agentStarted: undefined };
+    this.state = { ...this.state, machine: this.ctx.container?.running ? this.state.machine : "external", joinHash: await sha256(token), upAt: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined };
     await this.save();
     return { project: name, joinToken: token, env: { TULE_PROJECT: name, TULE_JOIN_TOKEN: token } };
   }
@@ -178,8 +202,72 @@ export class Project extends DurableObject<Env> {
     return { project: name, keys: this.keys.length };
   }
 
+  /** Whether `token` is the current machine's join token. */
+  async checkJoin(token: string): Promise<boolean> {
+    return !!this.state.joinHash && (await sha256(token)) === this.state.joinHash;
+  }
+
+  // ------------------------------------------------------------ snapshots
+
+  async addSnapshot(name: string, reason: string, manifest: Record<string, unknown>): Promise<Result> {
+    const id = `${Date.now().toString(36).padStart(9, "0")}-${b64url(crypto.getRandomValues(new Uint8Array(3))).toLowerCase().replace(/[^0-9a-z]/g, "0")}`;
+    const files = (manifest.files ?? {}) as Record<string, { s?: number }>;
+    const rec: Snapshot = {
+      id,
+      at: Date.now(),
+      reason: reason.slice(0, 80),
+      files: Object.keys(files).length,
+      bytes: Object.values(files).reduce((n, f) => n + (Number(f.s) || 0), 0),
+    };
+    await this.env.WORKSPACES.put(snapshotKey(name, id), JSON.stringify({ ...manifest, id }), {
+      httpMetadata: { contentType: "application/json" },
+    });
+    await this.ctx.storage.put({ [`snap:${id}`]: rec, latestSnapshot: id });
+    this.touch();
+    return { id };
+  }
+
+  async snapshots(limit = 50): Promise<Result> {
+    const m = await this.ctx.storage.list<Snapshot>({ prefix: "snap:", reverse: true, limit: Math.min(Math.max(limit, 1), 500) });
+    return { snapshots: [...m.values()] };
+  }
+
+  async latestSnapshot(): Promise<string | undefined> {
+    return this.ctx.storage.get<string>("latestSnapshot");
+  }
+
+  /** Sends a command to the agent and waits for its reply. */
+  ask(msg: Result, timeoutMs: number): Promise<Result> {
+    const agent = this.agent();
+    if (!agent) return Promise.resolve({ error: "the project's machine is not running", hint: "start it with tule up" });
+    const rid = crypto.getRandomValues(new Uint32Array(1))[0];
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.asks.delete(rid);
+        resolve({ error: `the machine did not answer ${String(msg.t)} within ${timeoutMs / 1000} s` });
+      }, timeoutMs);
+      this.asks.set(rid, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      agent.send(JSON.stringify({ ...msg, rid }));
+    });
+  }
+
+  async command(name: string, msg: Result): Promise<Result> {
+    this.state.name ??= name;
+    const r = await this.ask(msg, 600_000);
+    this.touch();
+    return { project: name, ...r };
+  }
+
   async stopMachine(why: string) {
     const c = this.ctx.container;
+    if (this.agent() && this.state.readyAt) {
+      // the final snapshot: what the machine saved is what the next one restores
+      const r = await this.ask({ t: "stop", reason: why }, 120_000);
+      if (r.error) console.log(JSON.stringify({ event: "final-snapshot", project: this.state.name, error: r.error }));
+    }
     for (const ws of this.ctx.getWebSockets("agent")) ws.close(4001, `machine stopped (${why})`);
     for (const ws of this.ctx.getWebSockets("ssh")) ws.close(4001, `machine stopped (${why})`);
     if (c?.running) {
@@ -254,14 +342,24 @@ export class Project extends DurableObject<Env> {
       return;
     }
     if (tags.includes("view") && typeof msg === "string") {
-      let m: { t?: string; rid?: number; path?: string; hash?: string };
+      let m: { t?: string; rid?: number; path?: string; hash?: string; op?: unknown; args?: unknown };
       try {
         m = JSON.parse(msg);
       } catch {
         return;
       }
-      if (m.t !== "mesh" || typeof m.rid !== "number" || typeof m.path !== "string") return;
+      if (typeof m.rid !== "number") return;
       const agent = this.agent();
+      if (m.t === "req") {
+        const r = m as { rid: number; op?: unknown; args?: unknown };
+        if (!agent) return ws.send(JSON.stringify({ t: "res", rid: r.rid, error: "the project's machine is not running (tule up)" }));
+        const grid = crypto.getRandomValues(new Uint32Array(1))[0];
+        this.pending.set(grid, { ws, rid: r.rid });
+        agent.send(JSON.stringify({ t: "req", rid: grid, op: r.op, args: r.args ?? {} }));
+        this.touch();
+        return;
+      }
+      if (m.t !== "mesh" || typeof m.path !== "string") return;
       if (!agent)
         return ws.send(JSON.stringify({ t: "mesh-error", rid: m.rid, error: "the project's machine is not running (tule up)" }));
       const grid = crypto.getRandomValues(new Uint32Array(1))[0];
@@ -328,10 +426,41 @@ export class Project extends DurableObject<Env> {
         if (s) s.close(1000, "session ended");
         break;
       }
+      case "res": {
+        const p = this.pending.get(Number(m.rid));
+        this.pending.delete(Number(m.rid));
+        if (p && p.ws.readyState === WebSocket.OPEN) p.ws.send(JSON.stringify({ ...m, rid: p.rid }));
+        break;
+      }
+      case "broadcast": {
+        const { t: _t, ...rest } = m;
+        const msg = JSON.stringify({ ...rest, t: "event" });
+        for (const v of this.ctx.getWebSockets("view")) {
+          try {
+            v.send(msg);
+          } catch {
+            // closing
+          }
+        }
+        break;
+      }
       case "mesh-error": {
         const p = this.pending.get(Number(m.rid));
         this.pending.delete(Number(m.rid));
         if (p) p.ws.send(JSON.stringify({ t: "mesh-error", rid: p.rid, error: m.error }));
+        break;
+      }
+      case "ready":
+        this.state.readyAt = Date.now();
+        this.state.restoreMs = typeof m.restoreMs === "number" ? m.restoreMs : undefined;
+        await this.save();
+        this.broadcast();
+        break;
+      case "reply": {
+        const done = this.asks.get(Number(m.rid));
+        this.asks.delete(Number(m.rid));
+        const { t: _t, rid: _rid, ...rest } = m;
+        done?.(rest);
         break;
       }
       case "beat":

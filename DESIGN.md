@@ -137,8 +137,9 @@ interface Backend {
 Every machine runs the same entrypoint, so nothing above the backend cares
 where it runs:
 
-1. `tule-agent` starts and restores `/workspace` from R2 (presigned URLs
-   from the Project Durable Object; no storage credentials in the machine).
+1. `tule-agent` starts and restores `/workspace` from R2 through the control
+   plane (chunk and snapshot endpoints that take the machine's join token;
+   no storage credentials in the machine).
 2. It dials a WebSocket *out* to the Project Durable Object with the join
    token, and from then on carries SSH sessions, workspace sync, output
    change events, logs and heartbeats over it. No inbound ports.
@@ -178,10 +179,27 @@ machine is rebuilt from the image every boot.
 - **Everything under `/workspace` is the project:** code, uploaded data
   (supplier STEP files, load tables, material sheets, scans), notes, results,
   a virtualenv if the agent wants one.
-- **Saved continuously** to R2 as content-addressed files: on change (debounced),
-  periodically, on stop, and on `tule snapshot`. Unchanged files are never
-  uploaded twice, so snapshots are cheap; the project page can browse and
-  restore any snapshot.
+- **Saved continuously** to R2 as content-addressed files: on change (3 s
+  after the last change, at least every minute while it keeps changing), on
+  stop (the Project Durable Object asks for a final snapshot before it stops
+  the container; SIGTERM does the same), and on `tule snapshot`. Unchanged
+  files are never uploaded twice, so snapshots are cheap; `tule snapshots`
+  lists them and `tule restore <id>` goes back to one (saving the current
+  state first). As built (milestone 3, `runtime/workspace.py`):
+  - a snapshot is a manifest: per file its chunk hashes (sha256 of up to
+    16 MiB), size, executable bit and mtime; symlinks by target; empty
+    directories by name. Chunks live once per project at
+    `projects/<p>/blobs/<sha256>`, manifests at
+    `projects/<p>/snapshots/<id>.json`, the index (when, why, files, bytes)
+    in the Project Durable Object;
+  - the machine moves chunks through the Worker (it checks each chunk's
+    hash), so it needs no storage credentials;
+  - a machine is "running" only once its agent has restored `/workspace`
+    (or written the template, for a new project): SSH never sees a half
+    restored project;
+  - ignored: `__pycache__`, `.pytest_cache` and the patterns in
+    `.tuleignore`;
+  - not yet: garbage collection of unreferenced chunks, a size limit.
 - **One writer at a time:** the Project Durable Object holds the workspace
   lock; the machine that owns it syncs, GPU functions get copies.
 - **Git inside:** `/workspace` is a git repository for the code, so there are
@@ -277,6 +295,11 @@ request `id`.
   tessellates it (`import_step` + `tessellate`, cached by hash) and answers
   with positions, normals, indices, B-rep face ids, B-rep edge segments,
   name, color and tags (as face ids).
+- **Viewer requests:** the page sends `{t: "req", rid, op, args}`; the
+  Project Durable Object relays it to the agent unchanged (with its own
+  request id) and the answer back, so a new request (annotations, the files
+  browser) is a handler in `tule_agent.py` (`REQUESTS`) and code in the page,
+  nothing in between. `{t: "broadcast"}` from the agent reaches every page.
 - **Auth (until milestone 4):** one secret, `DEV_TOKEN`, for the CLI and the
   viewer (`tule open` passes it in the link's fragment); machines use their
   join token, which the Durable Object stores hashed and replaces on every
@@ -420,9 +443,11 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   stable ids and facts for agents. Seam edges are never selected.
 - **Roles (provenance):** feature results name their faces
   (`boss.faces["side"]`, `box(...).faces["top"]`, `fillet`, `inner`, …);
-  OCCT's builder history (`Modified`, `Generated`, `IsDeleted`) carries them
-  through later operations, so `part.fillet(boss.edges["bottom"], 2)` finds
-  the boss's edge after a union. Roles do not carry through Booleans as names
+  OCCT's builder history (`Modified`, `Generated`) carries them through later
+  operations, so `part.fillet(boss.edges["bottom"], 2)` finds the boss's
+  edge after a union. A sub-shape survives while it or one of its images is
+  in the result; `IsDeleted` is not used (fillet and chamfer report every
+  untouched edge as deleted). Roles do not carry through Booleans as names
   on the result (they would collide); the feature's own selection resolves.
 - **Tags:** `plate.tag("load", plate.faces["top"])`, `part.faces["load"]`;
   they flow through every operation, are written into STEP files, and are
@@ -496,6 +521,8 @@ tule/
    transforms, fillet/chamfer/shell, queries, provenance, tags, parameters,
    measurements, STEP (with names, colors, tags) and mesh export.
 3. **Workspace:** R2 snapshots, sync, lock, restore; the project template.
+   **Done** (2026-11-01): see "The workspace"; restoring a small project
+   takes about 0.2 s.
 4. **Accounts and connector:** Google sign-in, MCP server with OAuth, device
    codes for the CLI, API and SSH keys, quotas; skills, `tule docs`, golden
    paths, the Claude plugin.

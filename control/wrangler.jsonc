@@ -23,6 +23,8 @@
     }
   ],
   "durable_objects": { "bindings": [{ "name": "PROJECT", "class_name": "Project" }] },
+  // workspace snapshots: content-addressed chunks and manifests per project
+  "r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "tule-workspaces" }],
   "exports": { "Project": { "type": "durable-object", "storage": "sqlite" } },
   // DEV_TOKEN (a secret): the one credential of the spike, until accounts and
   // sign-in (milestone 4)

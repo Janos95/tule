@@ -1,0 +1,5 @@
+# Tule project settings.
+
+[packages]
+# installed with pip at every boot (the heavy stack is in the image)
+pip = []
