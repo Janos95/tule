@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tule</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="https://github.com/Janos95/tule" target="_blank" rel="noopener"><img src="/favicon.svg" alt="" /><b>tule</b></a>
+      <span id="project-title"></span>
+      <div class="actions">
+        <span id="machine" class="machine" data-state="unknown" title="The project's machine"><span class="dot"></span><span id="machine-text">connecting…</span></span>
+      </div>
+    </header>
+    <main>
+      <aside id="outputs" aria-label="Outputs">
+        <div class="outputs-head">Outputs</div>
+        <div id="output-list" role="listbox" aria-label="Outputs"></div>
+        <p id="outputs-empty" class="outputs-empty" hidden>Nothing in <code>outputs/</code> yet. Write a STEP or STL file to <code>/workspace/outputs/&lt;name&gt;/</code> on the machine.</p>
+      </aside>
+      <section id="right">
+        <div id="stage">
+          <div id="viewer"></div>
+          <div id="hud" class="hud">
+            <button id="parts-toggle" class="toggle" title="Parts (P)" aria-controls="parts" aria-expanded="false" hidden>
+              <svg viewBox="0 0 16 16"><path d="M8 2 14 5 8 8 2 5zM2 8l6 3 6-3M2 11l6 3 6-3" /></svg><span class="label">Parts</span>
+            </button>
+            <button id="wire" class="toggle on" title="CAD edges (W)" aria-pressed="true">
+              <svg viewBox="0 0 16 16"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5zM8 1.5V8m0 0 6-3M8 8 2 5m6 3v6.5" /></svg>Edges
+            </button>
+            <button id="fit" title="Fit view (F, or double-click)">
+              <svg viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" /></svg>Fit
+            </button>
+          </div>
+          <div id="parts" role="tree" aria-label="Parts" hidden></div>
+          <div id="status" class="status"></div>
+          <div id="pick" class="pick-label" hidden></div>
+          <div id="counts"></div>
+        </div>
+        <footer id="sequence" hidden>
+          <button id="play" title="Play the frames" aria-label="Play the frames"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z" /></svg></button>
+          <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Frame" />
+          <span id="frame"></span>
+        </footer>
+      </section>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

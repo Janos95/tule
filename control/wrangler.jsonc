@@ -1,0 +1,30 @@
+{
+  // Tule's control plane (see DESIGN.md): the viewer's static files, the CLI
+  // API and the tunnel endpoints, one Project Durable Object per project that
+  // owns the project's machine (a Cloudflare Container it starts per run).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tule",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-30",
+  "workers_dev": true,
+  // web/dist (npm --prefix ../web run build); /p/<project> is the viewer page
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  // the machine image: Durable Object scheduling, so each start picks its
+  // instance size (cpu-1 .. cpu-4) and passes its own join token
+  "containers": [
+    {
+      "class_name": "Project",
+      "scheduling_policy": "durable_object",
+      "images": { "cpu": { "dockerfile": "../runtime/Dockerfile", "build_context": ".." } }
+    }
+  ],
+  "durable_objects": { "bindings": [{ "name": "PROJECT", "class_name": "Project" }] },
+  "exports": { "Project": { "type": "durable-object", "storage": "sqlite" } },
+  // DEV_TOKEN (a secret): the one credential of the spike, until accounts and
+  // sign-in (milestone 4)
+  "observability": { "enabled": true }
+}

@@ -117,9 +117,17 @@ interface Backend {
 }
 ```
 
-- **Cloudflare** (`cpu-1` … `cpu-4`): a Container instance bound to the
-  Project Durable Object, started with the join token in its environment.
-  Paid by Tule's Cloudflare account; users get a CPU quota.
+- **Cloudflare** (`cpu-1`, `cpu-2`, `cpu-4`): the Project Durable Object is
+  itself the container's Durable Object (the Durable Object Container API,
+  `ctx.container`, with the `durable_object` scheduling policy, in beta), so
+  each start picks the image and instance size and passes the join token in
+  the environment: `cpu-1` = `standard-2` (1 vCPU, 6 GiB, 12 GB disk), `cpu-2`
+  = `standard-3` (2 vCPU, 8 GiB), `cpu-4` = `standard-4` (4 vCPU, 12 GiB).
+  The container keeps running while the Durable Object is active; the agent's
+  heartbeat (every 30 s) keeps it active, and the Durable Object's own idle
+  check (an alarm every 5 min) stops the machine after 30 min without SSH
+  sessions or traffic. Paid by Tule's Cloudflare account; users get a CPU
+  quota.
 - **RunPod** (`gpu-<type>`): `POST` a pod to RunPod's REST API with the user's
   stored key, image `ghcr.io/janos95/tule-runtime:cuda`, the GPU type, and the
   join token in its environment. Paid from the user's RunPod balance.
@@ -244,6 +252,35 @@ outputs/
   per-project allowlist for more; no open internet.
 - Quotas: CPU machine-hours per user (Tule pays) and concurrent machines. GPU
   time is paid from the user's RunPod balance and limited by RunPod.
+
+### The tunnel (as built in milestone 1)
+
+One WebSocket from the machine carries everything (`runtime/tule_agent.py`
+has the protocol). Text frames are JSON control messages (`hello`, `config`
+with SSH keys and the host key, `outputs` with the index, `ssh-open`/
+`ssh-close`, `mesh` requests, `beat`); binary frames are `[kind u8][id
+u32][payload]`, kind 1 the bytes of SSH stream `id`, kind 2 a mesh for
+request `id`.
+
+- **SSH:** `tule proxy` opens `wss://<tule>/api/projects/<p>/ssh`; the Project
+  Durable Object gives the stream an id and asks the agent to open it; the
+  agent pipes it to sshd on `127.0.0.1:22` (bytes the client sends before
+  sshd accepts are buffered). sshd allows only keys the project knows.
+- **Host key:** the first machine of a project generates it and sends it to
+  the Durable Object, which hands it to every later machine; `tule ssh` pins
+  it in `~/.config/tule/known_hosts` (`StrictHostKeyChecking=yes`).
+- **Keys:** the CLI makes its own key (`~/.config/tule/id_ed25519`) and adds
+  it to the project the first time; `tule keys add` adds others.
+- **Outputs:** the agent polls `outputs/` (0.5 s), hashes changed files and
+  sends the index; the Durable Object stores the last index and broadcasts it
+  to viewers. A viewer asks for a file by path and hash; the agent
+  tessellates it (`import_step` + `tessellate`, cached by hash) and answers
+  with positions, normals, indices, B-rep face ids, B-rep edge segments,
+  name, color and tags (as face ids).
+- **Auth (until milestone 4):** one secret, `DEV_TOKEN`, for the CLI and the
+  viewer (`tule open` passes it in the link's fragment); machines use their
+  join token, which the Durable Object stores hashed and replaces on every
+  start.
 
 ## Interfaces
 
@@ -419,8 +456,8 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 tule/
   python/tule/        modeling API + outputs, dfm, topopt (pip package)
   python/tests/
-  cli/                the `tule` CLI (Python, pip package)
-  runtime/            Dockerfiles (cpu, cuda), tule-agent, sshd config
+  cli/                the `tule` CLI (Python, pip package `tule-cli`)
+  runtime/            Dockerfiles (cpu, later cuda), tule-agent
   control/            Worker + Durable Objects: auth, MCP, backends, tunnel
   web/                the viewer and site (from genau web/src, minus Pyodide/wasm)
   templates/project/  new-project template with AGENTS.md, CLAUDE.md, tule.toml
@@ -442,7 +479,19 @@ tule/
 1. **Spike: the round trip.** CPU runtime image with OCP and `tule-agent`; a
    Cloudflare Container per project that dials out; `tule ssh` through the
    tunnel; a STEP file written to `outputs/` appears in the copied viewer.
-   Measure cold start and image size.
+   Measure cold start and image size. **Done** (2026-11-01), measured on
+   `cpu-1`:
+   - image: 286 MB compressed, 1.2 GB on disk (VTK, which OCP links at
+     import, pruned to OCP's library closure: 639 → 315 MB; Mesa's drivers
+     removed: OCP only needs `libGL.so.1` to load);
+   - cold start, `start()` to the agent connected: 11.0 s for the first start
+     after a deploy (the host pulls the image), 1.1 s after that; `tule up`
+     plus the first `tule ssh -- true`: 2.7 s;
+   - a command over `tule ssh`: about 1.5 s; the bracket example over SSH:
+     8.7 s (mostly importing OCP and tessellating);
+   - the first mesh of the bracket for the viewer: 206 KB, 5,584 triangles.
+   Not yet: `/workspace` survives nothing (milestone 3), the idle stop is
+   untested, the viewer's token is in the WebSocket URL.
 2. **API v0** (native, pytest): primitives, profiles, sweeps, Booleans,
    transforms, fillet/chamfer/shell, queries, provenance, tags, parameters,
    measurements, STEP (with names, colors, tags) and mesh export.
@@ -461,9 +510,9 @@ tule/
 
 | Decision | Default |
 |---|---|
-| Domain | `*.workers.dev` until one is chosen |
+| Domain | `tule.genau-mcp-relay.workers.dev` (the account's workers.dev subdomain) until one is chosen |
 | Sign-in | Google, GitHub as an alternative |
-| Default machine | `cpu-1` (1 vCPU / 6 GiB), up to `cpu-4` (4 vCPU / 12 GiB) |
+| Default machine | `cpu-1` (1 vCPU / 6 GiB), also `cpu-2` (2 / 8) and `cpu-4` (4 vCPU / 12 GiB) |
 | Outbound network | package registries + per-project allowlist |
 | First GPU backend | RunPod |
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |

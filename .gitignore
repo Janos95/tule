@@ -4,3 +4,4 @@ __pycache__/
 /python/build/
 /python/dist/
 /scratch/
+/.venv/
