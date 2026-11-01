@@ -20,6 +20,7 @@
         <div class="outputs-head">Outputs</div>
         <div id="tab-outputs" class="side-pane">
           <div id="output-list" role="listbox" aria-label="Outputs"></div>
+          <div id="parts" role="tree" aria-label="Parts" hidden></div>
           <p id="outputs-empty" class="outputs-empty" hidden>Nothing in <code>outputs/</code> yet. Write a STEP or STL file to <code>/workspace/outputs/&lt;name&gt;/</code> on the machine.</p>
         </div>
       </aside>
@@ -27,9 +28,6 @@
         <div id="stage">
           <div id="viewer"></div>
           <div id="hud" class="hud">
-            <button id="parts-toggle" class="toggle" title="Parts (P)" aria-controls="parts" aria-expanded="false" hidden>
-              <svg viewBox="0 0 16 16"><path d="M8 2 14 5 8 8 2 5zM2 8l6 3 6-3M2 11l6 3 6-3" /></svg><span class="label">Parts</span>
-            </button>
             <button id="annotate-toggle" class="toggle" title="Annotate: draw and pick faces for your agent" aria-controls="annotate" aria-expanded="false">
               <svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8H2.5v-3zM9 4l3 3" /></svg><span class="label">Annotate</span>
             </button>
@@ -43,7 +41,6 @@
               <svg viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" /></svg>Fit
             </button>
           </div>
-          <div id="parts" role="tree" aria-label="Parts" hidden></div>
           <div id="marks" aria-hidden="true"></div>
           <canvas id="ink" aria-hidden="true"></canvas>
           <div id="annot-shown" class="annot-shown" hidden><span id="annot-shown-text"></span><button id="annot-shown-hide" type="button">Hide</button></div>

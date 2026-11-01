@@ -9,9 +9,7 @@
 // and across runs. They are neither drawn nor fitted, and the agent's
 // screenshot shows what the page shows. With one unnamed shape and no
 // reference there is no panel (and nothing is hidden).
-import { store } from "./store.js";
 
-const KEY_OPEN = "tule/parts-open";
 const EYE = '<svg viewBox="0 0 16 16"><path d="M1.5 8S3.9 3.5 8 3.5 14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
 const EYE_OFF = '<svg viewBox="0 0 16 16"><path d="M1.5 8S3.9 3.5 8 3.5 14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M2.5 13.5l11-11"/></svg>';
 const CARET = '<svg viewBox="0 0 16 16"><path d="M6 4l4 4-4 4"/></svg>';
@@ -37,7 +35,6 @@ function picks(key, name) {
 /** viewer: the Viewer; project: () => the open project's id. */
 export function initParts({ viewer, project }) {
   const $ = (id) => document.getElementById(id);
-  const button = $("parts-toggle");
   const panel = $("parts");
   const byProject = new Map(); // project id -> {parts: Set of hidden keys, reference: hidden}
   const expanded = new Set(); // open groups (ids)
@@ -46,7 +43,6 @@ export function initParts({ viewer, project }) {
   let rows = new Map(); // row id -> {id, label, keys: [...], kind: "part" | "group" | "reference"}
   let shape = ""; // the frame's parts and colors: the list is rebuilt when they change
   let offered = false;
-  let open = store.getItem(KEY_OPEN) === "1";
   let hover = null; // row ids
   let selected = null;
 
@@ -175,7 +171,6 @@ export function initParts({ viewer, project }) {
   // DOM changes only where a state changed (frames arrive at 30 per second)
   function paint() {
     const some = offered && anyHidden();
-    button.classList.toggle("has-hidden", some);
     panel.classList.toggle("has-hidden", some);
     for (const el of panel.querySelectorAll(".part")) {
       const node = rows.get(el.dataset.id);
@@ -227,22 +222,11 @@ export function initParts({ viewer, project }) {
     restyle();
   }
 
-  function setOpen(on) {
-    open = !!on;
-    store.setItem(KEY_OPEN, open ? "1" : "0");
-    if (!open) hover = selected = null;
-    layout();
-    restyle();
-  }
-
+  // the tree lives in the sidebar under the selected output, shown whenever it has parts
   function layout() {
-    button.hidden = !offered;
-    panel.hidden = !(offered && open);
-    button.classList.toggle("on", open);
-    button.setAttribute("aria-expanded", String(open && offered));
+    panel.hidden = !offered;
   }
 
-  button.addEventListener("click", () => setOpen(!open));
   panel.addEventListener("click", (e) => {
     const el = e.target.closest(".part");
     const node = el && rows.get(el.dataset.id);
@@ -278,8 +262,8 @@ export function initParts({ viewer, project }) {
     restyle();
   });
 
-  // a frame offers the panel unless it is one unnamed shape
-  const offers = (meshes, k) => k.length > 1 || k.some((x, i) => x === null || meshes[i].name != null);
+  // a frame offers the tree when there is something to choose: several parts, or references
+  const offers = (meshes, k) => k.length > 1 || k.some((x) => x === null);
 
   return {
     /** A new frame (or a replayed one): returns its viewer style. */
@@ -319,7 +303,5 @@ export function initParts({ viewer, project }) {
       k.forEach((key, i) => key !== null && !isHidden(key) && keep.push(i));
       return keep.length === k.filter((x) => x !== null).length ? null : keep;
     },
-    /** Opens or closes the panel (the P key), if the frame has parts. */
-    toggle: () => offered && setOpen(!open),
   };
 }

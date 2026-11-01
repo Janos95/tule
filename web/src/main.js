@@ -270,6 +270,8 @@ function renderList() {
     b.title = [o.meta?.title, `${kind}${o.files.length ? ` · ${o.files.map((f) => f.file).join(", ")}` : ""}`, o.error].filter(Boolean).join("\n");
     b.addEventListener("click", () => select(o.name));
     list.append(b);
+    // an assembly's parts open under its row
+    if (o.name === state.selected) list.append($("parts"));
   }
 }
 
@@ -394,7 +396,6 @@ $("fit").addEventListener("click", () => viewer?.fit());
 document.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "f" || e.key === "F") viewer?.fit();
-  else if (e.key === "p" || e.key === "P") parts?.toggle();
 });
 
 // hover: the B-rep face under the pointer, its id and tags (f12 · load)
