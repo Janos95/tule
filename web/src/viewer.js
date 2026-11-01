@@ -63,6 +63,7 @@ export class Viewer {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.15;
     this.controls.screenSpacePanning = true;
+    this.controls.addEventListener("start", () => (this.moved = true));
 
     this.group = new THREE.Group(); // one child per part: its surface, edges and glass
     this.arrows = new THREE.Group();
@@ -75,6 +76,7 @@ export class Viewer {
     this.dim = false;
     this.wire = true;
     this.fitted = null;
+    this.moved = false; // the user moved the camera since the last fit: a resize then keeps their view
     this.dirty = true;
     this.raycaster = new THREE.Raycaster();
     this.listeners = new Set(); // after each render (HTML labels follow the view)
@@ -99,6 +101,8 @@ export class Viewer {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    // a new shape of the view (a resized window, a rotated phone): frame the part again, unless the user has moved it
+    if (this.bounds && this.fitted && !this.moved) this.fit();
     this.renderer.render(this.scene, this.camera);
     this.dirty = true;
   }
@@ -341,6 +345,7 @@ export class Viewer {
     this.clip(dist, r);
     this.controls.update();
     this.fitted = this.bounds.clone();
+    this.moved = false;
     this.dirty = true;
   }
 
@@ -374,6 +379,7 @@ export class Viewer {
     this.clip(cam.position.distanceTo(this.controls.target), r);
     this.controls.update();
     this.fitted ||= this.bounds?.clone() ?? null;
+    this.moved = true; // a chosen view (an annotation's): keep it
     this.dirty = true;
   }
 

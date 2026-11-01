@@ -525,6 +525,9 @@ class Agent:
             await self.send({"t": "beat"})
 
     async def watch(self):
+        # not before /workspace is restored: an empty index would empty every viewer's list
+        while self.booted is None:
+            await asyncio.sleep(0.2)
         os.makedirs(OUTPUTS, exist_ok=True)
         while True:
             if await asyncio.to_thread(self.outputs.changed):

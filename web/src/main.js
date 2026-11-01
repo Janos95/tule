@@ -51,7 +51,8 @@ const overlay = viewer ? initOverlay({ viewer, legend: $("legend"), marks: $("ma
 const state = {
   machine: "unknown", // the machine's state: running, starting, stopped, offline
   outputs: [], // the index from the machine
-  selected: new URLSearchParams(location.search).get("o"),
+  wanted: new URLSearchParams(location.search).get("o"), // the output asked for (the link, a click)
+  selected: null, // the output shown: the wanted one once it exists, else the first
   shown: null, // the key of what is drawn (output name and file hashes)
   frame: 0,
   meshes: [], // what is drawn
@@ -226,7 +227,8 @@ function renderList() {
   const list = $("output-list");
   list.textContent = "";
   $("outputs-empty").hidden = state.outputs.length > 0;
-  if (!state.outputs.some((o) => o.name === state.selected)) state.selected = state.outputs[0]?.name ?? null;
+  // a link's output may not be in the list yet (the machine is starting): show the first meanwhile, keep wanting it
+  state.selected = state.outputs.some((o) => o.name === state.wanted) ? state.wanted : (state.outputs[0]?.name ?? null);
   for (const o of state.outputs) {
     const b = document.createElement("button");
     b.type = "button";
@@ -254,7 +256,7 @@ function placement(t, file) {
 /** Shows an output by name; resolves once it is drawn. */
 function select(name) {
   if (state.selected === name && state.shown) return Promise.resolve();
-  state.selected = name;
+  state.wanted = name;
   state.frame = 0;
   const u = new URL(location.href);
   u.searchParams.set("o", name);
