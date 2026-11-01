@@ -44,9 +44,11 @@ Tule does not run or bill for an agent. Users bring their own.
    No builder contexts, no workplane stack, no string selectors.
 4. **Agent-first errors.** A failure says what failed, where, and what would
    work.
-5. **Any agent, no lock-in.** SSH, git and a CLI are the interface. The
-   instructions agents need ship in every project (`AGENTS.md`) and in the
-   container (`tule docs`); a Claude plugin is a convenience on top.
+5. **Shaped like RunPod.** One Tule connector: an MCP server for the control
+   plane (projects, machines, keys, usage), SSH and the `tule` CLI for the
+   work, and skills that teach the agent both. One sign-in covers all of it.
+   The instructions also ship in every project (`AGENTS.md`) and in the
+   container (`tule docs`), so agents without the plugin work too.
 
 ## Architecture
 
@@ -131,7 +133,29 @@ Consequences:
 
 ## Interfaces
 
-### `tule` CLI (on your machine)
+Modeled on RunPod's connector: the MCP manages resources, the work happens
+over SSH, and skills route the agent between the two. A user adds Tule once
+(plugin or connector URL) and signs in with GitHub; the agent does the rest of
+the setup itself (installing the CLI, adding its SSH key), guided by the
+skills, the way RunPod's skills walk an agent through pod setup.
+
+### MCP server (control plane)
+
+Hosted at `/mcp`, Streamable HTTP. Auth: OAuth (sign in with GitHub), or a
+Tule API key as a Bearer header; the same key also authenticates the CLI.
+Tools, grouped by resource:
+
+- **Projects:** list, get, create (from the template), fork, rename, delete.
+- **Machines:** start, stop, resize (`cpu-1` … `cpu-4`, `gpu-<type>`), status,
+  stream logs; connection info for SSH.
+- **GPU jobs:** run, status, stream, cancel (the serverless GPU worker).
+- **Keys:** list, add, remove SSH keys; create and revoke API keys.
+- **Runs and history:** list runs and commits, with viewer links.
+- **Usage and budget:** container minutes, GPU spend, caps.
+
+No exec or file tools: like RunPod, the MCP never carries the work.
+
+### `tule` CLI (on the agent's machine)
 
 ```
 tule login                     # GitHub sign-in
@@ -148,7 +172,10 @@ tule down | ls | logs
 `tule ssh --config` writes an `~/.ssh/config` entry with
 `ProxyCommand tule proxy %h`, so plain `ssh tule-bracket` and
 `git push tule` work. Agents in chat sandboxes can use the same CLI when the
-Tule domain is on their network allowlist (the tunnel is HTTPS).
+Tule domain is on their network allowlist (the tunnel is HTTPS), or when the
+chat is linked to the user's computer; otherwise a chat agent can manage
+projects through the MCP but not work inside them (the same limit as
+RunPod).
 
 ### Inside the container
 
@@ -161,12 +188,13 @@ Tule domain is on their network allowlist (the tunnel is HTTPS).
 ### Skills and the Claude plugin
 
 The agent instructions (Tule's equivalent of RunPod's skills) are written
-once and shipped three ways: in every project as `AGENTS.md`/`CLAUDE.md`, in
-the container as `tule docs`, and as a Claude plugin (skills plus the CLI).
-Content:
+once and shipped three ways: as a Claude plugin (the MCP connector plus
+skills), in every project as `AGENTS.md`/`CLAUDE.md`, and in the container as
+`tule docs`. Content:
 
-- a router (start here), the modeling API and its style, selection, tags,
-  parameters;
+- a router (start here): when to use the MCP, when the CLI and SSH;
+- setup: install the CLI, sign in, add an SSH key, connect;
+- the modeling API and its style, selection, tags, parameters;
 - the loop: edit → `tule run` → `tule screenshot` → inspect → iterate,
   branches for variants;
 - DFM and topology optimization: how to set up loads, fixed faces, processes;
@@ -174,8 +202,23 @@ Content:
 - golden paths: tested end-to-end examples ("bracket from load cases",
   "make this part machinable on a 3-axis mill").
 
-An MCP server is not part of v0. If chat-only users matter later, a thin MCP
-(project lifecycle, screenshots) can sit on the same control plane.
+### GPU budget
+
+Two ways to reach a GPU, neither of which gives Tule a full RunPod key:
+
+1. **Serverless GPU worker (jobs).** Tule's GPU solvers are published as a
+   RunPod Hub worker. The user deploys it into their own RunPod account in
+   one click and stores a key restricted to that endpoint in Tule;
+   `tule.remote(gpu=..., max_cost=...)` runs jobs on it per second, scaling
+   to zero. A leaked key can only run Tule jobs.
+2. **The agent as glue (whole GPU machine).** An agent with both the Tule and
+   RunPod connectors asks Tule for a one-time join token, creates a pod from
+   Tule's CUDA image with the user's RunPod connector, and the pod's
+   `tule-agent` dials in and becomes the project's machine. Tule never sees
+   RunPod credentials.
+
+In both cases the RunPod prepaid balance is the hard cap (pods stop at $0);
+Tule adds per-job budgets and idle shutdown.
 
 ## Viewer
 
@@ -308,10 +351,11 @@ tule/
    `AGENTS.md`, sign-in, keys, quotas.
 4. **Viewer:** frames with faces and edges, picking, parts, runs panel,
    STEP download.
-5. **Agent instructions:** skills, `tule docs`, golden paths, the Claude
-   plugin.
+5. **Connector:** MCP server with OAuth and API keys, skills, `tule docs`,
+   golden paths, the Claude plugin.
 6. **Engineering libraries:** `tule.dfm` v0, `tule.topopt` v0.
-7. **GPU:** RunPod backend for `tule up --gpu`, then `tule.remote`.
+7. **GPU:** the serverless worker for `tule.remote`, then pods joined by the
+   agent.
 8. **Deploy** and a live smoke test.
 
 ## Open decisions (defaults assumed above)
@@ -324,5 +368,5 @@ tule/
 | Outbound network | package registries + per-project allowlist |
 | First GPU backend | RunPod |
 | Python version | 3.12 (match the OCP wheels) |
-| MCP server | not in v0 |
+| MCP server | control plane only, as RunPod's |
 | Project visibility | private by default, shareable read-only links |
