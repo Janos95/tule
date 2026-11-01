@@ -4,6 +4,8 @@
     tule new bracket                         create a project (tule ls lists them, tule delete removes one)
     tule up [-p bracket] [--machine cpu-1]   start the project's machine, wait until it is ready
     tule up --gpu rtx4090                    a GPU machine on your RunPod account (tule gpus lists them)
+    tule up --on rechenknecht                the machine on one of your own computers (tule hosts lists them)
+    tule host up                             on your own computer: add it to your account (see host.py)
     tule ssh [-p bracket] [cmd ...]          a shell or a command on the machine
     tule ssh --config [-p bracket]           write ~/.ssh/config so plain `ssh tule-bracket` works
     tule proxy tule-bracket                  the SSH ProxyCommand: stdin/stdout over the WebSocket tunnel
@@ -133,6 +135,8 @@ def wait_running(p: str, timeout: float = 120, quiet: bool = False) -> dict:
         if s["state"] != shown and not quiet:
             print(f"tule: {p} is {s['state']}…", file=sys.stderr)
             shown = s["state"]
+        if s["state"] == "stopped" and s.get("lastError"):
+            raise CliError(f"{p}: the machine did not start: {s['lastError']}")
         if s["state"] == "stopped" and time.time() - t0 > 10:
             raise CliError(f"{p}: the machine stopped while starting (tule status; check the Worker's logs)")
         if time.time() - t0 > timeout:
@@ -147,7 +151,8 @@ def up(p: str, machine: str, quiet: bool = False) -> dict:
     if s.get("note") and not quiet:
         print(f"tule: {s['note']}", file=sys.stderr)
     if s["state"] != "running" or not s.get("hostKey"):
-        s = wait_running(p, timeout=1500 if machine.startswith("gpu-") else 120, quiet=quiet)
+        # a GPU pod or your own computer may first download the image
+        s = wait_running(p, timeout=120 if machine.startswith("cpu-") else 1500, quiet=quiet)
     if not quiet:
         cs = s.get("coldStartMs")
         extra = f" (cold start {cs / 1000:.1f} s: start to agent connected)" if cs and time.time() - t0 > 1 else ""
@@ -335,7 +340,20 @@ def cmd_delete(args):
 
 def cmd_up(args):
     p = project_of(args, load())
-    up(p, f"gpu-{args.gpu}" if args.gpu else args.machine)
+    if sum(map(bool, (args.gpu, args.on, args.machine != "cpu-1"))) > 1:
+        raise CliError("choose one of --machine, --gpu and --on")
+    up(p, f"gpu-{args.gpu}" if args.gpu else args.on or args.machine)
+
+
+def cmd_hosts(args):
+    hs = api("GET", "/api/hosts")["hosts"]
+    if not hs:
+        print("no computers yet: run `tule host up` on one", file=sys.stderr)
+    for h in hs:
+        sp = h.get("specs") or {}
+        what = f"{sp.get('cpus', '?')} cores, {sp.get('memoryGb', '?')} GB" + (f", {', '.join(sp['gpus'])}" if sp.get("gpus") else "")
+        run = h.get("running") or []
+        print(f"{h['name']:<20} {'online' if h['online'] else 'offline':<8} {what:<48} {len(run)} running")
 
 
 def cmd_gpus(args):
@@ -433,6 +451,8 @@ def main(argv=None):
     sp = add("up", cmd_up, "start (or resize) the project's machine")
     sp.add_argument("--machine", default="cpu-1", help="cpu-1 (default), cpu-2, cpu-4, or gpu-<type>")
     sp.add_argument("--gpu", metavar="TYPE", help="a GPU on your RunPod account, e.g. rtx4090 (tule gpus)")
+    sp.add_argument("--on", metavar="COMPUTER", help="one of your own computers (tule hosts)")
+    add("hosts", cmd_hosts, "your own computers: online, cores, memory, GPUs", project=False)
     add("gpus", cmd_gpus, "GPU machines: price and availability on your RunPod account", project=False)
     add("down", cmd_down, "stop the project's machine")
     add("status", cmd_status, "the project's machine, timings and outputs")
@@ -456,6 +476,9 @@ def main(argv=None):
     from . import machine
 
     machine.add_commands(add)
+    from . import host
+
+    host.add_commands(sub)
 
     args = ap.parse_args(argv)
     if args.cmd == "ssh" and args.command[:1] == ["--"]:

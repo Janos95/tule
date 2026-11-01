@@ -3,6 +3,7 @@
 // object; failures are {error, hint}.
 import type { ProjectRef, User } from "./accounts";
 import { accounts } from "./auth";
+import type { Host } from "./host";
 import type { Project } from "./project";
 import { stub } from "./rpc";
 
@@ -153,4 +154,26 @@ export function connectInfo(origin: string, name: string): Result {
 export async function usage(env: Env, user: User): Promise<Result> {
   const a = accounts(env);
   return { ...(await a.usage(user.id)), cpuQuotaHours: Number(env.CPU_HOURS_MONTH || 100), runpod: (await a.hasRunpod(user.id)).connected };
+}
+
+/** The user's computers with their state, from each Host object. */
+export type HostRow = { id: string; name: string; online: boolean; specs: unknown; running: unknown; added: string };
+
+export async function listHosts(env: Env, user: User): Promise<HostRow[]> {
+  const hs = await accounts(env).hosts(user.id);
+  return Promise.all(
+    hs.map(async (h) => {
+      const st = await stub<Host>(env.HOST, h.id).status();
+      return { id: h.id, name: h.name, online: !!st.online, specs: st.specs ?? h.specs, running: st.running, added: new Date(h.created).toISOString().slice(0, 10) };
+    }),
+  );
+}
+
+export async function removeHost(env: Env, user: User, idOrName: string): Promise<Result> {
+  const hs = await accounts(env).hosts(user.id);
+  const h = hs.find((x) => x.id === idOrName || x.name === idOrName);
+  if (!h) return fail(`no computer ${JSON.stringify(idOrName)}`, "list them with tule hosts");
+  await stub<Host>(env.HOST, h.id).forget();
+  await accounts(env).removeHost(user.id, h.id);
+  return { removed: h.name };
 }

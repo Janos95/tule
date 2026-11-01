@@ -47,7 +47,8 @@
   "durable_objects": {
     "bindings": [
       { "name": "PROJECT", "class_name": "Project" },
-      { "name": "ACCOUNTS", "class_name": "Accounts" }
+      { "name": "ACCOUNTS", "class_name": "Accounts" },
+      { "name": "HOST", "class_name": "Host" }
     ]
   },
   // the OAuth provider's grants and tokens (hashed) for MCP clients
@@ -56,7 +57,8 @@
   "r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "tule-workspaces" }],
   "exports": {
     "Project": { "type": "durable-object", "storage": "sqlite" },
-    "Accounts": { "type": "durable-object", "storage": "sqlite" }
+    "Accounts": { "type": "durable-object", "storage": "sqlite" },
+    "Host": { "type": "durable-object", "storage": "sqlite" }
   },
   "observability": { "enabled": true }
 }

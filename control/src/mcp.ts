@@ -31,7 +31,8 @@ export const TOOLS: Tool[] = [
   { name: "projects_create", description: "Create a project (a new /workspace from the template: AGENTS.md, tule.toml, main.py, git).", inputSchema: obj({ name: str("lowercase letters, digits and '-', e.g. camera-bracket") }, ["name"]) },
   { name: "projects_rename", description: "Rename a project.", inputSchema: obj({ ...project, to: str("the new name") }, ["project", "to"]) },
   { name: "projects_delete", description: "Delete a project: stops its machine and deletes /workspace and every snapshot. Cannot be undone; confirm with the user first.", inputSchema: obj({ ...project, confirm: str("the project name again, to confirm") }, ["project", "confirm"]), annotations: { destructiveHint: true } },
-  { name: "machine_start", description: "Start (or resize) the project's machine and wait until /workspace is restored. cpu-1 (default, 1 vCPU / 6 GiB), cpu-2 (2 / 8), cpu-4 (4 / 12), or a GPU on the user's RunPod account: gpu-rtx4090, gpu-l40s, gpu-a100, gpu-h100, ... (gpus_list has prices; GPU time costs the user money, so ask first). Resizing moves /workspace to the new machine.", inputSchema: obj({ ...project, machine: str("cpu-1, cpu-2, cpu-4 or gpu-<type>") }, ["project"]) },
+  { name: "machine_start", description: "Start (or resize) the project's machine and wait until /workspace is restored. cpu-1 (default, 1 vCPU / 6 GiB), cpu-2 (2 / 8), cpu-4 (4 / 12), or a GPU on the user's RunPod account: gpu-rtx4090, gpu-l40s, gpu-a100, gpu-h100, ... (gpus_list has prices; GPU time costs the user money, so ask first), or one of the user's own computers by name (computers_list). Resizing moves /workspace to the new machine.", inputSchema: obj({ ...project, machine: str("cpu-1, cpu-2, cpu-4, gpu-<type>, or a computer's name") }, ["project"]) },
+  { name: "computers_list", description: "The user's own computers plugged into Tule (tule host up): online state, cores, memory, GPUs. A machine can run on one by passing its name to machine_start.", inputSchema: obj({}), annotations: RO },
   { name: "gpus_list", description: "GPU machines on the user's RunPod account: price per hour and current availability.", inputSchema: obj({}), annotations: RO },
   { name: "machine_stop", description: "Save /workspace and stop the project's machine.", inputSchema: obj(project, ["project"]) },
   { name: "machine_status", description: "The project's machine: state, size, timings, SSH sessions, latest snapshot.", inputSchema: obj(project, ["project"]), annotations: RO },
@@ -80,6 +81,7 @@ async function call(env: Env, user: User, name: string, a: Record<string, unknow
       if (!key) return { error: "RunPod is not connected", hint: "the user pastes a RunPod API key in Tule's Settings" };
       return { gpus: await gpuCatalog(key) };
     }
+    case "computers_list": return { computers: await ops.listHosts(env, user) };
     case "machine_stop": return ops.down(env, user, a.project);
     case "machine_status": return ops.status(env, user, a.project, origin);
     case "connect_info": {

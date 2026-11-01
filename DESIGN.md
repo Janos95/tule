@@ -141,8 +141,43 @@ interface Backend {
   `gpu-rtx4090`, `gpu-l40s`, `gpu-a100`, `gpu-h100`, … (`tule gpus` shows
   price and availability). The balance check uses RunPod's GraphQL API, the
   only place it exists (deprecated for 2027).
-- Later backends (Modal, Lambda, a user's own box) implement the same four
-  calls.
+- **Your own computers** (`<computer name>`): see below.
+- Later backends (Modal, Lambda) implement the same four calls.
+
+### Your own computers
+
+A user can plug in their own computers (a Linux box with a GPU, a Mac mini)
+as machines, modelled on T3 Code's remote machines (`t3 up`) but
+containerized:
+
+- **Install and pair:** `pip install tule-cli`, then **`tule host up`** on the
+  computer. It checks Docker (and NVIDIA's container runtime when there is a
+  GPU), pairs the computer with the account by device code (the user approves
+  it in the browser; the computer keeps a host-only credential, `tuleh_…`,
+  that can do nothing but serve as that computer), and installs a background
+  service: a systemd user unit on Linux (with lingering, so it runs from
+  boot), a LaunchAgent on macOS (while the user is logged in).
+- **Connected by dialing out:** the service (`tule host run`) keeps one
+  WebSocket to the computer's **Host** Durable Object and reports its specs
+  (cores, memory, GPUs, architecture). No inbound ports, no tunnel software.
+- **Machines on it:** `tule up -p bracket --on <computer>` (or
+  `machine_start` with the computer's name): the Project Durable Object asks
+  the Host object to start a container; the host runs Tule's machine image
+  (`docker run`, the arch's image, `--gpus all` if it has GPUs, the join token
+  in the environment, **no CPU or memory limits**: the container may use the
+  whole computer). Inside, `tule-agent` dials in as on any machine, so SSH,
+  the viewer and `/workspace` saving are the same as in the cloud. Stopping
+  takes the final snapshot, then removes the container. Several projects may
+  run on one computer at once; they share it.
+- **The boundary is the image:** Tule can only ask a host to start or stop its
+  own machine image (from `ghcr.io/janos95/tule-runtime`), never to run a
+  command; containers are unprivileged and see none of the computer's files.
+  This is the main difference from T3 Code, whose agents run as the user.
+- **Accounts:** computers belong to a user, are listed in Settings ("Your
+  computers": online state, specs, remove) and in `tule hosts`; no quota
+  applies (the user's hardware). Guests cannot add computers.
+- **Images:** `ghcr.io/janos95/tule-runtime:cpu` (amd64 and arm64, so Apple
+  Silicon runs natively) and `:cuda` (amd64) for computers with NVIDIA GPUs.
 
 Every machine runs the same entrypoint, so nothing above the backend cares
 where it runs:

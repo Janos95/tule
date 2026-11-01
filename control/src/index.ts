@@ -33,10 +33,12 @@ import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
 import { landing, page, projectsPage, settingsPage, type ProjectRow } from "./pages";
+import { Host } from "./host";
 import { Project, snapshotKey } from "./project";
+import { stub } from "./rpc";
 import { gpuCatalog, runpodBalance } from "./runpod";
 
-export { Project, Accounts };
+export { Project, Accounts, Host };
 
 declare global {
   interface Env {
@@ -142,6 +144,11 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
   const [area, name, what = "", ...rest] = parts;
   if (area === "me") return json({ user, ...(await ops.usage(env, user)) });
   if (area === "usage") return json(await ops.usage(env, user));
+  if (area === "hosts") {
+    if (req.method === "GET") return json({ hosts: await ops.listHosts(env, user) });
+    if (req.method === "DELETE" && name) return reply(await ops.removeHost(env, user, name));
+    return error("use GET /api/hosts or DELETE /api/hosts/<id>", 405);
+  }
   if (area === "gpus") {
     const key = await a.runpodKey(user.id);
     if (!key) return error("RunPod is not connected", 400, "paste a RunPod API key in Settings");
@@ -234,6 +241,9 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
       const r = await ops.addSshKey(env, user, f("key"));
       message = r.error ? undefined : "SSH key added.";
       if (r.error) rpError = undefined, (message = `${r.error}${r.hint ? ` (${r.hint})` : ""}`);
+    } else if (action === "hosts/remove") {
+      const r = await ops.removeHost(env, user, f("id"));
+      message = r.error ? String(r.error) : `${r.removed} removed.`;
     } else if (action === "ssh/remove") {
       await ops.removeSshKey(env, user, f("id"));
       message = "SSH key removed.";
@@ -250,6 +260,7 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
     runpod: { ...rp, balance, error: rpError },
     apiKeys: await a.apiKeys(user.id),
     sshKeys: await a.sshKeys(user.id),
+    hosts: user.guest ? [] : await ops.listHosts(env, user),
     usage: await a.usage(user.id),
     quota: Number(env.CPU_HOURS_MONTH || 100),
     newKey,
@@ -286,6 +297,18 @@ async function route(req: Request, env: Env): Promise<Response> {
   const auth = await authRoutes(req, env, url);
   if (auth) return auth;
   if (path === "/api/device/code" || path === "/api/device/token") return deviceApi(req, env, path.split("/").pop()!);
+  // a computer's `tule host run` service, by its host token
+  if (path === "/api/hosts/connect") {
+    if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error("expected a WebSocket", 426);
+    const h = req.headers.get("Authorization") ?? "";
+    const host = h.startsWith("Bearer tuleh_") ? await accounts(env).hostByToken(h.slice(7)) : null;
+    if (!host) return error("unknown computer", 401, "pair it again: tule host up");
+    const fwd = new Request(req);
+    fwd.headers.set("X-Tule-Host-Id", host.id);
+    fwd.headers.set("X-Tule-Host-Owner", host.userId);
+    fwd.headers.set("X-Tule-Host-Name", host.name);
+    return env.HOST.getByName(host.id).fetch(fwd);
+  }
 
   const user = await who(req, env);
   if (path === "/authorize") return authorize(req, env, url, user);

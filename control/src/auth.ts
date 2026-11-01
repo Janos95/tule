@@ -153,7 +153,8 @@ export async function deviceApi(req: Request, env: Env, what: string): Promise<R
     // empty body
   }
   if (what === "code") {
-    const d = await accounts(env).deviceStart(String(b.client ?? req.headers.get("User-Agent") ?? "tule CLI"));
+    const host = typeof b.host === "string" && b.host.trim() ? b.host.trim().slice(0, 40) : undefined;
+    const d = await accounts(env).deviceStart(String(b.client ?? req.headers.get("User-Agent") ?? "tule CLI"), host);
     return Response.json({
       device_code: d.deviceCode,
       user_code: d.userCode,
@@ -174,10 +175,13 @@ export async function devicePage(req: Request, env: Env, url: URL, user: User): 
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403);
     const form = await req.formData();
     const code = String(form.get("code") ?? "").trim().toUpperCase();
+    const pending = await a.deviceInfo(code);
+    if (pending?.host && user.guest) return page("Sign in first", `<p>Guests cannot add computers. <a href="/auth/login">Sign in</a>, then run <code>tule host up</code> again.</p>`, 403, user);
     const ok = await a.deviceApprove(code, user.id);
-    return ok
-      ? page("CLI signed in", `<p>Done: the <code>tule</code> CLI is signed in as ${esc(user.email)}. You can close this tab.</p>`)
-      : page("Code not found", `<p>The code <code>${esc(code)}</code> is wrong or expired. Run <code>tule login</code> again.</p>`, 400);
+    if (!ok) return page("Code not found", `<p>The code <code>${esc(code)}</code> is wrong or expired. Run the command again.</p>`, 400, user);
+    return pending?.host
+      ? page("Computer added", `<p>Done: <b>${esc(pending.host)}</b> is now one of your computers. Its service connects in a moment; see <a href="/settings">Settings</a>.</p>`, 200, user)
+      : page("CLI signed in", `<p>Done: the <code>tule</code> CLI is signed in as ${esc(user.email)}. You can close this tab.</p>`, 200, user);
   }
   const code = (url.searchParams.get("code") ?? "").toUpperCase();
   const info = code ? await a.deviceInfo(code) : null;
@@ -187,8 +191,8 @@ export async function devicePage(req: Request, env: Env, url: URL, user: User): 
       ${code && !info ? html`<p class="warn">The code ${code} is wrong or expired.</p>` : ""}
       <form method="post" class="stack">
         <label>Code shown by <code>tule login</code><input name="code" value="${code}" autocomplete="off" placeholder="ABCD-EFGH" required /></label>
-        ${info ? html`<p class="muted">Requested by: ${info.client}</p>` : ""}
-        <button class="primary">Approve</button>
+        ${info?.host ? html`<p>This adds the computer <b>${info.host}</b> to your account: Tule may start its machine image there for your projects.</p>` : info ? html`<p class="muted">Requested by: ${info.client}</p>` : ""}
+        <button class="primary">${info?.host ? "Add computer" : "Approve"}</button>
       </form>
       <p class="muted">Approving gives that CLI an API key for your account (revoke it in <a href="/settings">Settings</a>).</p>`,
   );

@@ -67,11 +67,12 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS usage_day (user_id TEXT, day TEXT, seconds REAL, PRIMARY KEY (user_id, day));
       CREATE TABLE IF NOT EXISTS guest_ips (ip TEXT, day TEXT, n INTEGER, PRIMARY KEY (ip, day));
       CREATE TABLE IF NOT EXISTS running (project_id TEXT PRIMARY KEY, user_id TEXT, guest INTEGER, since INTEGER);
+      CREATE TABLE IF NOT EXISTS hosts (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, token_hash TEXT UNIQUE, created INTEGER, specs TEXT, UNIQUE(user_id, name));
     `);
     // columns added after the first deploy
-    for (const col of ["guest INTEGER DEFAULT 0", "last_seen INTEGER"]) {
+    for (const [table, col] of [["users", "guest INTEGER DEFAULT 0"], ["users", "last_seen INTEGER"], ["devices", "kind TEXT"], ["devices", "host_name TEXT"]]) {
       try {
-        this.sql.exec(`ALTER TABLE users ADD COLUMN ${col}`);
+        this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`);
       } catch {
         // already there
       }
@@ -186,7 +187,7 @@ export class Accounts extends DurableObject<Env> {
   }
 
   deleteUser(id: string) {
-    for (const t of ["sessions", "api_keys", "devices", "ssh_keys", "projects", "runpod", "usage", "usage_day", "running"]) this.sql.exec(`DELETE FROM ${t} WHERE user_id = ?`, id);
+    for (const t of ["sessions", "api_keys", "devices", "ssh_keys", "projects", "runpod", "usage", "usage_day", "running", "hosts"]) this.sql.exec(`DELETE FROM ${t} WHERE user_id = ?`, id);
     this.sql.exec("DELETE FROM users WHERE id = ?", id);
   }
 
@@ -281,17 +282,21 @@ export class Accounts extends DurableObject<Env> {
 
   // ------------------------------------------------------------ device codes (tule login)
 
-  async deviceStart(client: string): Promise<{ deviceCode: string; userCode: string; expiresIn: number }> {
+  /** A device code: for the CLI (an API key once approved), or for a computer to pair as a host (`hostName`). */
+  async deviceStart(client: string, hostName?: string): Promise<{ deviceCode: string; userCode: string; expiresIn: number }> {
     const deviceCode = rand(32);
     const code = userCode();
     this.sql.exec("DELETE FROM devices WHERE expires < ?", Date.now());
-    this.sql.exec("INSERT INTO devices VALUES (?, ?, ?, ?, NULL)", await sha256hex(deviceCode), code, client.slice(0, 120), Date.now() + DEVICE_MINUTES * 60_000);
+    this.sql.exec(
+      "INSERT INTO devices (hash, user_code, client, expires, user_id, kind, host_name) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+      await sha256hex(deviceCode), code, client.slice(0, 120), Date.now() + DEVICE_MINUTES * 60_000, hostName ? "host" : "cli", hostName ?? null,
+    );
     return { deviceCode, userCode: code, expiresIn: DEVICE_MINUTES * 60 };
   }
 
-  deviceInfo(code: string): { client: string } | null {
-    const r = this.one<{ client: string; expires: number; user_id: string | null }>("SELECT client, expires, user_id FROM devices WHERE user_code = ?", code.toUpperCase());
-    return r && r.expires > Date.now() && !r.user_id ? { client: r.client } : null;
+  deviceInfo(code: string): { client: string; host: string | null } | null {
+    const r = this.one<{ client: string; expires: number; user_id: string | null; host_name: string | null }>("SELECT client, expires, user_id, host_name FROM devices WHERE user_code = ?", code.toUpperCase());
+    return r && r.expires > Date.now() && !r.user_id ? { client: r.client, host: r.host_name } : null;
   }
 
   deviceApprove(code: string, userId: string): boolean {
@@ -301,13 +306,51 @@ export class Accounts extends DurableObject<Env> {
   /** The CLI polls: "pending", "expired", or a new API key once approved (once). */
   async devicePoll(deviceCode: string): Promise<Result> {
     const hash = await sha256hex(deviceCode);
-    const r = this.one<{ user_id: string | null; expires: number; client: string }>("SELECT user_id, expires, client FROM devices WHERE hash = ?", hash);
+    const r = this.one<{ user_id: string | null; expires: number; client: string; host_name: string | null }>("SELECT user_id, expires, client, host_name FROM devices WHERE hash = ?", hash);
     if (!r || r.expires < Date.now()) return { status: "expired" };
     if (!r.user_id) return { status: "pending" };
     this.sql.exec("DELETE FROM devices WHERE hash = ?", hash);
-    const { key } = await this.createApiKey(r.user_id, `CLI: ${r.client}`);
     const u = this.user(r.user_id)!;
+    if (r.host_name) {
+      const h = await this.createHost(r.user_id, r.host_name);
+      return { status: "approved", hostId: h.id, hostToken: h.token, name: h.name, email: u.email };
+    }
+    const { key } = await this.createApiKey(r.user_id, `CLI: ${r.client}`);
     return { status: "approved", apiKey: key, email: u.email };
+  }
+
+  // ------------------------------------------------------------ hosts (the user's own computers)
+
+  async createHost(userId: string, wanted: string): Promise<{ id: string; name: string; token: string }> {
+    const base = wanted.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "computer";
+    let name = base;
+    for (let i = 2; this.one("SELECT 1 FROM hosts WHERE user_id = ? AND name = ?", userId, name); i++) name = `${base}-${i}`;
+    const id = `h_${rand(12).toLowerCase().replace(/[^a-z0-9]/g, "0")}`;
+    const token = `tuleh_${rand(32)}`;
+    this.sql.exec("INSERT INTO hosts VALUES (?, ?, ?, ?, ?, NULL)", id, userId, name, await sha256hex(token), Date.now());
+    return { id, name, token };
+  }
+
+  /** The computer a host token belongs to. */
+  async hostByToken(token: string): Promise<{ id: string; userId: string; name: string } | null> {
+    const r = this.one<{ id: string; user_id: string; name: string }>("SELECT id, user_id, name FROM hosts WHERE token_hash = ?", await sha256hex(token));
+    return r ? { id: r.id, userId: r.user_id, name: r.name } : null;
+  }
+
+  hosts(userId: string): { id: string; name: string; created: number; specs: Record<string, unknown> | null }[] {
+    return this.all<{ id: string; name: string; created: number; specs: string | null }>("SELECT id, name, created, specs FROM hosts WHERE user_id = ? ORDER BY created", userId).map((h) => ({ ...h, specs: h.specs ? JSON.parse(h.specs) : null }));
+  }
+
+  host(userId: string, name: string): { id: string; name: string } | null {
+    return this.one<{ id: string; name: string }>("SELECT id, name FROM hosts WHERE user_id = ? AND name = ?", userId, name) ?? null;
+  }
+
+  setHostSpecs(id: string, specs: Record<string, unknown>) {
+    this.sql.exec("UPDATE hosts SET specs = ? WHERE id = ?", JSON.stringify(specs).slice(0, 4000), id);
+  }
+
+  removeHost(userId: string, id: string): boolean {
+    return this.sql.exec("DELETE FROM hosts WHERE user_id = ? AND id = ?", userId, id).rowsWritten > 0;
   }
 
   // ------------------------------------------------------------ SSH keys

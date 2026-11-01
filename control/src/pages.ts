@@ -153,6 +153,7 @@ export type SettingsData = {
   runpod: { connected: boolean; updated: number | null; balance?: string | null; error?: string };
   apiKeys: { id: string; name: string; prefix: string; created: number; last_used: number | null }[];
   sshKeys: { id: string; key: string; name: string; created: number }[];
+  hosts: { id: string; name: string; online: unknown; specs: unknown }[];
   usage: { month: string; cpuHours: number; gpuHours: number; gpuCost: number };
   quota: number;
   newKey?: string;
@@ -210,6 +211,23 @@ export function settingsPage(user: User, d: SettingsData): Response {
       )}`,
   );
 
+  const spec = (s: unknown) => {
+    const x = (s ?? {}) as { cpus?: number; memoryGb?: number; gpus?: string[]; arch?: string };
+    return [x.cpus ? `${x.cpus} cores` : "", x.memoryGb ? `${x.memoryGb} GB` : "", ...(x.gpus ?? []), x.arch ?? ""].filter(Boolean).join(" · ");
+  };
+  const computers = user.guest
+    ? ""
+    : section(
+        "Your computers",
+        "Run machines on your own hardware: Tule starts its container there, using the whole computer.",
+        html`${d.hosts.map((h) => item(h.name, html`<span class="dot ${h.online ? "running" : ""}"></span>${h.online ? "online" : "offline"}${spec(h.specs) ? ` · ${spec(h.specs)}` : ""}`, rowButton("/settings/hosts/remove", "Remove", h.id, true)))}
+          <details class="newp"><summary><span class="plus">+</span> Add a computer</summary>
+            <div style="padding:0 8px 12px"><p class="hint">On the computer (it needs Docker; for NVIDIA GPUs also NVIDIA's container toolkit):</p>
+            <pre>pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"
+tule host up --url ${d.origin}</pre>
+            <p class="hint">It shows a code to approve here, then runs as a background service.</p></div></details>`,
+      );
+
   const u = d.usage;
   const usage = section(
     "Usage",
@@ -237,7 +255,7 @@ export function settingsPage(user: User, d: SettingsData): Response {
     ? section("Account", "You're a guest: your project is deleted a day after your last visit. Signing in keeps it.", item("Guest", "", html`<a class="button small primary" href="/auth/login">Sign in</a>`))
     : section("Account", "", item(user.email, "", html`<form method="post" action="/auth/logout"><button class="small">Sign out</button></form>`));
 
-  const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${runpod}${usage}${ssh}${api}${account}
+  const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${computers}${runpod}${usage}${ssh}${api}${account}
     <script>document.addEventListener("click",(e)=>{const b=e.target.closest("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)})</script>`;
   return page("Settings", body, 200, user);
 }

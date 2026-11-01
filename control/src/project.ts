@@ -33,6 +33,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Accounts } from "./accounts";
 import { stub } from "./rpc";
+import type { Host } from "./host";
 import { createPod, getPod, GPUS, terminatePod } from "./runpod";
 
 /** Machine names (DESIGN.md) to Cloudflare instance types. */
@@ -54,6 +55,8 @@ type State = {
   billedUntil?: number; // machine time is added to the owner's usage up to here
   pod?: { id: string; cost: number; gpu: string; cloud: string }; // a RunPod pod (gpu-* machines)
   guest?: boolean; // the owner was a guest when the machine started (tighter idle stop and minutes)
+  host?: { id: string; name: string }; // the machine runs on one of the owner's computers
+  hostError?: string; // why the last start on a computer failed
   machine?: string; // "cpu-1", or "external" for a machine started with a join token
   joinHash?: string;
   upAt?: number; // start() called
@@ -186,7 +189,7 @@ export class Project extends DurableObject<Env> {
     if (now <= from) return;
     const kind = s.machine?.startsWith("gpu") ? "gpu" : "cpu";
     const secs = (now - from) / 1000;
-    if (s.machine !== "external") await this.accounts().addUsage(s.owner, kind, secs, kind === "gpu" ? ((s.pod?.cost ?? 0) * secs) / 3600 : 0);
+    if (s.machine !== "external" && !s.host) await this.accounts().addUsage(s.owner, kind, secs, kind === "gpu" ? ((s.pod?.cost ?? 0) * secs) / 3600 : 0);
     s.billedUntil = now;
     await this.save();
   }
@@ -195,7 +198,7 @@ export class Project extends DurableObject<Env> {
     const name = this.state.name ?? null;
     const c = this.ctx.container;
     const agent = !!this.agent();
-    const running = !!c?.running || !!this.state.pod;
+    const running = !!c?.running || !!this.state.pod || !!this.state.host;
     const s = this.state;
     const ready = agent && !!s.readyAt && !!s.helloAt && s.readyAt >= s.helloAt;
     const hostKey = await this.ctx.storage.get<HostKey>("hostKey");
@@ -204,6 +207,8 @@ export class Project extends DurableObject<Env> {
       machine: running || agent ? (s.machine ?? null) : null,
       state: ready ? "running" : agent || running ? "starting" : "stopped",
       ...(this.state.pod ? { gpu: this.state.pod.gpu, pricePerHour: this.state.pod.cost, cloud: this.state.pod.cloud } : {}),
+      ...(this.state.host ? { computer: this.state.host.name } : {}),
+      ...(this.state.hostError ? { lastError: this.state.hostError } : {}),
       sessions: this.sessions(),
       // the cold start: start() to the agent's hello, and the agent process's own start
       startedAt: s.upAt ?? null,
@@ -223,10 +228,14 @@ export class Project extends DurableObject<Env> {
     if (owner?.guest && machine !== "cpu-1")
       return { error: `guests can use cpu-1 machines only`, hint: "sign in for bigger machines and GPUs" };
     if (machine.startsWith("gpu-")) return this.upGpu(machine, origin);
+    if (!MACHINES[machine] && this.state.owner) {
+      const h = await this.accounts().host(this.state.owner, machine);
+      if (h) return this.upHost(h, origin);
+    }
     const name = this.state.name;
     const instance = MACHINES[machine];
     if (!instance)
-      return { error: `unknown machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(MACHINES).join(", ")}, or gpu-<type> (${Object.keys(GPUS).map((g) => `gpu-${g}`).join(", ")})` };
+      return { error: `unknown machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(MACHINES).join(", ")}, gpu-<type> (${Object.keys(GPUS).map((g) => `gpu-${g}`).join(", ")}), or one of your computers (tule hosts)` };
     const c = this.ctx.container;
     if (!c)
       return {
@@ -258,6 +267,39 @@ export class Project extends DurableObject<Env> {
     await c.setInactivityTimeout(IDLE_MS + 2 * CHECK_MS);
     await this.ctx.storage.setAlarm(Date.now() + (this.state.guest ? 60_000 : CHECK_MS));
     return this.status();
+  }
+
+  /** A machine on one of the owner's computers: its `tule host` service runs Tule's image, which dials in like any machine. */
+  async upHost(h: { id: string; name: string }, origin: string): Promise<Result> {
+    if (this.state.host?.id === h.id && (this.agent() || this.state.upAt! > Date.now() - 20 * 60_000)) return this.status();
+    if (this.ctx.container?.running || this.state.pod || this.state.host) await this.stopMachine("resize");
+    const host = stub<Host>(this.env.HOST, h.id);
+    const info = await host.status();
+    if (!info.online) return { error: `${h.name} is offline`, hint: "start the computer, or check its service there: tule host status" };
+    const gpus = ((info.specs as { gpus?: unknown[] } | null)?.gpus ?? []).length > 0;
+    const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    this.state = {
+      ...this.state, machine: h.name, host: h, hostError: undefined, guest: false, pod: undefined, joinHash: await sha256(token),
+      upAt: Date.now(), billedUntil: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lastActive: Date.now(),
+    };
+    await this.save();
+    const r = await host.run(this.state.id ?? "", { TULE_URL: origin, TULE_PROJECT: this.state.id ?? "", TULE_NAME: this.state.name ?? "", TULE_JOIN_TOKEN: token }, gpus);
+    if (r.error) {
+      this.state = { ...this.state, host: undefined, joinHash: undefined };
+      await this.save();
+      return r;
+    }
+    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    return { ...(await this.status()), note: r.pulling ? `${h.name} is downloading Tule's image; the first start there takes a few minutes` : undefined };
+  }
+
+  /** The computer could not start the container (the Host object relays it). */
+  async hostFailed(error: string) {
+    if (!this.state.host) return;
+    console.log(JSON.stringify({ event: "host-failed", project: this.state.name, host: this.state.host.name, error }));
+    this.state = { ...this.state, host: undefined, joinHash: undefined, hostError: error };
+    await this.save();
+    this.broadcast();
   }
 
   /** A GPU machine: a pod on the owner's RunPod account running the CUDA image, which dials in like any machine. */
@@ -379,6 +421,11 @@ export class Project extends DurableObject<Env> {
     }
     await this.bill();
     if (this.state.id) await this.accounts().machineStopped(this.state.id);
+    if (this.state.host) {
+      const r = await stub<Host>(this.env.HOST, this.state.host.id).stop(this.state.id ?? "");
+      if (r.error) console.log(JSON.stringify({ event: "host-stop", project: this.state.name, error: r.error }));
+      this.state.host = undefined;
+    }
     if (this.state.pod && this.state.owner) {
       const key = await this.accounts().runpodKey(this.state.owner);
       try {
@@ -410,7 +457,11 @@ export class Project extends DurableObject<Env> {
         return;
       }
     }
-    if (!c?.running && !this.agent() && !pod) return;
+    if (this.state.host && !this.agent() && Date.now() - (this.state.upAt ?? 0) > 20 * 60_000) {
+      await this.hostFailed("the machine did not connect within 20 minutes");
+      return;
+    }
+    if (!c?.running && !this.agent() && !pod && !this.state.host) return;
     await this.bill();
     if (this.state.guest && this.state.owner && (await this.accounts().guestTimeLeft(this.state.owner)) <= 0) {
       console.log(JSON.stringify({ event: "guest-minutes", project: this.state.name }));
@@ -423,7 +474,7 @@ export class Project extends DurableObject<Env> {
       await this.stopMachine("idle");
       return;
     }
-    await this.ctx.storage.setAlarm(Date.now() + (pod || this.state.guest ? 60_000 : CHECK_MS));
+    await this.ctx.storage.setAlarm(Date.now() + (pod || this.state.guest || (this.state.host && !this.agent()) ? 60_000 : CHECK_MS));
   }
 
   // ------------------------------------------------------------ sockets
