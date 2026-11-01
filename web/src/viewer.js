@@ -67,7 +67,9 @@ export class Viewer {
 
     this.group = new THREE.Group(); // one child per part: its surface, edges and glass
     this.arrows = new THREE.Group();
-    this.scene.add(this.group, this.arrows);
+    this.grid = new THREE.Group(); // the floor grid (grid()), not a part: never picked or fitted
+    this.gridStep = null;
+    this.scene.add(this.grid, this.group, this.arrows);
     this.materials = new Map();
     this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x18202a, transparent: true, opacity: 0.75 });
     this.depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, ...BEHIND });
@@ -230,7 +232,63 @@ export class Viewer {
       }
     }
     this.bounds = box.isEmpty() ? null : box;
+    this.updateGrid();
     this.dirty = true;
+  }
+
+  /** A floor grid under the parts: on z = 0 (or under the lowest point, if that is below it),
+   * about twice the parts' footprint, with round spacing (1, 2, 5 × 10^n mm) and every fifth line
+   * stronger; the X axis red, Y green, where they cross it; lines fade towards the edge. */
+  updateGrid() {
+    for (const c of this.grid.children) c.geometry.dispose();
+    this.grid.clear();
+    this.gridStep = null;
+    if (!this.bounds) return;
+    const { min, max } = this.bounds;
+    const span = Math.max(max.x - min.x, max.y - min.y, (max.z - min.z) * 0.5, 1e-3);
+    const raw = (span * 2.2) / 24;
+    const pow = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 5, 10].map((m) => m * pow).find((v) => v >= raw);
+    const half = Math.ceil((span * 1.1) / step) * step;
+    const cx = Math.round((min.x + max.x) / 2 / step) * step;
+    const cy = Math.round((min.y + max.y) / 2 / step) * step;
+    const z = Math.min(0, min.z);
+    const R = half;
+    const n = Math.round(half / step);
+    const minor = [], major = [], axes = [];
+    const seg = 24; // pieces per line, for the fade
+    const add = (list, color, x0, y0, x1, y1) => {
+      for (let i = 0; i < seg; i++) {
+        const t0 = i / seg, t1 = (i + 1) / seg;
+        for (const t of [t0, t1]) {
+          const x = x0 + (x1 - x0) * t, y = y0 + (y1 - y0) * t;
+          const d = Math.hypot(x - cx, y - cy) / R;
+          const a = Math.max(0, 1 - d ** 3);
+          list.push(x, y, z, color[0], color[1], color[2], a);
+        }
+      }
+    };
+    const GRID = [0.36, 0.41, 0.47];
+    for (let i = -n; i <= n; i++) {
+      const v = i * step;
+      const strong = (Math.round((cx + v) / step) % 5) === 0;
+      const onAxisX = Math.abs(cy + v) < step / 1000; // the line y = 0: the X axis
+      const onAxisY = Math.abs(cx + v) < step / 1000; // x = 0: the Y axis
+      add(onAxisX ? axes : strong ? major : minor, onAxisX ? [0.85, 0.25, 0.22] : GRID, cx - half, cy + v, cx + half, cy + v);
+      add(onAxisY ? axes : strong ? major : minor, onAxisY ? [0.25, 0.65, 0.3] : GRID, cx + v, cy - half, cx + v, cy + half);
+    }
+    const lines = (data, opacity) => {
+      const a = new Float32Array(data);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(a, 7), 3, 0));
+      g.setAttribute("color", new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(a, 7), 4, 3));
+      const m = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity, depthWrite: false });
+      const l = new THREE.LineSegments(g, m);
+      l.renderOrder = -1;
+      return l;
+    };
+    this.grid.add(lines(minor, 0.32), lines(major, 0.6), lines(axes, 0.9));
+    this.gridStep = step;
   }
 
   /** Colors faces: styles [{part: index or null for every part, faces: [B-rep

@@ -360,7 +360,8 @@ async function show() {
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
     offerDownload(kind === "assembly" ? o.files : shownFiles);
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
-    $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles`;
+    const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";
+    $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles${grid}`;
     setStatus("");
   } catch (e) {
     if (state.shown === key) {
