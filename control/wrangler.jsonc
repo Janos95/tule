@@ -7,11 +7,24 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-30",
   "workers_dev": true,
-  // web/dist (npm --prefix ../web run build); /p/<project> is the viewer page
+  // skills/*.md -> src/skills.gen.ts (the MCP server's guide tool)
+  "build": { "command": "node gen-skills.mjs" },
+  // web/dist (npm --prefix ../web run build): the viewer, /p/<project>. The
+  // Worker runs first for every path (sign-in, pages, API) and serves the rest.
   "assets": {
     "directory": "../web/dist",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": true
+  },
+  // PUBLIC_URL: this deployment's origin (OAuth issuer and MCP resource).
+  // ALLOWED_EMAILS: who may sign up ("*" for anyone). CPU_HOURS_MONTH: each
+  // user's CPU machine time. Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+  // ENCRYPTION_KEY (32 bytes, base64; encrypts stored RunPod keys), DEV_TOKEN.
+  "vars": {
+    "PUBLIC_URL": "https://tule.genau-mcp-relay.workers.dev",
+    "ALLOWED_EMAILS": "janos.meny@googlemail.com",
+    "CPU_HOURS_MONTH": "100"
   },
   // the machine image: Durable Object scheduling, so each start picks its
   // instance size (cpu-1 .. cpu-4) and passes its own join token
@@ -22,11 +35,19 @@
       "images": { "cpu": { "dockerfile": "../runtime/Dockerfile", "build_context": ".." } }
     }
   ],
-  "durable_objects": { "bindings": [{ "name": "PROJECT", "class_name": "Project" }] },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PROJECT", "class_name": "Project" },
+      { "name": "ACCOUNTS", "class_name": "Accounts" }
+    ]
+  },
+  // the OAuth provider's grants and tokens (hashed) for MCP clients
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "4ce03178f1514f2486405f903c68b9c2" }],
   // workspace snapshots: content-addressed chunks and manifests per project
   "r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "tule-workspaces" }],
-  "exports": { "Project": { "type": "durable-object", "storage": "sqlite" } },
-  // DEV_TOKEN (a secret): the one credential of the spike, until accounts and
-  // sign-in (milestone 4)
+  "exports": {
+    "Project": { "type": "durable-object", "storage": "sqlite" },
+    "Accounts": { "type": "durable-object", "storage": "sqlite" }
+  },
   "observability": { "enabled": true }
 }

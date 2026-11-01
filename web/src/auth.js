@@ -1,10 +1,12 @@
 // The page's credentials, in one place: every request to the control plane
 // (the viewer's WebSocket and the REST calls) goes through here.
 //
-// Until accounts exist (milestone 4) that is the dev token: it comes once in
-// the link's fragment, #t=<token> (tule open), and is kept in localStorage.
-// With accounts this becomes the session cookie: socket() and api() drop the
-// token and the browser sends the cookie.
+// A signed-in browser carries the session cookie (tule_session, HttpOnly),
+// which same-origin fetches and the WebSocket send by themselves. Signed out,
+// /api/me answers 401 and the page goes to Google sign-in, coming back here.
+// For local tests a dev token still works: it comes once in the link's
+// fragment (#t=<token>), is kept in localStorage, and is then sent as
+// "Authorization: Bearer" and as ?t= on the WebSocket.
 import { store } from "./store.js";
 
 const frag = new URLSearchParams(location.hash.slice(1));
@@ -13,18 +15,29 @@ if (frag.get("t")) {
   history.replaceState(null, "", location.pathname + location.search);
 }
 const token = store.getItem("tule/token");
+const headers = () => (token ? { Authorization: `Bearer ${token}` } : {});
 
 export const auth = {
-  /** Why the page cannot connect, or "" when it can. */
-  missing: () => (token ? "" : "No access token: open this page with tule open"),
+  /** Whether the page may call the API; signed out, it goes to the sign-in page (and resolves false). */
+  async signedIn() {
+    let r;
+    try {
+      r = await fetch("/api/me", { headers: headers() });
+    } catch {
+      return true; // offline: the WebSocket retries and says so
+    }
+    if (r.status !== 401) return true;
+    location.href = `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+    return false;
+  },
   /** The WebSocket URL for an API path ("/api/projects/<p>/view"). */
   socket(path) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${location.host}${path}?t=${encodeURIComponent(token ?? "")}`;
+    return `${proto}//${location.host}${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`;
   },
-  /** fetch() for an API path, authorized; throws Error(error + hint) on a non-2xx answer. */
+  /** fetch() for an API path, authorized; throws Error("<error>: <hint>") on a non-2xx answer. */
   async api(path, init = {}) {
-    const r = await fetch(path, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token ?? ""}` } });
+    const r = await fetch(path, { ...init, headers: { ...init.headers, ...headers() } });
     if (!r.ok) {
       let msg = `${r.status} ${r.statusText}`;
       try {

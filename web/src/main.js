@@ -64,15 +64,12 @@ function setStatus(text) {
 
 // ------------------------------------------------------------ connection
 
-function connect(delay = 500) {
+async function connect(delay = 500) {
   if (!project) {
     setStatus("Open a project: /p/<name> (tule open -p <name>)");
     return;
   }
-  if (auth.missing()) {
-    setStatus(auth.missing());
-    return;
-  }
+  if (!(await auth.signedIn())) return;
   $("project-title").textContent = project;
   document.title = `${project} · Tule`;
   ws = new WebSocket(auth.socket(`/api/projects/${project}/view`));
@@ -83,7 +80,7 @@ function connect(delay = 500) {
     for (const p of pending.values()) p.reject(new Error("disconnected"));
     pending.clear();
     machine({ state: "offline" });
-    if (e.code === 1008 || e.code === 4401) return setStatus("Not authorized: open this page with tule open");
+    if (e.code === 1008 || e.code === 4401) return setStatus("Not authorized for this project: sign in with the account that owns it");
     setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay);
   };
 }
