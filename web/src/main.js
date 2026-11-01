@@ -17,6 +17,7 @@ import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
 import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
+import { initPlot } from "./plot.js";
 import { Viewer, sortByFace } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
@@ -29,6 +30,11 @@ try {
   $("viewer").innerHTML = `<div class="nogl">This browser cannot show 3D (WebGL): ${e.message}</div>`;
 }
 const parts = viewer ? initParts({ viewer, project: () => project ?? "" }) : null;
+const plot = initPlot($("plot"), (i) => {
+  play(false);
+  state.frame = i;
+  show();
+});
 const overlay = viewer ? initOverlay({ viewer, legend: $("legend"), marks: $("marks") }) : null;
 const state = {
   machine: "unknown", // the machine's state: running, starting, stopped, offline
@@ -251,11 +257,13 @@ async function show() {
     const following = state.frame >= +$("scrub").max; // stay on the newest frame while it grows
     $("scrub").max = String(Math.max(0, fr.length - 1));
     if (following) state.frame = fr.length - 1;
-    state.frame = Math.min(state.frame, fr.length - 1);
+    state.frame = Math.max(0, Math.min(state.frame, fr.length - 1));
     $("scrub").value = String(state.frame);
     const cur = fr[state.frame];
-    const values = cur?.values ? Object.entries(cur.values).map(([k, v]) => `${k} ${+v.toPrecision(4)}`).join(" · ") : "";
-    $("frame").textContent = cur ? [cur.label ?? `frame ${state.frame}`, values].filter(Boolean).join(" · ") : "";
+    plot.set(fr, state.frame);
+    // the plot's legend names the frame and its values; without values, the label goes here
+    $("frame").textContent = `${state.frame + 1} / ${fr.length}${$("plot").hidden && cur?.label ? ` · ${cur.label}` : ""}`;
+    $("live").hidden = o.meta?.status !== "running";
     files = cur ? [cur.f] : [];
     frame = state.frame;
   } else if (kind === "overlay" || kind === "part") {

@@ -80,9 +80,13 @@
           <div id="counts"></div>
         </div>
         <footer id="sequence" hidden>
-          <button id="play" title="Play the frames" aria-label="Play the frames"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z" /></svg></button>
-          <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Frame" />
-          <span id="frame"></span>
+          <div id="plot" class="plot" aria-label="The frames' values" hidden></div>
+          <div class="seq-row">
+            <button id="play" title="Play the frames" aria-label="Play the frames"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z" /></svg></button>
+            <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Frame" />
+            <span id="frame"></span>
+            <span id="live" class="live" title="output.json says more frames are coming" hidden>running</span>
+          </div>
         </footer>
       </section>
     </main>

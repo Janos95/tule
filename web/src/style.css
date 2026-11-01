@@ -1462,8 +1462,26 @@ main {
 }
 
 #sequence[hidden] { display: none; }
-#scrub { flex: 1; }
-#frame { font-size: 12.5px; color: var(--muted); min-width: 180px; }
+#sequence { flex-direction: column; align-items: stretch; gap: 6px; }
+.seq-row { display: flex; align-items: center; gap: 10px; }
+#scrub { flex: 1; max-width: none; }
+#frame { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.live { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #1d7a45; }
+.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #2e9d5b; animation: blink 1.2s ease-in-out infinite; }
+.plot { display: flex; flex-direction: column; gap: 3px; }
+.plot-svg { display: block; width: 100%; height: 64px; cursor: pointer; touch-action: none; }
+.plot-base { stroke: var(--line); stroke-width: 1; }
+.plot-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.plot-dot { stroke: var(--panel); stroke-width: 2; }
+.plot-cursor { stroke: #23344a; stroke-width: 1; stroke-dasharray: 3 2; }
+.plot-hover { stroke: #8a949e; stroke-width: 1; }
+.plot-axis { font: 10px var(--sans); fill: var(--muted); }
+.plot-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.plot-frame { color: var(--text); font-weight: 500; }
+.plot-key { display: inline-flex; align-items: center; gap: 5px; }
+.plot-key i { width: 10px; height: 3px; border-radius: 2px; }
+.plot-key b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+.plot-key small { font-size: 11px; }
 #play.on { background: #23344a; color: #fff; }
 
 #play svg {
