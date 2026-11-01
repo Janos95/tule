@@ -7,6 +7,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-30",
   "workers_dev": true,
+  "routes": [{ "pattern": "tule.janosmeny.com", "custom_domain": true }],
   // skills/*.md -> src/skills.gen.ts (the MCP server's guide tool)
   "build": { "command": "node gen-skills.mjs" },
   // web/dist (npm --prefix ../web run build): the viewer, /p/<project>. The
@@ -22,7 +23,7 @@
   // user's CPU machine time. Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
   // ENCRYPTION_KEY (32 bytes, base64; encrypts stored RunPod keys), DEV_TOKEN.
   "vars": {
-    "PUBLIC_URL": "https://tule.genau-mcp-relay.workers.dev",
+    "PUBLIC_URL": "https://tule.janosmeny.com",
     "ALLOWED_EMAILS": "janos.meny@googlemail.com",
     "CPU_HOURS_MONTH": "100",
     // GPU machines run this image on RunPod (built by .github/workflows/runtime.yml)

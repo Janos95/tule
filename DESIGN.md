@@ -426,7 +426,23 @@ genau's page, rewired as a renderer of `outputs/`.
   selector; a files browser for `/workspace`; snapshot history (open any
   output as of any snapshot); STEP/3MF download; settings (RunPod key, API
   and SSH keys); usage.
-- The code editor stays for small edits; saving writes to `/workspace`.
+- The code editor stays for small edits; saving writes to `/workspace`
+  (not built yet).
+
+As built (milestone 5): tabs for Outputs, Files and History; overlays
+(faces colored by severity or role, load arrows, a legend); the sequence
+plot; downloads; snapshot history (outputs as they were, tessellated by the
+machine from the snapshot's chunks) with Restore; assembly placement
+(`"transform"`: a row-major 4×4 matrix per part); and **annotations**: the
+user draws strokes or picks and labels faces, and Save writes
+`/workspace/annotations/<time>/annotation.png` and `annotation.json` (strokes
+mapped to B-rep faces, labelled picks, the camera, a one-line `summary`) for
+their agent to read, e.g. to place boundary conditions, which the agent shows
+back as an overlay for the user to confirm before running topology
+optimization. The page talks to the machine through the generic request relay
+(`files`, `read`, `mesh_chunks`, `annotate`, `annotations`; the handlers are in
+`runtime/files.py`, `runtime/annotations.py`, `runtime/tule_agent.py`). Settings and
+usage are server pages (see "Accounts").
 
 ## Python API (`tule`)
 
@@ -504,11 +520,29 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 - **`tule.dfm`** v0: CNC 3-axis (tool access and undercuts along a setup
   axis, internal corner radius vs tool, pocket depth ratio, thin walls) and
   FDM (overhangs, minimum wall, bridging, bed contact). Findings carry face
-  ids, tags, severity and values (later shown as an `overlay` output).
-- **`tule.topopt`** v0: SIMP on a hex grid (scipy sparse / scikit-fem);
-  design domain, non-design regions, fixed faces and loads from tags; writes
-  a `sequence` output as it iterates and a final smoothed isosurface `Shape`.
-  A CUDA solver later, for GPU machines.
+  ids, tags, severity and values, shown with `outputs.overlay(name, part,
+  report)`. As built: `dfm.cnc(part, axis=-Z, tool_radius=3, ...)`,
+  `dfm.fdm(part, up=+Z, max_overhang=45, ...)` return a `Report`; access and
+  thickness come from ray casts on the tessellation (about the 0.05 mm
+  tolerance); tool holders and shanks are not checked yet.
+- **`tule.topopt`** v0: density-based SIMP (minimum compliance under a volume
+  constraint) with a density filter and optimality-criteria updates (MMA can
+  plug into the update table later). The solver decides how large a problem
+  fits, so it is ours: matrix-free 8-node hexahedra on a voxel grid,
+  conjugate gradients preconditioned by geometric multigrid (Galerkin coarse
+  operators, damped Jacobi smoothing, a direct solve on the coarsest grid),
+  and coarse-to-fine continuation. CG iterations stay flat as the grid gets
+  finer (7–11 per solve from 2k to 147k elements in the benchmark). One code
+  path for CPU and GPU through an array backend (NumPy/SciPy, CuPy on GPU
+  machines; `device="auto"`). Tule integration: the domain is a `Shape`
+  voxelized with OCC's classifier; `topopt.Problem(part, fixed=part.faces["bolt"],
+  loads={part.faces["load"]: (0, 0, -500)}, keep=[...], void=[...])`, whose
+  `.show(name)` writes the boundary conditions as an overlay to confirm;
+  `optimize()` streams a `sequence` output and returns a smooth isosurface
+  mesh (marching cubes behind one function, so dual contouring can replace
+  it) that converts to a `Shape` for later Booleans. Manufacturing
+  constraints (symmetry, extrusion and milling directions, overhang limits)
+  come later with DFM. The GPU path is untested.
 - **Later:** `tule.fea` (linear static, gmsh + scikit-fem), cost estimates,
   drawings.
 
@@ -565,8 +599,10 @@ tule/
    paths, the Claude plugin. **Done** (2026-11-01) except the Claude plugin:
    see "Accounts".
 5. **Viewer:** outputs (part, assembly, sequence), faces and edges, picking,
-   files browser, snapshot history, STEP download.
-6. **Engineering libraries:** `tule.dfm` v0, `tule.topopt` v0.
+   files browser, snapshot history, STEP download. **Done** (2026-11-01),
+   with overlays and annotations; the code editor is not built.
+6. **Engineering libraries:** `tule.dfm` v0, `tule.topopt` v0. **Done**
+   (2026-11-01): see "Engineering libraries".
 7. **GPU:** RunPod backend (settings, encrypted key, `tule up --gpu`),
    agent-provisioned pods via join tokens, then `tule.remote`. The backend,
    settings and `tule up --gpu` are built; `tule.remote` is later.
@@ -576,7 +612,7 @@ tule/
 
 | Decision | Default |
 |---|---|
-| Domain | `tule.genau-mcp-relay.workers.dev` (the account's workers.dev subdomain) until one is chosen |
+| Domain | `tule.janosmeny.com` (a custom domain of the Worker; `tule.genau-mcp-relay.workers.dev` still answers) |
 | Sign-in | Google, GitHub as an alternative |
 | Default machine | `cpu-1` (1 vCPU / 6 GiB), also `cpu-2` (2 / 8) and `cpu-4` (4 vCPU / 12 GiB) |
 | Outbound network | package registries + per-project allowlist |

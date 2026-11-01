@@ -6,8 +6,8 @@ See [DESIGN.md](DESIGN.md).
 
 ## Use it
 
-1. Sign in at https://tule.genau-mcp-relay.workers.dev (Google; invite-only for now).
-2. Connect your agent: add `https://tule.genau-mcp-relay.workers.dev/mcp` as a custom
+1. Sign in at https://tule.janosmeny.com (Google; invite-only for now).
+2. Connect your agent: add `https://tule.janosmeny.com/mcp` as a custom
    connector (Claude, ChatGPT) or remote MCP server (Claude Code, Codex, Cursor).
 3. Give it the CLI for the work:
 
