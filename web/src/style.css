@@ -1295,7 +1295,6 @@ main {
 
 /* the sidebar's top: back to your projects, and this project's name */
 .project-head { flex: none; padding: 12px 12px 6px; }
-.project-head .mark { width: 20px; height: 20px; margin-right: 6px; }
 .side-foot { flex: none; padding: 8px 14px; border-top: 1px solid var(--line); }
 .side-foot .machine { font-size: 11.5px; }
 .project-head .back {
