@@ -15,6 +15,7 @@
 // (overlay.js has its format).
 import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
+import { initFiles, size } from "./files.js";
 import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
 import { initPlot } from "./plot.js";
@@ -67,6 +68,14 @@ function setStatus(text) {
   $("status").textContent = text;
   $("status").hidden = !text;
 }
+
+/** A message that goes away by itself. */
+function flash(text) {
+  setStatus(text);
+  setTimeout(() => $("status").textContent === text && setStatus(""), 6000);
+}
+
+const files = initFiles({ req, machine: () => state.machine, notify: flash });
 
 // ------------------------------------------------------------ connection
 
@@ -173,8 +182,10 @@ function request(file) {
 }
 
 function machine(s) {
+  const changed = state.machine !== s.state;
   state.machine = s.state;
   annotate?.machineChanged();
+  if (changed && tab === "files") files.show();
   const el = $("machine");
   el.dataset.state = s.state;
   const text = {
@@ -243,12 +254,13 @@ async function show() {
     state.meshes = [];
     state.record = null;
     viewer?.clear();
+    offerDownload([]);
     $("sequence").hidden = true;
     $("counts").textContent = "";
     return;
   }
   const kind = kindOf(o);
-  let files = o.files;
+  let shownFiles = o.files;
   let frame = null;
   const seq = $("sequence");
   seq.hidden = kind !== "sequence";
@@ -264,31 +276,32 @@ async function show() {
     // the plot's legend names the frame and its values; without values, the label goes here
     $("frame").textContent = `${state.frame + 1} / ${fr.length}${$("plot").hidden && cur?.label ? ` · ${cur.label}` : ""}`;
     $("live").hidden = o.meta?.status !== "running";
-    files = cur ? [cur.f] : [];
+    shownFiles = cur ? [cur.f] : [];
     frame = state.frame;
   } else if (kind === "overlay" || kind === "part") {
     const f = o.files.find((x) => x.file === o.meta?.file) ?? o.files[0];
-    files = f ? [f] : [];
+    shownFiles = f ? [f] : [];
   }
-  const key = o.name + "|" + files.map((f) => f.hash).join(",");
+  const key = o.name + "|" + shownFiles.map((f) => f.hash).join(",");
   if (key === state.shown) return;
   const first = !state.shown || !state.shown.startsWith(o.name + "|");
   state.shown = key;
   if (first) annotate?.reset();
-  setStatus(meshes.size === 0 || !files.every((f) => meshes.has(f.hash)) ? "Loading…" : "");
+  setStatus(meshes.size === 0 || !shownFiles.every((f) => meshes.has(f.hash)) ? "Loading…" : "");
   try {
-    const loaded = await Promise.all(files.map(request));
+    const loaded = await Promise.all(shownFiles.map(request));
     if (state.shown !== key) return;
     const named = (m, f) => {
       const entry = o.meta?.parts?.find((p) => p.file === f.file);
       return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color };
     };
-    const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, files[i])));
+    const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i])));
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first ? true : "auto", style);
     overlay?.apply(kind === "overlay" ? o.meta : null);
     state.meshes = all;
-    state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: files.map((f) => f.path), frame };
+    state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
+    offerDownload(kind === "assembly" ? o.files : shownFiles);
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles`;
     setStatus("");
@@ -355,5 +368,49 @@ $("viewer").addEventListener("pointermove", (e) => {
   });
 });
 $("viewer").addEventListener("pointerleave", () => ($("pick").hidden = true));
+
+
+// ------------------------------------------------------------ the side tabs and downloads
+
+let tab = "outputs";
+for (const b of document.querySelectorAll(".side-tabs [role=tab]")) {
+  b.addEventListener("click", () => {
+    tab = b.dataset.tab;
+    for (const x of document.querySelectorAll(".side-tabs [role=tab]")) x.setAttribute("aria-selected", String(x === b));
+    for (const pane of document.querySelectorAll(".side-pane")) pane.hidden = pane.id !== `tab-${tab}`;
+    if (tab === "files") files.show();
+  });
+}
+
+let downloads = [];
+/** The Download button offers the shown output's geometry files. */
+function offerDownload(list) {
+  downloads = list;
+  $("download").hidden = !list.length;
+  $("download-menu").hidden = true;
+}
+function download(f) {
+  $("download-menu").hidden = true;
+  files.download(`outputs/${f.path}`, f.file);
+}
+$("download").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (downloads.length === 1) return download(downloads[0]);
+  const menu = $("download-menu");
+  menu.textContent = "";
+  for (const f of downloads) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    b.innerHTML = "<span></span><small></small>";
+    b.firstChild.textContent = f.file;
+    b.lastChild.textContent = size(f.size);
+    b.addEventListener("click", () => download(f));
+    menu.append(b);
+  }
+  menu.hidden = !menu.hidden;
+  $("download").setAttribute("aria-expanded", String(!menu.hidden));
+});
+document.addEventListener("click", () => ($("download-menu").hidden = true));
 
 connect();
