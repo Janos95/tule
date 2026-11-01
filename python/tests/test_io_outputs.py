@@ -125,3 +125,19 @@ def test_overlay(outdir):
     assert import_step(str(outdir / "loads" / "bracket.step")).tags == ["load", "mount"]
     with pytest.raises(TuleError, match="99 is not a face"):
         outputs.overlay("bad", part, faces={99: "x"})
+
+
+def test_overlay_values_scale_and_info(outdir):
+    part = tagged_bracket()
+    outputs.overlay("walls", part, faces={0: 1.8, 1: 0.9}, title="Wall thickness",
+                    scale={"label": "wall thickness", "unit": "mm", "min": 0, "max": 3}, info={"material": "Al 6061", "mass_g": 20.8})
+    meta = json.load(open(outdir / "walls" / "output.json"))
+    assert meta["faces"]["0"]["value"] == 1.8 and meta["faces"]["1"]["value"] == 0.9
+    assert meta["scale"] == {"label": "wall thickness", "unit": "mm", "min": 0.0, "max": 3.0}
+    assert meta["info"] == {"material": "Al 6061", "mass_g": 20.8}
+    outputs.part("plain", part, info={"mass": "20.8 g"})
+    assert json.load(open(outdir / "plain" / "output.json"))["info"] == {"mass": "20.8 g"}
+    with pytest.raises(TuleError, match="info\\['bad'\\] is a list"):
+        outputs.part("x", part, info={"bad": [1, 2]})
+    with pytest.raises(TuleError, match="scale is a dict"):
+        outputs.overlay("y", part, faces={0: 1.0}, scale={"colour": "red"})

@@ -253,11 +253,16 @@ outputs/
   colors, optional transforms; shown in the Parts panel), `sequence` (ordered
   frames with labels and values; slider, play, a plot of the values;
   `"status": "running"` means more frames are coming), `overlay` (a part
-  with faces colored by `role` or `severity` and labeled, plus arrows:
-  boundary conditions, DFM findings, what the agent understood from an
-  annotation; `{"file", "faces": {"12": {"role", "label"}}, "arrows":
-  [{"at", "dir", "label"}]}`). Later: per-vertex data (stress) and
-  `variants` (side by side).
+  with faces colored by `role` or `severity` and labeled, or by a number
+  `value` on a color scale, plus arrows: boundary conditions, DFM findings,
+  per-face measurements, what the agent understood from an annotation;
+  `{"file", "faces": {"12": {"role" | "severity" | "value", "label"}},
+  "scale": {"label", "unit", "min", "max"}, "arrows": [{"at", "dir",
+  "label"}]}`). Any kind may carry `"info"`: facts about the output
+  (material, mass, ...), shown as rows under the view. The viewer shows
+  info, the value scale and an overlay's findings in a strip under the view,
+  never over the part. Later: per-vertex data (stress) and `variants` (side
+  by side).
 - **The JSON is optional.** Without it the viewer infers the kind: one file is
   a part, several an assembly, numbered files a sequence.
 - **Formats:** STEP (B-rep) and STL, 3MF, OBJ, glTF (meshes).

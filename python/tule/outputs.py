@@ -16,6 +16,9 @@ outputs.overlay("bracket-dfm", part, dfm.cnc(part))  # per-face findings on the 
 outputs.overlay("bracket-loads", part,                # colored faces and arrows on a part
                 faces={part.faces["load"]: {"role": "load", "label": "500 N"}},
                 arrows=[{"at": (0, 0, 18), "dir": (0, 0, -1), "label": "500 N"}])
+outputs.overlay("bracket-walls", part,                # numbers on faces, colored on a scale
+                faces={12: 1.8, 13: 0.9}, scale={"label": "wall thickness", "unit": "mm", "min": 0, "max": 3})
+outputs.part("bracket", part, info={"material": "aluminium 6061", "mass": "20.8 g"})  # facts, any kind
 ```
 
 Nothing here is required: any tool may write the files and JSON directly.
@@ -33,11 +36,12 @@ B-rep face ids, the same as ``part.faces`` and the viewer's ``f12``::
         "12": {"severity": "error", "label": "internal corner r1 < tool r3"},
         "4":  {"role": "fixed", "label": "fixed"},
         "7":  {"role": "load", "label": "500 N -Z"},
-        "9":  {"value": 0.31, "label": "0.31"}
+        "9":  {"value": 0.31}
       },
       "arrows": [                             # optional: vectors to draw (loads)
         {"at": [x, y, z], "dir": [0, 0, -1], "label": "500 N"}
       ],
+      "scale": {"label": "wall thickness", "unit": "mm", "min": 0, "max": 3},  # optional: for "value"s
       "findings": [                           # optional: the full list, for a panel
         {"check": "corner_radius", "severity": "error", "label": "...", "message": "...",
          "faces": [12, 13], "edges": [31], "tags": ["pocket"], "values": {"radius": 1.0, "tool_radius": 3.0}}
@@ -51,6 +55,13 @@ Every key of a face entry is optional: ``severity`` (``"error"``,
 color by). When several findings share a face, its entry has the worst
 severity and their labels joined with ``"; "``, worst first. ``dir`` is a
 unit vector; ``at`` is in model units (mm). Faces not listed have no data.
+A face with only a ``value`` is colored on a blue-to-red scale from
+``scale.min`` to ``scale.max`` (default: the values' range), with a legend
+bar labelled ``scale.label`` in ``scale.unit``.
+
+**Info** (any kind): ``"info": {"material": "aluminium 6061", "mass": "20.8 g"}``
+are facts about the output, shown as rows under the view. Values are text,
+numbers or booleans.
 """
 
 from __future__ import annotations
@@ -108,18 +119,39 @@ def _write_json(folder: str, data: dict) -> str:
     return write_atomic(os.path.join(folder, "output.json"), json.dumps(data, indent=2) + "\n")
 
 
+def _info(info) -> dict | None:
+    """Checks ``info``: a flat mapping of names to text, numbers or booleans."""
+    if info is None:
+        return None
+    if not isinstance(info, dict):
+        raise TuleError(f"info must be a dict, got {type(info).__name__}", op="outputs",
+                        hint='{"material": "aluminium 6061", "mass": "20.8 g"}')
+    out = {}
+    for k, v in info.items():
+        if hasattr(v, "item"):  # numpy scalars
+            v = v.item()
+        if not isinstance(v, (str, int, float, bool)):
+            raise TuleError(f"info[{k!r}] is a {type(v).__name__}", op="outputs",
+                            hint="use text, a number or a boolean (format units into text: '20.8 g')")
+        out[str(k)] = v
+    return out
+
+
 def _mesh_arrays(mesh) -> tuple:
     if isinstance(mesh, Mesh):
         return mesh.positions, mesh.indices
     return mesh[0], mesh[1]
 
 
-def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: str | None = None) -> str:
+def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: str | None = None,
+         info: dict | None = None) -> str:
     """Write one part: ``outputs/<name>/<name>.<fmt>``. Returns the folder.
 
     ``shape`` is a Shape (STEP unless ``fmt`` says otherwise) or a ``Mesh``
-    (always STL), such as a topology optimization result.
+    (always STL), such as a topology optimization result. ``info``: facts
+    shown under the view (``{"mass": "20.8 g"}``).
     """
+    info = _info(info)
     folder = _folder(name)
     if isinstance(shape, Mesh):
         fname = f"{_slug(name)}.stl"
@@ -128,6 +160,8 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
         meta: dict[str, Any] = {"kind": "part", "file": fname}
         if title:
             meta["title"] = title
+        if info:
+            meta["info"] = info
         _write_json(folder, meta)
         return folder
     fmt = fmt or "step"
@@ -140,12 +174,16 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
         meta["name"] = shape.name
     if shape.color:
         meta["color"] = shape.color
+    if info:
+        meta["info"] = info
     _write_json(folder, meta)
     return folder
 
 
-def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", title: str | None = None) -> str:
+def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", title: str | None = None,
+             info: dict | None = None) -> str:
     """Write an assembly: one file per part plus ``output.json`` listing names and colors."""
+    info = _info(info)
     asm = item if isinstance(item, Assembly) else Assembly(*item, name=name)
     folder = _folder(name)
     parts = []
@@ -166,6 +204,8 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
     meta: dict[str, Any] = {"kind": "assembly", "parts": parts}
     if title or asm.name:
         meta["title"] = title or asm.name
+    if info:
+        meta["info"] = info
     _write_json(folder, meta)
     return folder
 
@@ -268,7 +308,7 @@ def _face_entries(shape: Shape, data) -> tuple[dict, list | None, str | None]:
             elif isinstance(v, str):
                 entry = {"label": v}
             elif isinstance(v, (int, float)):
-                entry = {"value": float(v), "label": f"{v:.3g}"}
+                entry = {"value": float(v)}  # the viewer labels it with the scale's unit
             else:
                 raise TuleError(f"cannot show a {type(v).__name__} on a face", op="overlay",
                                 hint="use a number, a label, or a dict with severity/role/label/value")
@@ -289,16 +329,25 @@ def _face_entries(shape: Shape, data) -> tuple[dict, list | None, str | None]:
     return faces, [f.to_dict() for f in findings], summary
 
 
-def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None = None) -> str:
+def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None = None,
+            scale: dict | None = None, info: dict | None = None) -> str:
     """Write a part with per-face data: ``outputs/<name>/<part>.step`` plus an overlay ``output.json``.
 
     ``faces`` is a ``dfm`` Report, a list of findings, or a mapping from a face
     id or a face selection (``part.faces["load"]``) to a number, a label, or a
     dict (``severity``, ``role``, ``label``, ``value``). ``arrows`` are dicts ``{"at": point, "dir": vector, "label": text}``.
+    ``scale`` names the values' color scale: ``{"label", "unit", "min", "max"}``
+    (all optional). ``info``: facts shown under the view.
     The format is described at the top of this module. Returns the folder.
     """
     if not isinstance(part, Shape):
         raise TuleError(f"an overlay needs a Shape, got {type(part).__name__}", op="overlay")
+    info = _info(info)
+    if scale is not None:
+        if not isinstance(scale, dict) or set(scale) - {"label", "unit", "min", "max"}:
+            raise TuleError("scale is a dict with label, unit, min and max (all optional)", op="overlay",
+                            hint='{"label": "wall thickness", "unit": "mm", "min": 0, "max": 3}')
+        scale = {k: (float(v) if k in ("min", "max") else str(v)) for k, v in scale.items() if v is not None}
     entries, findings, summary = _face_entries(part, faces)
     folder = _folder(name)
     fname = f"{_slug(part.name or name)}.step"
@@ -315,6 +364,10 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
                 d["label"] = str(a["label"])
             out.append(d)
         meta["arrows"] = out
+    if scale:
+        meta["scale"] = scale
+    if info:
+        meta["info"] = info
     if findings is not None:
         meta["findings"] = findings
     if summary:

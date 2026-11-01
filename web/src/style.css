@@ -1473,45 +1473,11 @@ main {
 
 /* ---------------------------------------------------------------- overlays */
 
-.legend {
-  position: absolute;
-  z-index: 2;
-  top: 10px;
-  left: 10px;
-  width: 300px;
-  max-width: calc(100% - 20px);
-  max-height: calc(100% - 60px);
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 6px 24px rgba(20, 30, 40, 0.1);
-  font-size: 12.5px;
-}
-
-.legend-head { flex: none; padding: 2px; }
-.legend .legend-title {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-  width: 100%;
-  height: auto;
-  padding: 5px 8px;
-  border: none;
-  background: none;
-  text-align: left;
-}
-.legend .legend-title:hover { background: #f1f4f7; }
-.legend-title b { font-weight: 600; font-size: 12.5px; }
-.legend-title small { color: var(--muted); font-size: 11.5px; }
-.legend-list { min-height: 0; overflow-y: auto; padding: 4px; border-top: 1px solid var(--line); }
+.legend { font-size: 12.5px; }
 .legend-row {
   display: grid;
   grid-template-columns: 12px auto 1fr;
-  align-items: center;
+  align-items: start;
   column-gap: 7px;
   padding: 4px 6px;
   border-radius: 5px;
@@ -1519,6 +1485,7 @@ main {
 .legend-row:hover { background: #edf1f5; }
 .swatch {
   flex: none;
+  margin-top: 2px;
   width: 12px;
   height: 12px;
   border-radius: 3px;
@@ -1539,7 +1506,7 @@ main {
 .legend-kind.error { color: #b42318; }
 .legend-kind.warning { color: #9a5b00; }
 .legend-kind.info { color: #1c5cab; }
-.legend-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend-label { min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 .legend-faces { grid-column: 3; color: var(--muted); font: 11px/1.3 var(--mono); }
 
 #marks { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -1557,7 +1524,6 @@ main {
 }
 
 @media (max-width: 640px) {
-  .legend { top: auto; bottom: 30px; width: auto; right: 10px; max-height: 45%; }
 }
 
 /* ---------------------------------------------------------------- annotations */
@@ -1671,3 +1637,16 @@ main {
 @media (max-width: 900px) and (min-width: 641px) {
   #outputs { width: 200px; }
 }
+
+/* the strip under the view: the output's info, a value scale, findings and conditions (overlay.js) */
+.strip { flex: none; max-height: 34%; overflow-y: auto; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+.strip .legend-head { padding: 0 6px 8px; color: var(--text); font-size: 13px; font-weight: 500; }
+.strip .legend-head:empty { display: none; }
+.strip .legend-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 0 14px; }
+.legend-info { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 0 6px 10px; }
+.legend-info dt { color: var(--muted); font-size: 11px; }
+.legend-info dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.legend-scale { display: flex; align-items: center; gap: 8px; margin: 0 6px 10px; font-size: 12.5px; }
+.legend-scale-label { color: var(--text); margin-right: 4px; }
+.legend-scale small { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.legend-ramp { flex: 0 1 220px; height: 10px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12); }

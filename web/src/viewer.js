@@ -77,6 +77,7 @@ export class Viewer {
     this.wire = true;
     this.fitted = null;
     this.moved = false; // the user moved the camera since the last fit: a resize then keeps their view
+    this.insets = { left: 0, top: 0, right: 0, bottom: 0 }; // CSS px covered by panels: the part is framed in the rest
     this.dirty = true;
     this.raycaster = new THREE.Raycaster();
     this.listeners = new Set(); // after each render (HTML labels follow the view)
@@ -100,7 +101,7 @@ export class Viewer {
     const h = this.el.clientHeight || 1;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
+    this.offset();
     // a new shape of the view (a resized window, a rotated phone): frame the part again, unless the user has moved it
     if (this.bounds && this.fitted && !this.moved) this.fit();
     this.renderer.render(this.scene, this.camera);
@@ -319,8 +320,37 @@ export class Viewer {
     return a.radius > 1.6 * b.radius || a.radius < b.radius / 3 || a.center.distanceTo(b.center) > 0.6 * b.radius;
   }
 
-  // frames the bounding box: the camera keeps its direction (a 3/4 view the
-  // first time) and moves back until every box corner is inside the view
+  /** The parts of the view covered by panels (the legend, the toolbar): fitting frames the
+   * part in the rest, and the view's center moves there (a shifted projection, not a smaller canvas). */
+  setInsets(insets) {
+    const old = JSON.stringify(this.insets);
+    this.insets = { left: 0, top: 0, right: 0, bottom: 0, ...insets };
+    if (JSON.stringify(this.insets) === old) return;
+    this.offset();
+    if (this.bounds && this.fitted && !this.moved) this.fit();
+    this.dirty = true;
+  }
+
+  offset() {
+    const w = this.el.clientWidth || 1;
+    const h = this.el.clientHeight || 1;
+    const { left, top, right, bottom } = this.insets;
+    if (left || top || right || bottom) this.camera.setViewOffset(w, h, (right - left) / 2, (bottom - top) / 2, w, h);
+    else this.camera.clearViewOffset();
+    this.camera.updateProjectionMatrix();
+  }
+
+  /** The share of the view's width and height left free by the insets. */
+  free() {
+    const w = this.el.clientWidth || 1;
+    const h = this.el.clientHeight || 1;
+    const { left, top, right, bottom } = this.insets;
+    return [Math.max(0.35, (w - left - right) / w), Math.max(0.35, (h - top - bottom) / h)];
+  }
+
+  // frames the bounding box in the free part of the view: the camera keeps its
+  // direction (a 3/4 view the first time) and moves back until every box
+  // corner is inside it
   fit() {
     if (!this.bounds) return;
     const cam = this.camera;
@@ -329,8 +359,9 @@ export class Viewer {
     const right = new THREE.Vector3().crossVectors(cam.up, dir).normalize();
     if (right.lengthSq() < 0.5) right.set(1, 0, 0);
     const up = new THREE.Vector3().crossVectors(dir, right);
-    const tv = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
-    const th = tv * cam.aspect;
+    const [fx, fy] = this.free();
+    const tv = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2) * fy;
+    const th = (tv / fy) * cam.aspect * fx;
     const { min, max } = this.bounds;
     let dist = 0;
     for (let i = 0; i < 8; i++) {

@@ -242,7 +242,9 @@ function fact(o, kind) {
     if (n("error")) return [plural(n("error"), "error"), "error"];
     if (n("warning")) return [plural(n("warning"), "warning"), "warning"];
     const conds = faces.filter((f) => f?.role).length + (o.meta?.arrows?.length ?? 0);
-    return conds ? [plural(conds, "condition"), ""] : ["ok", "ok"];
+    if (conds) return [plural(conds, "condition"), ""];
+    if (faces.some((f) => Number.isFinite(f?.value))) return [o.meta?.scale?.label ?? "values", ""];
+    return ["ok", "ok"];
   }
   return ["", ""];
 }
@@ -295,6 +297,8 @@ async function show() {
   const o = state.outputs.find((x) => x.name === state.selected);
   if (!o) {
     $("caption").hidden = true;
+    overlay?.apply(null);
+    $("strip").hidden = true;
     state.shown = null;
     state.meshes = [];
     state.record = null;
@@ -350,7 +354,8 @@ async function show() {
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first ? true : "auto", style);
-    overlay?.apply(kind === "overlay" ? o.meta : null);
+    overlay?.apply(o.meta ?? null, kind === "overlay");
+    $("strip").hidden = $("legend").hidden;
     state.meshes = all;
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
     offerDownload(kind === "assembly" ? o.files : shownFiles);
@@ -414,6 +419,17 @@ $("viewer").addEventListener("pointermove", (e) => {
 });
 $("viewer").addEventListener("pointerleave", () => ($("pick").hidden = true));
 
+
+// ------------------------------------------------------------ framing around the panels
+
+/** The view frames the part below the toolbar and the title. */
+function updateInsets() {
+  if (!viewer) return;
+  const stage = $("stage").getBoundingClientRect();
+  const insets = { left: 0, top: 46, right: 0, bottom: 26 }; // the toolbar row, the counts line
+  viewer.setInsets(stage.width ? insets : {});
+}
+new ResizeObserver(updateInsets).observe($("stage"));
 
 // ------------------------------------------------------------ downloads
 

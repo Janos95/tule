@@ -175,7 +175,7 @@ def test_overlay_output(tmp_path, monkeypatch):
     folder = outputs.overlay("plate-values", part, {0: 0.25, 1: "label", 2: {"role": "fixed"}},
                              arrows=[{"at": (1, 2, 3), "dir": (0, 0, -1), "label": "10 N"}])
     meta = json.load(open(os.path.join(folder, "output.json")))
-    assert meta["faces"] == {"0": {"value": 0.25, "label": "0.25"}, "1": {"label": "label"}, "2": {"role": "fixed"}}
+    assert meta["faces"] == {"0": {"value": 0.25}, "1": {"label": "label"}, "2": {"role": "fixed"}}
     assert meta["arrows"] == [{"at": [1.0, 2.0, 3.0], "dir": [0.0, 0.0, -1.0], "label": "10 N"}]
     with pytest.raises(TuleError, match="not a face"):
         outputs.overlay("bad", part, {999: 1.0})

@@ -194,6 +194,21 @@ ROLES = {"fixed": (0.20, 0.45, 0.90), "load": (0.93, 0.42, 0.10), "keep": (0.55,
 PALETTE = [(0.10, 0.62, 0.62), (0.80, 0.30, 0.55), (0.55, 0.65, 0.15), (0.45, 0.35, 0.75), (0.85, 0.65, 0.10)]
 
 
+# the viewer's value scale (web/src/overlay.js), low to high
+RAMP = [(0x3b, 0x4c, 0xc0), (0x6f, 0x92, 0xf3), (0xaa, 0xc7, 0xfd), (0xf2, 0xe5, 0xa0), (0xf7, 0xa8, 0x89), (0xe2, 0x69, 0x52), (0xb4, 0x04, 0x26)]
+
+
+def _ramp(t: float) -> tuple:
+    x = min(1.0, max(0.0, t)) * (len(RAMP) - 1)
+    i = min(len(RAMP) - 2, int(x))
+    return tuple((a + (b - a) * (x - i)) / 255 for a, b in zip(RAMP[i], RAMP[i + 1]))
+
+
+def _is_value(spec: dict) -> bool:
+    v = spec.get("value")
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and not spec.get("severity") and spec.get("role") is None
+
+
 def _overlay_color(spec: dict) -> tuple:
     if spec.get("color"):
         return _rgb(spec["color"]) or PALETTE[0]
@@ -251,18 +266,29 @@ def scene(target: str):
         caption = f"{folder}/{name}"
         if kind == "overlay":
             overlay = Overlay()
-            for fid, spec in (meta.get("faces") or {}).items():
-                spec = spec if isinstance(spec, dict) else {"label": str(spec)}
+            faces = {k: (v if isinstance(v, dict) else {"label": str(v)}) for k, v in (meta.get("faces") or {}).items()}
+            vals = [f["value"] for f in faces.values() if _is_value(f)]
+            sc = meta.get("scale") if isinstance(meta.get("scale"), dict) else {}
+            lo = float(sc["min"]) if isinstance(sc.get("min"), (int, float)) else min(vals, default=0.0)
+            hi = float(sc["max"]) if isinstance(sc.get("max"), (int, float)) else max(vals, default=1.0)
+            unit = f" {sc['unit']}" if sc.get("unit") else ""
+            for fid, spec in faces.items():
                 try:
                     key = (0, int(str(fid).lstrip("f")))
                 except ValueError:
                     raise CliError(f"{jpath}: face key {fid!r} is not a face id (use \"12\" for f12)") from None
+                if _is_value(spec):
+                    t = (spec["value"] - lo) / (hi - lo) if hi > lo else 0.5
+                    overlay.faces[key] = {"color": _ramp(t), "label": spec.get("label") or f"{spec['value']:.3g}{unit}"}
+                    continue
                 overlay.faces[key] = {"color": _overlay_color(spec), "label": spec.get("label") or spec.get("role") or spec.get("severity") or ""}
             for a in meta.get("arrows") or []:
                 if "at" not in a or "dir" not in a:
                     raise CliError(f"{jpath}: every arrow needs \"at\" and \"dir\" (got {a})")
                 overlay.arrows.append(a)
             caption += f" (overlay, {len(overlay.faces)} faces, {len(overlay.arrows)} arrows)"
+            if vals:
+                caption += f" · {sc.get('label') or 'value'}: blue {lo:.3g} to red {hi:.3g}{unit}"
     elif kind is None:
         if not files:
             raise CliError(f"{target}: no STEP or STL files in this output")

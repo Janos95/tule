@@ -199,6 +199,10 @@ outputs.overlay("plate-loads", part, title="Load case 1",
                 faces={part.faces["load"]: {"role": "load", "label": "200 N"},
                        part.faces["fixed"]: {"role": "fixed", "label": "clamped"}},
                 arrows=[{"at": (20, 10, 5), "dir": (0, 0, -1), "label": "200 N"}])
+outputs.overlay("plate-walls", part, title="Wall thickness",    # numbers on faces: a color scale
+                faces={i: 1.0 + 0.5 * i for i in part.faces.ids},
+                scale={"label": "wall thickness", "unit": "mm"})
+outputs.part("plate-info", part, info={"material": "aluminium 6061", "mass": "10.8 g"})  # facts, any kind
 ```
 
 Any tool may write the files directly instead (a solver writing STL frames, say): write to a temporary name in the same folder and `os.replace` it, and write `output.json` last.
@@ -213,11 +217,16 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 {"version": 1, "kind": "sequence", "status": "running",
  "frames": [{"file": "frame_0000.stl", "label": "iteration 0", "values": {"compliance": 41.2}}]}
 {"version": 1, "kind": "overlay", "file": "bracket.step",
- "faces": {"12": {"role": "load", "label": "500 N"}, "3": {"severity": "warning", "label": "r < tool"}},
- "arrows": [{"at": [0, 0, 18], "dir": [0, 0, -1], "label": "500 N"}]}
+ "faces": {"12": {"role": "load", "label": "500 N"}, "3": {"severity": "warning", "label": "r < tool"},
+           "7": {"value": 1.8}},
+ "scale": {"label": "wall thickness", "unit": "mm", "min": 0, "max": 3},
+ "arrows": [{"at": [0, 0, 18], "dir": [0, 0, -1], "label": "500 N"}],
+ "info": {"material": "aluminium 6061", "mass": "20.8 g"}}
 ```
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. Unmentioned faces are drawn gray. An arrow points along `dir` and ends at `at`.
+- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Use it for anything per face: wall thickness, draft angle, a score.
+- **Info** (any kind): `"info"` is a flat object of facts about the output (text, numbers, booleans; put units in text: `"20.8 g"`), shown as rows under the view.
 - **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end; `values` are plotted.
 
 ## Looking at outputs yourself
