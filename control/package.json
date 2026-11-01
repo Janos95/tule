@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "node ../web/build.mjs --watch & wrangler dev --port 8787 --ip 127.0.0.1; kill %1",
     "deploy": "npm --prefix ../web run build && wrangler deploy",
     "types": "wrangler types",
     "check": "wrangler types && tsc --noEmit"

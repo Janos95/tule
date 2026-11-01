@@ -29,6 +29,7 @@
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Accounts, type User } from "./accounts";
 import { accounts, authorize, authRoutes, deviceApi, devicePage, loginUrl, sameOrigin, who } from "./auth";
+import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
 import { landing, page, projectsPage, settingsPage, type ProjectRow } from "./pages";
@@ -258,8 +259,20 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
 
 // ------------------------------------------------------------ the app
 
+/** In local dev, every HTML page reloads itself when the code changes (dev.ts). */
 async function app(req: Request, env: Env): Promise<Response> {
+  const res = await route(req, env);
+  if (!devMode(env) || !(res.headers.get("Content-Type") ?? "").includes("text/html") || res.status === 304) return res;
+  const html = await res.text();
+  const headers = new Headers(res.headers);
+  headers.delete("Content-Length");
+  return new Response(html.includes("/__dev/version") ? html : html.replace("</body>", `${RELOAD_SCRIPT}</body>`), { status: res.status, headers });
+}
+
+async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
+  const dev = await devRoutes(req, env, url);
+  if (dev) return dev;
   const origin = env.PUBLIC_URL || url.origin;
   const path = url.pathname;
 

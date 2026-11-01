@@ -44,7 +44,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 @media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}}
 `;
 
-const LOGO = `<svg width="22" height="22" viewBox="0 0 32 32"><rect x="3" y="3" width="26" height="26" rx="6" fill="#23344a"/><path d="M9 11h14M16 11v12" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>`;
+const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#a8cf74" stroke-width="32" stroke-linecap="round"/></svg>`;
 
 export function layout(title: string, body: Html | string, user?: User | null): string {
   const nav = user

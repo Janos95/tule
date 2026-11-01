@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tule",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "control", "run", "dev"],
+      "port": 8787
+    }
+  ]
+}
