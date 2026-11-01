@@ -26,15 +26,15 @@ Turn marks into model facts, usually tags (boundary conditions, keep-outs, faces
 from tule import *
 
 part = import_step("outputs/bracket/bracket.step")
-# from the annotation: a stroke on f11 "500 N down", picks f13 and f26 "bolted"
-part = part.tag("load", part.face(11)).tag("fixed", part.face(13) | part.face(26))
+# from the annotation: a stroke on f11 "500 N down", a pick of f13 "bolted"
+part = part.tag("load", part.face(11)).tag("fixed", part.face(13))
 outputs.overlay("bracket-bc", part, title="Boundary conditions from your sketch: right?",
                 faces={part.faces["load"]: {"role": "load", "label": "500 N down"},
                        part.faces["fixed"]: {"role": "fixed", "label": "bolted"}},
                 arrows=[{"at": (0, 6, 18), "dir": (0, 0, -1), "label": "500 N"}])
 ```
 
-Then `tule screenshot -o bc.png --output bracket-bc` to check it yourself, and tell the user what you understood ("500 N down on the boss top f11, bolted on the bottom faces f13 and f26; see bracket-bc in the viewer").
+Then `tule screenshot -o bc.png --output bracket-bc` to check it yourself, and tell the user what you understood ("500 N down on the boss top f11, bolted on the bottom face f13; see bracket-bc in the viewer").
 
 ## Make it last
 

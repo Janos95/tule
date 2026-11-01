@@ -1,11 +1,14 @@
 **/__pycache__
 **/*.egg-info
 **/.pytest_cache
+**/build
 .venv
+.claude
 .git
+.github
 control
 web
-cli
+cli/tests
 scratch
 python/build
 python/dist
