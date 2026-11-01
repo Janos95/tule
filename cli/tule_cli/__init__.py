@@ -3,6 +3,7 @@
     tule login [--url https://tule.example]  sign in: approve a code in the browser once
     tule new bracket                         create a project (tule ls lists them, tule delete removes one)
     tule up [-p bracket] [--machine cpu-1]   start the project's machine, wait until it is ready
+    tule up --gpu rtx4090                    a GPU machine on your RunPod account (tule gpus lists them)
     tule ssh [-p bracket] [cmd ...]          a shell or a command on the machine
     tule ssh --config [-p bracket]           write ~/.ssh/config so plain `ssh tule-bracket` works
     tule proxy tule-bracket                  the SSH ProxyCommand: stdin/stdout over the WebSocket tunnel
@@ -137,8 +138,10 @@ def wait_running(p: str, timeout: float = 120, quiet: bool = False) -> dict:
 def up(p: str, machine: str, quiet: bool = False) -> dict:
     t0 = time.time()
     s = api("POST", f"/api/projects/{p}/up", {"machine": machine})
+    if s.get("note") and not quiet:
+        print(f"tule: {s['note']}", file=sys.stderr)
     if s["state"] != "running" or not s.get("hostKey"):
-        s = wait_running(p, quiet=quiet)
+        s = wait_running(p, timeout=1500 if machine.startswith("gpu-") else 120, quiet=quiet)
     if not quiet:
         cs = s.get("coldStartMs")
         extra = f" (cold start {cs / 1000:.1f} s: start to agent connected)" if cs and time.time() - t0 > 1 else ""
@@ -326,7 +329,14 @@ def cmd_delete(args):
 
 def cmd_up(args):
     p = project_of(args, load())
-    up(p, args.machine)
+    up(p, f"gpu-{args.gpu}" if args.gpu else args.machine)
+
+
+def cmd_gpus(args):
+    for g in api("GET", "/api/gpus")["gpus"]:
+        price = f"${g['pricePerHour']:.2f}/h" if g.get("pricePerHour") is not None else "?"
+        vram = f"{g['vramGb']} GB" if g.get("vramGb") else ""
+        print(f"{g['machine']:<16} {g['gpu']:<28} {vram:>7} {price:>9}  {g['availability']}")
 
 
 def cmd_down(args):
@@ -409,7 +419,9 @@ def main(argv=None):
     sp.add_argument("name")
     sp.add_argument("--yes", metavar="NAME", help="the name again, to confirm")
     sp = add("up", cmd_up, "start (or resize) the project's machine")
-    sp.add_argument("--machine", default="cpu-1", help="cpu-1 (default), cpu-2, cpu-4")
+    sp.add_argument("--machine", default="cpu-1", help="cpu-1 (default), cpu-2, cpu-4, or gpu-<type>")
+    sp.add_argument("--gpu", metavar="TYPE", help="a GPU on your RunPod account, e.g. rtx4090 (tule gpus)")
+    add("gpus", cmd_gpus, "GPU machines: price and availability on your RunPod account", project=False)
     add("down", cmd_down, "stop the project's machine")
     add("status", cmd_status, "the project's machine, timings and outputs")
     sp = add("ssh", cmd_ssh, "a shell or a command on the machine (starts it if needed)")

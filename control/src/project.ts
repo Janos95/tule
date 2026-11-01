@@ -33,6 +33,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Accounts } from "./accounts";
 import { stub } from "./rpc";
+import { createPod, getPod, GPUS, terminatePod } from "./runpod";
 
 /** Machine names (DESIGN.md) to Cloudflare instance types. */
 const MACHINES: Record<string, "standard-2" | "standard-3" | "standard-4"> = {
@@ -50,6 +51,7 @@ type State = {
   name?: string;
   owner?: string; // user id
   billedUntil?: number; // machine time is added to the owner's usage up to here
+  pod?: { id: string; cost: number; gpu: string; cloud: string }; // a RunPod pod (gpu-* machines)
   machine?: string; // "cpu-1", or "external" for a machine started with a join token
   joinHash?: string;
   upAt?: number; // start() called
@@ -173,7 +175,8 @@ export class Project extends DurableObject<Env> {
     const now = Date.now();
     if (now <= from) return;
     const kind = s.machine?.startsWith("gpu") ? "gpu" : "cpu";
-    if (s.machine !== "external") await this.accounts().addUsage(s.owner, kind, (now - from) / 1000);
+    const secs = (now - from) / 1000;
+    if (s.machine !== "external") await this.accounts().addUsage(s.owner, kind, secs, kind === "gpu" ? ((s.pod?.cost ?? 0) * secs) / 3600 : 0);
     s.billedUntil = now;
     await this.save();
   }
@@ -182,7 +185,7 @@ export class Project extends DurableObject<Env> {
     const name = this.state.name ?? null;
     const c = this.ctx.container;
     const agent = !!this.agent();
-    const running = !!c?.running;
+    const running = !!c?.running || !!this.state.pod;
     const s = this.state;
     const ready = agent && !!s.readyAt && !!s.helloAt && s.readyAt >= s.helloAt;
     const hostKey = await this.ctx.storage.get<HostKey>("hostKey");
@@ -190,6 +193,7 @@ export class Project extends DurableObject<Env> {
       project: name,
       machine: running || agent ? (s.machine ?? null) : null,
       state: ready ? "running" : agent || running ? "starting" : "stopped",
+      ...(this.state.pod ? { gpu: this.state.pod.gpu, pricePerHour: this.state.pod.cost, cloud: this.state.pod.cloud } : {}),
       sessions: this.sessions(),
       // the cold start: start() to the agent's hello, and the agent process's own start
       startedAt: s.upAt ?? null,
@@ -205,18 +209,19 @@ export class Project extends DurableObject<Env> {
   }
 
   async up(machine: string, origin: string): Promise<Result> {
+    if (machine.startsWith("gpu-")) return this.upGpu(machine, origin);
     const name = this.state.name;
     const instance = MACHINES[machine];
     if (!instance)
-      return { error: `unknown machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(MACHINES).join(", ")}` };
+      return { error: `unknown machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(MACHINES).join(", ")}, or gpu-<type> (${Object.keys(GPUS).map((g) => `gpu-${g}`).join(", ")})` };
     const c = this.ctx.container;
     if (!c)
       return {
         error: "this deployment has no container runtime",
         hint: "run wrangler dev with containers enabled, or start a machine yourself with a join token (POST .../join)",
       };
-    if (c.running) {
-      if (this.state.machine === machine) return this.status();
+    if (c.running || this.state.pod) {
+      if (c.running && this.state.machine === machine) return this.status();
       // resize: the old machine saves /workspace, the new one restores it
       await this.stopMachine("resize");
     }
@@ -238,6 +243,33 @@ export class Project extends DurableObject<Env> {
     await c.setInactivityTimeout(IDLE_MS + 2 * CHECK_MS);
     await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
     return this.status();
+  }
+
+  /** A GPU machine: a pod on the owner's RunPod account running the CUDA image, which dials in like any machine. */
+  async upGpu(machine: string, origin: string): Promise<Result> {
+    const gpu = GPUS[machine.slice(4)];
+    if (!gpu) return { error: `unknown GPU machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(GPUS).map((g) => `gpu-${g}`).join(", ")}` };
+    if (!this.state.owner) return { error: "this project has no owner" };
+    const key = await this.accounts().runpodKey(this.state.owner);
+    if (!key) return { error: "RunPod is not connected", hint: "paste a RunPod API key in Tule's Settings (GPU machines run on your RunPod account)" };
+    if (this.state.pod && this.state.machine === machine && this.agent()) return this.status();
+    if (this.ctx.container?.running || this.state.pod) await this.stopMachine("resize");
+    const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const pod = await createPod(key, {
+      name: `tule-${this.state.name ?? "project"}-${b64url(crypto.getRandomValues(new Uint8Array(3))).toLowerCase()}`,
+      image: this.env.GPU_IMAGE || "ghcr.io/janos95/tule-runtime:cuda",
+      gpu,
+      env: { TULE_URL: origin, TULE_PROJECT: this.state.id ?? "", TULE_NAME: this.state.name ?? "", TULE_JOIN_TOKEN: token },
+    });
+    if ("error" in pod) return pod;
+    this.state = {
+      ...this.state, machine, pod: { id: pod.id, cost: pod.cost, gpu, cloud: pod.cloud }, joinHash: await sha256(token),
+      upAt: Date.now(), billedUntil: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lastActive: Date.now(),
+    };
+    await this.save();
+    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    console.log(JSON.stringify({ event: "pod-created", project: this.state.name, gpu, cloud: pod.cloud, cost: pod.cost }));
+    return { ...(await this.status()), note: "RunPod is pulling the image; the first start on a host can take several minutes" };
   }
 
   async down(): Promise<Result> {
@@ -331,6 +363,17 @@ export class Project extends DurableObject<Env> {
       }
     }
     await this.bill();
+    if (this.state.pod && this.state.owner) {
+      const key = await this.accounts().runpodKey(this.state.owner);
+      try {
+        if (key) await terminatePod(key, this.state.pod.id);
+        this.state.pod = undefined;
+      } catch (e) {
+        // keep the pod id: the alarm retries, so a pod never keeps billing unnoticed
+        console.log(JSON.stringify({ event: "terminate", project: this.state.name, error: String(e) }));
+        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      }
+    }
     this.state = { ...this.state, joinHash: undefined, stoppedAt: Date.now() };
     await this.save();
     this.broadcast();
@@ -338,7 +381,20 @@ export class Project extends DurableObject<Env> {
 
   async alarm() {
     const c = this.ctx.container;
-    if (!c?.running && !this.agent()) return;
+    const pod = this.state.pod;
+    if (pod && this.state.owner) {
+      // a pod that failed, or one left over from a failed terminate
+      const key = await this.accounts().runpodKey(this.state.owner);
+      const p = key ? await getPod(key, pod.id).catch(() => undefined) : null;
+      const dead = p === null || (p && ["EXITED", "ERROR", "TERMINATED"].includes(p.status));
+      const stuck = !this.agent() && Date.now() - (this.state.upAt ?? 0) > 20 * 60_000;
+      if (dead || stuck || !this.state.joinHash) {
+        console.log(JSON.stringify({ event: "pod-cleanup", project: this.state.name, status: p?.status ?? "gone", stuck }));
+        await this.stopMachine(dead ? "the pod stopped" : "the pod never connected");
+        return;
+      }
+    }
+    if (!c?.running && !this.agent() && !pod) return;
     await this.bill();
     const idle = Date.now() - (this.state.lastActive ?? 0);
     if (this.sessions() === 0 && idle > IDLE_MS) {
@@ -346,7 +402,7 @@ export class Project extends DurableObject<Env> {
       await this.stopMachine("idle");
       return;
     }
-    await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    await this.ctx.storage.setAlarm(Date.now() + (pod ? 60_000 : CHECK_MS));
   }
 
   // ------------------------------------------------------------ sockets

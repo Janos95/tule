@@ -24,7 +24,9 @@
   "vars": {
     "PUBLIC_URL": "https://tule.genau-mcp-relay.workers.dev",
     "ALLOWED_EMAILS": "janos.meny@googlemail.com",
-    "CPU_HOURS_MONTH": "100"
+    "CPU_HOURS_MONTH": "100",
+    // GPU machines run this image on RunPod (built by .github/workflows/runtime.yml)
+    "GPU_IMAGE": "ghcr.io/janos95/tule-runtime:cuda"
   },
   // the machine image: Durable Object scheduling, so each start picks its
   // instance size (cpu-1 .. cpu-4) and passes its own join token

@@ -128,9 +128,17 @@ interface Backend {
   check (an alarm every 5 min) stops the machine after 30 min without SSH
   sessions or traffic. Paid by Tule's Cloudflare account; users get a CPU
   quota.
-- **RunPod** (`gpu-<type>`): `POST` a pod to RunPod's REST API with the user's
-  stored key, image `ghcr.io/janos95/tule-runtime:cuda`, the GPU type, and the
-  join token in its environment. Paid from the user's RunPod balance.
+- **RunPod** (`gpu-<type>`): `POST` a pod to RunPod's REST API (v2,
+  `api.runpod.io/v2`; v1 retires 2026-11-15) with the user's stored key,
+  image `ghcr.io/janos95/tule-runtime:cuda`, the GPU type, no ports, and the
+  join token in its environment; Secure Cloud first, then Community Cloud.
+  Paid from the user's RunPod balance. Stopping takes the final snapshot and
+  then terminates the pod (stopping a pod would keep its disk); the Project
+  Durable Object checks the pod every minute and terminates one that died or
+  never connected (20 min), so no pod bills unnoticed. Short names:
+  `gpu-rtx4090`, `gpu-l40s`, `gpu-a100`, `gpu-h100`, … (`tule gpus` shows
+  price and availability). The balance check uses RunPod's GraphQL API, the
+  only place it exists (deprecated for 2027).
 - Later backends (Modal, Lambda, a user's own box) implement the same four
   calls.
 
@@ -268,8 +276,12 @@ outputs/
 - One machine per project; full freedom inside; isolated from other users.
 - Outbound network: package registries (PyPI, npm, GitHub) by default, a
   per-project allowlist for more; no open internet.
-- Quotas: CPU machine-hours per user (Tule pays) and concurrent machines. GPU
-  time is paid from the user's RunPod balance and limited by RunPod.
+- Quotas: CPU machine-hours per user and month (`CPU_HOURS_MONTH`, 100 by
+  default; Tule pays), counted by the Project Durable Object while a machine
+  runs. GPU time is paid from the user's RunPod balance and limited by RunPod;
+  Tule records hours and cost for the usage page. Not yet: a limit on
+  concurrent machines.
+- Sign-up is invite-only for now: `ALLOWED_EMAILS` lists who may sign in.
 
 ### The tunnel (as built in milestone 1)
 
@@ -300,10 +312,31 @@ request `id`.
   request id) and the answer back, so a new request (annotations, the files
   browser) is a handler in `tule_agent.py` (`REQUESTS`) and code in the page,
   nothing in between. `{t: "broadcast"}` from the agent reaches every page.
-- **Auth (until milestone 4):** one secret, `DEV_TOKEN`, for the CLI and the
-  viewer (`tule open` passes it in the link's fragment); machines use their
-  join token, which the Durable Object stores hashed and replaces on every
-  start.
+- **Auth:** see "Accounts". Machines use their join token, which the
+  Durable Object stores hashed and replaces on every start; they reach their
+  project by its id (`/api/projects/p_…/agent`), users by its name.
+
+### Accounts (as built in milestone 4)
+
+- **One Accounts Durable Object** holds users (by Google subject), browser
+  sessions, API keys, device codes, SSH keys, projects (name → id per user),
+  the RunPod connection and usage. Secrets are stored as SHA-256 hashes; the
+  RunPod key is encrypted (AES-GCM, key in the `ENCRYPTION_KEY` secret, the
+  user id as associated data) and decrypted only for the control plane's own
+  calls to RunPod.
+- **Projects** are Project Durable Objects named by an id (`p_…`); users
+  address them by name. SSH keys belong to the account and reach every
+  project's machine (sent on connect and when they change).
+- **Sign-in:** Google (OAuth code flow with PKCE) sets an HttpOnly session
+  cookie for 30 days. `tule login` uses a device code: it shows a link and a
+  code, the user approves it at `/device`, and the CLI receives an API key.
+  API keys (`tule_…`) are also made in Settings. `DEV_TOKEN` remains as an
+  admin credential acting as a "dev" user, for tests.
+- **MCP:** `@cloudflare/workers-oauth-provider` wraps the Worker: `/mcp` takes
+  its OAuth tokens (dynamic client registration, `/authorize` signs the user
+  in with the site's session and asks for consent) or a Tule API key.
+- **Pages** (server-rendered): the projects list, Settings (RunPod, usage, SSH
+  and API keys), the device approval, the consent page.
 
 ## Interfaces
 
@@ -316,16 +349,17 @@ Hosted at `/mcp`, Streamable HTTP. Auth: MCP OAuth (the user signs in with
 Google and approves the agent), or a Tule API key as a Bearer header. Tools,
 grouped by resource:
 
-- **Projects:** list, get, create (from the template), fork, rename, delete.
-- **Machines:** start, stop, resize (`cpu-1` … `cpu-4`, `gpu-<type>`), status,
-  logs; connection info for SSH; a join token for a machine the agent
-  provisions itself.
+- **Projects:** list, create (from the template), rename, delete (fork later).
+- **Machines:** start, stop, resize (`cpu-1`, `cpu-2`, `cpu-4`, `gpu-<type>`),
+  status, the GPU list with prices; connection info for SSH; a join token for
+  a machine the agent provisions itself (logs later).
 - **Snapshots and outputs:** list snapshots, restore; list outputs with viewer
   links.
 - **Keys:** SSH keys (list, add, remove), API keys (create, revoke).
 - **Usage:** machine hours, GPU spend.
 
-No exec or file tools: like RunPod's, the MCP never carries the work.
+No exec or file tools: like RunPod's, the MCP never carries the work. Plus
+`guide(topic)`, which serves `skills/*.md` (bundled at build time).
 
 ### `tule` CLI (on the agent's machine)
 
@@ -525,12 +559,14 @@ tule/
    takes about 0.2 s.
 4. **Accounts and connector:** Google sign-in, MCP server with OAuth, device
    codes for the CLI, API and SSH keys, quotas; skills, `tule docs`, golden
-   paths, the Claude plugin.
+   paths, the Claude plugin. **Done** (2026-11-01) except the Claude plugin:
+   see "Accounts".
 5. **Viewer:** outputs (part, assembly, sequence), faces and edges, picking,
    files browser, snapshot history, STEP download.
 6. **Engineering libraries:** `tule.dfm` v0, `tule.topopt` v0.
 7. **GPU:** RunPod backend (settings, encrypted key, `tule up --gpu`),
-   agent-provisioned pods via join tokens, then `tule.remote`.
+   agent-provisioned pods via join tokens, then `tule.remote`. The backend,
+   settings and `tule up --gpu` are built; `tule.remote` is later.
 8. **Deploy** and a live smoke test.
 
 ## Open decisions (defaults assumed above)

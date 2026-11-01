@@ -33,7 +33,7 @@ import { mcp } from "./mcp";
 import * as ops from "./ops";
 import { landing, page, projectsPage, settingsPage, type ProjectRow } from "./pages";
 import { Project, snapshotKey } from "./project";
-import { runpodBalance } from "./runpod";
+import { gpuCatalog, runpodBalance } from "./runpod";
 
 export { Project, Accounts };
 
@@ -141,6 +141,11 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
   const [area, name, what = "", ...rest] = parts;
   if (area === "me") return json({ user, ...(await ops.usage(env, user)) });
   if (area === "usage") return json(await ops.usage(env, user));
+  if (area === "gpus") {
+    const key = await a.runpodKey(user.id);
+    if (!key) return error("RunPod is not connected", 400, "paste a RunPod API key in Settings");
+    return json({ gpus: await gpuCatalog(key) });
+  }
   if (area === "keys") {
     const kind = name;
     const id = what;
