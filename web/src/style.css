@@ -1616,3 +1616,6 @@ main {
 #parts .parts-title { display: none; }
 #parts:not(.has-hidden) .parts-head { display: none; }
 #parts .parts-head { padding: 2px 4px 0 6px; min-height: 24px; }
+
+.output-fold { flex: none; width: 13px; height: 13px; margin-left: -2px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
+.output.open .output-fold { transform: rotate(90deg); }

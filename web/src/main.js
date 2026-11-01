@@ -252,6 +252,7 @@ function fact(o, kind) {
 // the parts tree moves into the list under the selected output; the list is rebuilt often,
 // which detaches it, so keep the element itself (a lookup by id would find nothing then)
 const partsTree = $("parts");
+const folded = new Set(); // assemblies whose parts tree the user folded away (for this visit)
 
 function renderList() {
   const list = $("output-list");
@@ -267,15 +268,29 @@ function renderList() {
     b.setAttribute("aria-selected", String(o.name === state.selected));
     const kind = kindOf(o);
     const [text, tone] = fact(o, kind);
-    b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${ICONS[kind] ?? ICONS.part}</svg><span class="output-name"></span><small></small>`;
+    const tree = kind === "assembly";
+    const open = tree && o.name === state.selected && !folded.has(o.name);
+    b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${ICONS[kind] ?? ICONS.part}</svg><span class="output-name"></span><small></small>${tree ? '<svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>' : ""}`;
     b.children[1].textContent = o.name;
     b.children[2].textContent = text;
     if (tone) b.children[2].dataset.tone = tone;
+    if (tree) {
+      b.setAttribute("aria-expanded", String(open));
+      b.classList.toggle("open", open);
+    }
     b.title = [o.meta?.title, `${kind}${o.files.length ? ` · ${o.files.map((f) => f.file).join(", ")}` : ""}`, o.error].filter(Boolean).join("\n");
-    b.addEventListener("click", () => select(o.name));
+    b.addEventListener("click", () => {
+      // an assembly shown already: a click folds or unfolds its parts (it stays so when you come back)
+      if (tree && o.name === state.selected) {
+        if (folded.has(o.name)) folded.delete(o.name);
+        else folded.add(o.name);
+        return renderList();
+      }
+      select(o.name);
+    });
     list.append(b);
-    // an assembly's parts open under its row
-    if (o.name === state.selected) list.append(partsTree);
+    // an assembly's parts open under its row (the tree hides itself for a single part)
+    if (o.name === state.selected && !folded.has(o.name)) list.append(partsTree);
   }
 }
 
