@@ -6,20 +6,20 @@
 // by hash) and answers [rid u32][header length u32][JSON header][arrays]
 // (runtime/tule_agent.py, encode_mesh).
 //
-// The dev token (until accounts exist) comes once in the link's fragment,
-// #t=<token> (tule open), and is kept in localStorage.
+// New requests use the generic relay: req(op, args) sends {t: "req", rid, op,
+// args}; the agent's REQUESTS[op] answers {t: "res", rid, ...} (an object) or
+// [rid u32][bytes] (an ArrayBuffer). {t: "event"} messages are the agent's
+// broadcasts. Credentials: auth.js, the only place that knows them.
+//
+// Output kinds (output.json "kind"): part, assembly, sequence, overlay
+// (overlay.js has its format).
+import { auth } from "./auth.js";
+import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
-import { store } from "./store.js";
-import { Viewer } from "./viewer.js";
+import { Viewer, sortByFace } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
 const project = (location.pathname.match(/^\/p\/([a-z0-9][a-z0-9-]{0,62})\/?$/) ?? [])[1];
-const frag = new URLSearchParams(location.hash.slice(1));
-if (frag.get("t")) {
-  store.setItem("tule/token", frag.get("t"));
-  history.replaceState(null, "", location.pathname + location.search);
-}
-const token = store.getItem("tule/token");
 
 let viewer;
 try {
@@ -28,6 +28,7 @@ try {
   $("viewer").innerHTML = `<div class="nogl">This browser cannot show 3D (WebGL): ${e.message}</div>`;
 }
 const parts = viewer ? initParts({ viewer, project: () => project ?? "" }) : null;
+const overlay = viewer ? initOverlay({ viewer, legend: $("legend"), marks: $("marks") }) : null;
 
 const state = {
   outputs: [], // the index from the machine
@@ -36,7 +37,7 @@ const state = {
   frame: 0,
 };
 const meshes = new Map(); // hash -> Promise<parts>
-const pending = new Map(); // rid -> {resolve, reject}
+const pending = new Map(); // rid -> {resolve, reject, raw: bytes wanted as they are}
 let ws = null;
 let rid = 0;
 
@@ -52,14 +53,13 @@ function connect(delay = 500) {
     setStatus("Open a project: /p/<name> (tule open -p <name>)");
     return;
   }
-  if (!token) {
-    setStatus("No access token: open this page with tule open");
+  if (auth.missing()) {
+    setStatus(auth.missing());
     return;
   }
   $("project-title").textContent = project;
   document.title = `${project} · Tule`;
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${proto}//${location.host}/api/projects/${project}/view?t=${encodeURIComponent(token)}`);
+  ws = new WebSocket(auth.socket(`/api/projects/${project}/view`));
   ws.binaryType = "arraybuffer";
   ws.onopen = () => (delay = 500);
   ws.onmessage = (e) => (typeof e.data === "string" ? onText(JSON.parse(e.data)) : onMesh(e.data));
@@ -78,11 +78,33 @@ function onText(m) {
     state.outputs = m.outputs ?? [];
     renderList();
     show();
-  } else if (m.t === "mesh-error") {
+  } else if (m.t === "mesh-error" || m.t === "res") {
     const p = pending.get(m.rid);
     pending.delete(m.rid);
-    p?.reject(new Error(m.error));
+    if (!p) return;
+    if (m.error) p.reject(new Error(m.error));
+    else p.resolve(m);
+  } else if (m.t === "event") {
+    for (const f of listeners) f(m);
   }
+}
+
+const listeners = new Set(); // the agent's broadcasts ({t: "event", event, ...})
+
+/** A request to the machine's agent (REQUESTS in runtime/tule_agent.py):
+ * resolves to its answer (an object, or an ArrayBuffer for bytes). */
+function req(op, args = {}, timeoutMs = 120_000) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected to the project"));
+    const id = ++rid;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`the machine did not answer ${op} within ${timeoutMs / 1000} s`));
+    }, timeoutMs);
+    const done = (f) => (v) => (clearTimeout(timer), f(v));
+    pending.set(id, { resolve: done(resolve), reject: done(reject), raw: true });
+    ws.send(JSON.stringify({ t: "req", rid: id, op, args }));
+  });
 }
 
 function onMesh(buf) {
@@ -92,7 +114,7 @@ function onMesh(buf) {
   pending.delete(id);
   if (!p) return;
   try {
-    p.resolve(decode(buf, 4));
+    p.resolve(p.raw ? buf.slice(4) : decode(buf, 4));
   } catch (e) {
     p.reject(e);
   }
@@ -104,16 +126,18 @@ function decode(buf, at) {
   const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, at + 4, hl)));
   const base = at + 4 + hl;
   const arr = (Type, r) => (r ? new Type(buf.slice(base + r[0], base + r[0] + r[1])) : null);
-  return header.parts.map((p) => ({
-    name: p.name || null,
-    color: p.color,
-    tags: p.tags ?? {},
-    positions: arr(Float32Array, p.positions),
-    normals: arr(Float32Array, p.normals),
-    indices: arr(Uint32Array, p.indices),
-    faceIds: arr(Uint32Array, p.faceIds),
-    edges: arr(Float32Array, p.edges),
-  }));
+  return header.parts.map((p) =>
+    sortByFace({
+      name: p.name || null,
+      color: p.color,
+      tags: p.tags ?? {},
+      positions: arr(Float32Array, p.positions),
+      normals: arr(Float32Array, p.normals),
+      indices: arr(Uint32Array, p.indices),
+      faceIds: arr(Uint32Array, p.faceIds),
+      edges: arr(Float32Array, p.edges),
+    }),
+  );
 }
 
 function request(file) {
@@ -145,7 +169,7 @@ function machine(s) {
 
 // ------------------------------------------------------------ outputs
 
-/** part, assembly or sequence: output.json's kind, else inferred from the files. */
+/** part, assembly, sequence or overlay: output.json's kind, else inferred from the files. */
 function kindOf(o) {
   if (o.meta?.kind) return o.meta.kind;
   if (o.files.length === 1) return "part";
@@ -212,6 +236,9 @@ async function show() {
     const values = cur?.values ? Object.entries(cur.values).map(([k, v]) => `${k} ${+v.toPrecision(4)}`).join(" · ") : "";
     $("frame").textContent = cur ? [cur.label ?? `frame ${state.frame}`, values].filter(Boolean).join(" · ") : "";
     files = cur ? [cur.f] : [];
+  } else if (kind === "overlay" || kind === "part") {
+    const f = o.files.find((x) => x.file === o.meta?.file) ?? o.files[0];
+    files = f ? [f] : [];
   }
   const key = o.name + "|" + files.map((f) => f.hash).join(",");
   if (key === state.shown) return;
@@ -228,6 +255,7 @@ async function show() {
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, files[i])));
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first ? true : "auto", style);
+    overlay?.apply(kind === "overlay" ? o.meta : null);
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles`;
     setStatus("");
@@ -281,8 +309,12 @@ $("viewer").addEventListener("pointermove", (e) => {
     const hit = viewer?.pick(e.clientX, e.clientY);
     const label = $("pick");
     if (!hit) return (label.hidden = true);
-    const tags = Object.entries(hit.mesh.tags).filter(([, ids]) => ids.includes(hit.face)).map(([t]) => t);
-    label.textContent = [hit.mesh.name, `f${hit.face}`, ...tags].filter(Boolean).join(" · ");
+    const notes = overlay?.describe(hit) ?? [];
+    if (hit.arrow !== undefined) label.textContent = notes.join(" · ");
+    else {
+      const tags = Object.entries(hit.mesh.tags).filter(([, ids]) => ids.includes(hit.face)).map(([t]) => t);
+      label.textContent = [hit.mesh.name, `f${hit.face}`, ...tags, ...notes].filter(Boolean).join(" · ");
+    }
     const r = $("stage").getBoundingClientRect();
     label.style.left = `${e.clientX - r.left + 14}px`;
     label.style.top = `${e.clientY - r.top + 14}px`;
