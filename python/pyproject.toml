@@ -12,10 +12,13 @@ license = { text = "MIT" }
 dependencies = [
   "cadquery-ocp>=7.8",
   "numpy>=1.24",
+  "scipy>=1.10",
+  "scikit-image>=0.21",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+gpu = ["cupy-cuda12x>=13"]   # tule.topopt on NVIDIA GPUs (device="auto" picks it up)
 
 [tool.setuptools.packages.find]
 include = ["tule*"]

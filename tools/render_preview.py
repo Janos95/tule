@@ -1,10 +1,10 @@
 """Preview renderer: a tiny numpy z-buffer that draws a STEP file shaded, with visible B-rep edges.
 
-Usage: python tools/render_preview.py part.step out.png   (needs numpy, pillow)
+Usage: python tools/render_preview.py part.step out.png   (or part.stl; needs numpy, pillow)
 A starting point for `tule screenshot`; slow on big meshes."""
 import sys, numpy as np
 from PIL import Image
-from tule import import_step
+from tule import Mesh, import_step
 
 def look(elev, azim):
     e, a = np.radians(elev), np.radians(azim)
@@ -14,7 +14,7 @@ def look(elev, azim):
     return np.stack([right, up, -fwd])  # rows: x, y, z(toward viewer)
 
 def raster(shape, elev, azim, W=640, H=480, color=(0.27, 0.67, 0.53)):
-    m = shape.tessellate(0.05, 0.1)
+    m = shape if isinstance(shape, Mesh) else shape.tessellate(0.05, 0.1)
     R = look(elev, azim)
     P = m.positions @ R.T
     lo, hi = P.min(0), P.max(0); c = (lo + hi) / 2; s = 0.9 * min(W / (hi[0] - lo[0]), H / (hi[1] - lo[1]))
@@ -55,7 +55,16 @@ def raster(shape, elev, azim, W=640, H=480, color=(0.27, 0.67, 0.53)):
                     img[py, px] = (0.07, 0.13, 0.13)
     return (img * 255).astype(np.uint8)
 
-shape = import_step(sys.argv[1])
+def read_stl(path):
+    """A binary STL as a Mesh (flat normals, no edges)."""
+    data = open(path, "rb").read()
+    n = int(np.frombuffer(data, "<u4", 1, 80)[0])
+    rec = np.frombuffer(data, [("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")], n, 84)
+    P = rec["v"].reshape(-1, 3)
+    N = np.repeat(rec["n"], 3, axis=0)
+    return Mesh(P, N, np.arange(3 * n, dtype=np.uint32).reshape(-1, 3), np.zeros(n, np.uint32), [])
+
+shape = read_stl(sys.argv[1]) if sys.argv[1].lower().endswith(".stl") else import_step(sys.argv[1])
 views = [(30, -60), (-40, -60)]
 Image.fromarray(np.concatenate([raster(shape, e, a) for e, a in views], axis=1)).save(sys.argv[2])
 print("wrote", sys.argv[2])
