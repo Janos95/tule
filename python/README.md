@@ -104,3 +104,43 @@ with outputs.sequence("bracket-topopt", "Topology optimization") as seq:
 
 The folder is `$TULE_OUTPUTS`, else `/workspace/outputs` when `/workspace` exists, else
 `./outputs`. Files are written atomically and `output.json` last.
+
+`outputs.part(name, mesh)` writes a `Mesh` (e.g. a topology optimization result) as STL.
+`outputs.overlay(name, part, data, arrows=())` writes a part with per-face data: a `dfm`
+report, a list of findings, or `{face_id: number | label | {"severity", "role", "label",
+"value"}}`; the JSON format is documented in `tule/outputs.py`.
+
+## Design for manufacturing (`tule.dfm`)
+
+```python
+report = dfm.cnc(part, axis=-Z, tool_radius=3, min_wall=1.0, max_depth_ratio=4)
+report = dfm.fdm(part, up=+Z, max_overhang=45, min_wall=0.8, max_bridge=10)
+print(report)              # worst first: severity, check, faces [tags], what is wrong and the fix
+report.ok                  # no errors; report.errors, report.warnings, report.to_json()
+outputs.overlay("bracket-dfm", part, report)
+```
+
+Each `Finding` has `check`, `severity` (`error`, `warning`, `info`), `label`, `message`,
+`faces` (ids of `part.faces`, the viewer's `f12`), `edges`, `tags` and `values` (mm, degrees).
+CNC (3-axis; `axis` is the direction the tool moves, a list means several setups): `undercut`,
+`corner_radius` (sharp or small concave corners along the tool axis), `hole` (smaller than the
+tool), `pocket_width`, `pocket_depth`, `thin_wall`. FDM: `overhang`, `bridge`, `thin_wall`,
+`bed_contact`.
+
+## Topology optimization (`tule.topopt`)
+
+```python
+problem = topopt.Problem(part, fixed=part.faces["bolt"], loads={part.faces["load"]: (0, 0, -500)},
+                         volume_fraction=0.3, keep=[boss], void=[keepout])
+problem.show("bracket-bc")                        # overlay: fixed and load faces, force arrows
+result = topopt.optimize(problem, output="bracket-topopt", verbose=True)   # streams a sequence
+outputs.part("bracket-optimized", result.mesh)    # smoothed isosurface (STL)
+solid = result.to_shape()                         # a closed triangulated solid Shape
+```
+
+SIMP with a density filter and OC updates; matrix-free hexahedral elements on a voxel grid,
+CG with a geometric multigrid preconditioner (flat iteration counts as the grid is refined;
+`python tools/topopt_bench.py`), coarse-to-fine continuation. `optimize(..., voxel=None,
+iterations=60, penal=3, filter_radius=None, continuation=True, output="topopt", frames=40,
+device="auto")`: `device="auto"` uses CuPy on a GPU machine (`pip install 'tule[gpu]'`), else NumPy.
+Units: mm, N, MPa (`E=70_000`, `nu=0.3` on the Problem), compliance in N·mm.
