@@ -48,14 +48,16 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .prow:hover{background:var(--hover)}
 .pname{font-weight:500}.pstate{color:var(--muted);font-size:14px}.pdate{color:var(--muted);font-size:13px;text-align:right}
 .newp{border-bottom:1px solid var(--line)}
-.newp summary{list-style:none;cursor:pointer;padding:12px 8px;color:var(--muted)}
+.newp summary,.newp-go{all:unset;box-sizing:border-box;display:block;width:100%;cursor:pointer;padding:12px 8px;color:var(--muted)}
 .newp summary::-webkit-details-marker{display:none}
-.newp summary:hover,.newp-go:hover{color:var(--text)}
-.newp-go{all:unset;box-sizing:border-box;display:block;width:100%;cursor:pointer;padding:12px 8px;color:var(--muted)}
-.newp .plus{display:inline-block;width:14px}
-.newp-form{display:flex;gap:8px;padding:0 8px 12px}
-.newp-form input{max-width:360px}
-.newp .warn{padding:0 8px}
+.newp summary:hover,.newp-go:hover{color:var(--text);background:var(--hover)}
+.newp[open] summary{display:none}
+.newp .plus{display:inline-block;width:20px}
+.newp-form{display:flex;align-items:center;padding:12px 8px;margin:0}
+.newp-form .plus{color:var(--muted)}
+.newp-form input,.newp-form input:focus,.newp-form input:focus-visible{flex:1;min-width:0;border:0;border-radius:0;padding:0;font:inherit;line-height:inherit;background:transparent;outline:none;box-shadow:none;caret-color:var(--accent)}
+.newp-form input::placeholder{color:var(--faint)}
+.newp-note{margin:0;padding:0 8px 12px 28px;color:var(--muted);font-size:13.5px}
 .sect{margin-top:28px}.sect h2{margin:0 0 2px}.hint{color:var(--muted);font-size:13.5px;margin:0 0 8px}
 .list{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .item{display:grid;grid-template-columns:minmax(120px,auto) 1fr auto;align-items:center;gap:16px;padding:10px 8px;border-bottom:1px solid var(--line);min-height:44px}
@@ -83,8 +85,12 @@ export function layout(title: string, body: Html | string, user?: User | null): 
 <title>${esc(title)} · Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}</style></head>
 <body><header><a class="brand" href="/">${LOGO}tule</a>${nav}</header><main><h1>${esc(title)}</h1>${body}</main>${
     user?.guest ? `<div class="guestbar">Guest projects are deleted after a day.</div>` : ""
-  }</body></html>`;
+  }<script>${NEWP_JS}</script></body></html>`;
 }
+
+/** "+ New …" rows: opening focuses the field, Esc closes it again. */
+const NEWP_JS = `document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
+document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
 
 export function page(title: string, body: Html | string, status = 200, user?: User | null): Response {
   return new Response(layout(title, body, user), {
@@ -123,18 +129,25 @@ tule ssh -p &lt;project&gt;</pre>
     </div>`;
 }
 
+/** The last row of a list: "+ New …", which turns into a one-line field in place.
+    Enter submits, Esc closes. */
+function addRow(label: string, actionUrl: string, field: Html, open = false, note: Html | string = "") {
+  return html`<details class="newp"${open ? html` open` : ""}><summary><span class="plus">+</span>${label}</summary>
+    <form method="post" action="${actionUrl}" class="newp-form" autocomplete="off"><span class="plus">+</span>${field}</form>
+    ${note ? html`<p class="newp-note">${note}</p>` : ""}</details>`;
+}
+
 export type GuestLimits = { projects: number; minutesPerDay: number; days: number };
 
 export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, limits?: GuestLimits): Response {
   const state = (p: ProjectRow) => (p.state === "stopped" ? "stopped" : `${p.machine ?? ""} · ${p.state}`);
-  const create = html`<details class="newp"${error || !rows.length ? html` open` : ""}>
-      <summary><span class="plus">+</span> New project</summary>
-      <form method="post" action="/projects/new" class="newp-form">
-        <input name="name" pattern="[a-z0-9][a-z0-9-]{0,62}" placeholder="camera-bracket" aria-label="Project name" required autofocus />
-        <button class="primary">Create</button>
-      </form>
-      ${error ? html`<p class="warn">${error}</p>` : ""}
-    </details>`;
+  const create = addRow(
+    "New project",
+    "/projects/new",
+    html`<input name="name" pattern="[a-z0-9][a-z0-9-]{0,62}" placeholder="camera-bracket" aria-label="Project name" required${error ? html` autofocus` : ""} />`,
+    !!error,
+    error ? html`<span class="warn">${error}</span>` : "",
+  );
   const body = rows.length
     ? html`<div class="plist">
         ${rows.map(
@@ -178,11 +191,6 @@ const item = (label: Html | string, meta: Html | string = "", action: Html | str
 const rowButton = (actionUrl: string, text: string, id?: string, danger = false) =>
   html`<form method="post" action="${actionUrl}">${id ? html`<input type="hidden" name="id" value="${id}">` : ""}<button class="small${danger ? " danger" : ""}">${text}</button></form>`;
 
-/** "+ Something" that opens into a one-line form. */
-const addRow = (label: string, button: string, actionUrl: string, field: Html, open = false, note: Html | string = "") =>
-  html`<details class="newp"${open ? html` open` : ""}><summary><span class="plus">+</span> ${label}</summary>
-    <form method="post" action="${actionUrl}" class="newp-form" autocomplete="off">${field}<button class="primary">${button}</button></form>
-    ${note ? html`<p class="hint" style="padding:0 8px 10px">${note}</p>` : ""}</details>`;
 
 const copyButton = (text: string) => html`<button type="button" class="small" data-copy="${text}">Copy</button>`;
 
@@ -206,7 +214,6 @@ export function settingsPage(user: User, d: SettingsData): Response {
         : item("RunPod", "not connected")}
       ${addRow(
         rp.connected ? "Replace key" : "Connect RunPod",
-        rp.connected ? "Replace" : "Connect",
         "/settings/runpod",
         html`<input name="key" type="password" placeholder="rpa_…" aria-label="RunPod API key" required />`,
         !!rp.error,
@@ -229,7 +236,7 @@ export function settingsPage(user: User, d: SettingsData): Response {
             d.hostKey
               ? html`<div class="item item-block newkey" id="add-computer"><span class="item-label">Paste this into a terminal on the computer</span><span class="item-action">${copyButton(cmd(d.hostKey))}</span><pre>${cmd(d.hostKey)}</pre>
                   <p class="hint">It installs what is missing (Docker, the tule CLI), adds the computer to your account and runs it as a background service. Linux, macOS, or Windows in WSL. The key works once, for an hour.</p></div>`
-              : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span> Add a computer</button></form>`
+              : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span>Add a computer</button></form>`
           }`,
       );
 
@@ -245,7 +252,7 @@ export function settingsPage(user: User, d: SettingsData): Response {
     "SSH keys",
     "They work on every project's machine. tule ssh adds its own.",
     html`${d.sshKeys.map((k) => item(k.name, html`<code>${k.key.slice(0, 24)}…</code> · ${day(k.created)}`, rowButton("/settings/ssh/remove", "Remove", k.id, true)))}
-      ${addRow("Add SSH key", "Add", "/settings/ssh/add", html`<input name="key" placeholder="ssh-ed25519 AAAA… you@laptop" aria-label="Public key" required />`)}`,
+      ${addRow("Add SSH key", "/settings/ssh/add", html`<input name="key" placeholder="ssh-ed25519 AAAA… you@laptop" aria-label="Public key" required />`)}`,
   );
 
   const api = section(
@@ -253,7 +260,7 @@ export function settingsPage(user: User, d: SettingsData): Response {
     "For the CLI and scripts. tule login makes one for you.",
     html`${d.newKey ? html`<div class="item item-block newkey"><span class="item-label">New key, shown once</span><span class="item-action">${copyButton(d.newKey)}</span><pre>${d.newKey}</pre></div>` : ""}
       ${d.apiKeys.map((k) => item(k.name, html`<code>${k.prefix}…</code> · used ${day(k.last_used)}`, rowButton("/settings/keys/revoke", "Revoke", k.id, true)))}
-      ${addRow("Create API key", "Create", "/settings/keys/new", html`<input name="name" placeholder="CI" aria-label="Key name" required />`)}`,
+      ${addRow("Create API key", "/settings/keys/new", html`<input name="name" placeholder="CI" aria-label="Key name" required />`)}`,
   );
 
   const account = user.guest
