@@ -95,7 +95,7 @@ async function connect(delay = 500) {
     return;
   }
   if (!(await auth.signedIn())) return;
-  $("project-title").textContent = project;
+  fillProjects();
   document.title = `${project} · Tule`;
   ws = new WebSocket(auth.socket(`/api/projects/${project}/view`));
   ws.binaryType = "arraybuffer";
@@ -440,6 +440,28 @@ $("viewer").addEventListener("pointermove", (e) => {
 });
 $("viewer").addEventListener("pointerleave", () => ($("pick").hidden = true));
 
+
+// ------------------------------------------------------------ the project switcher
+
+/** The header's project menu: this project first, the others, then the projects page. */
+async function fillProjects() {
+  const sel = $("project-switch");
+  const option = (value, text) => Object.assign(document.createElement("option"), { value, textContent: text });
+  sel.replaceChildren(option(project, project));
+  try {
+    const r = await auth.api("/api/projects");
+    const names = (await r.json()).projects.map((p) => p.name).filter((n) => n !== project);
+    if (names.length) sel.append(...names.map((n) => option(n, n)));
+  } catch {
+    // the menu still offers the projects page
+  }
+  sel.append(option("", "All projects…"));
+  sel.value = project;
+}
+$("project-switch").addEventListener("change", (e) => {
+  const v = e.target.value;
+  location.href = v ? `/p/${encodeURIComponent(v)}` : "/";
+});
 
 // ------------------------------------------------------------ framing around the panels
 

@@ -1293,9 +1293,36 @@ main {
   min-width: 0;
 }
 
-#project-title {
-  font-weight: 600;
+.project-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.project-switch select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 30px;
+  max-width: 46vw;
+  padding: 0 26px 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  font: 600 14px var(--sans);
   color: var(--muted);
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.project-switch select:hover { border-color: var(--line); color: var(--text); }
+.project-switch svg {
+  position: absolute;
+  right: 8px;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  color: var(--muted);
+  pointer-events: none;
 }
 
 .machine {
