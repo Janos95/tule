@@ -185,16 +185,21 @@ export async function devicePage(req: Request, env: Env, url: URL, user: User): 
   }
   const code = (url.searchParams.get("code") ?? "").toUpperCase();
   const info = code ? await a.deviceInfo(code) : null;
+  const host = info?.host;
   return page(
-    "Sign in the tule CLI",
+    host ? "Add a computer" : "Sign in the tule CLI",
     html`<p>Signed in as <b>${user.email}</b>.</p>
       ${code && !info ? html`<p class="warn">The code ${code} is wrong or expired.</p>` : ""}
       <form method="post" class="stack">
-        <label>Code shown by <code>tule login</code><input name="code" value="${code}" autocomplete="off" placeholder="ABCD-EFGH" required /></label>
-        ${info?.host ? html`<p>This adds the computer <b>${info.host}</b> to your account: Tule may start its machine image there for your projects.</p>` : info ? html`<p class="muted">Requested by: ${info.client}</p>` : ""}
-        <button class="primary">${info?.host ? "Add computer" : "Approve"}</button>
+        <label>Code shown by <code>${host ? "tule host up" : "tule login"}</code><input name="code" value="${code}" autocomplete="off" placeholder="ABCD-EFGH" required /></label>
+        ${host ? "" : info ? html`<p class="muted">Requested by: ${info.client}</p>` : ""}
+        <button class="primary">${host ? html`Add ${host}` : "Approve"}</button>
       </form>
-      <p class="muted">Approving gives that CLI an API key for your account (revoke it in <a href="/settings">Settings</a>).</p>`,
+      <p class="muted">${
+        host
+          ? html`Tule may then start its machine image on <b>${host}</b> for your projects, in Docker and with all of its cores and memory. Remove it any time in <a href="/settings">Settings</a>.`
+          : html`Approving gives that CLI an API key for your account (revoke it in <a href="/settings">Settings</a>).`
+      }</p>`,
   );
 }
 

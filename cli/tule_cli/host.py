@@ -137,6 +137,7 @@ def install_service():
     exe = shutil.which("tule") or ""
     cmd = [exe, "host", "run"] if exe else [sys.executable, "-m", "tule_cli", "host", "run"]
     path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    env = {"PATH": path, **{k: v for k, v in os.environ.items() if k in ("TULE_HOST_IMAGE", "TULE_CONFIG_DIR")}}
     if sys.platform == "darwin":
         os.makedirs(os.path.dirname(PLIST), exist_ok=True)
         logf = os.path.expanduser("~/Library/Logs/tule-host.log")
@@ -147,7 +148,7 @@ def install_service():
 <plist version="1.0"><dict>
 <key>Label</key><string>com.tule.host</string>
 <key>ProgramArguments</key><array>{args}</array>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
+<key>EnvironmentVariables</key><dict>{"".join(f"<key>{k}</key><string>{v}</string>" for k, v in env.items())}</dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>{logf}</string><key>StandardErrorPath</key><string>{logf}</string>
 </dict></plist>
@@ -168,7 +169,7 @@ After=network-online.target docker.service
 
 [Service]
 ExecStart={' '.join(cmd)}
-Environment=PATH={path}
+{chr(10).join(f"Environment={k}={v}" for k, v in env.items())}
 Restart=always
 RestartSec=5
 
