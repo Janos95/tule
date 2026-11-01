@@ -1,19 +1,16 @@
-"""The viewer's files browser: list and read files under /workspace (requests "files" and "read").
+"""Reading files under /workspace for the viewer's Download (request "read").
 
 Paths from the page are relative to /workspace ("outputs/bracket"); absolute
 paths, ".." and symlinks that lead outside /workspace are refused.
 
-    files {path}       -> {path, entries: [{name, type: "dir"|"file"|"link", size, mtime (ms)}]}
     read  {path, max}  -> the file's first `max` bytes (default 1 MiB, at most READ_MAX)
 """
 
 from __future__ import annotations
 
 import os
-import stat
 
 READ_MAX = 30 << 20  # one WebSocket message through the control plane
-LIST_MAX = 5000
 
 
 def resolve(root: str, rel) -> str:
@@ -32,35 +29,6 @@ def resolve(root: str, rel) -> str:
     return path
 
 
-def files(agent, args: dict) -> dict:
-    root = agent.workspace.root
-    rel = args.get("path") or ""
-    path = resolve(root, rel)
-    if not os.path.isdir(path):
-        raise ValueError(f"{rel!r} is not a directory" if os.path.exists(path) else f"no such directory {rel!r}")
-    entries = []
-    with os.scandir(path) as it:
-        for e in it:
-            try:
-                st = e.stat(follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            kind = "link" if stat.S_ISLNK(st.st_mode) else "dir" if stat.S_ISDIR(st.st_mode) else "file"
-            if kind == "link" and os.path.isdir(e.path):
-                try:
-                    resolve(root, os.path.relpath(e.path, root))
-                    kind = "dir"  # a link to a directory inside /workspace is browsable
-                except ValueError:
-                    pass
-            entries.append({"name": e.name, "type": kind, "size": st.st_size, "mtime": st.st_mtime_ns // 1_000_000})
-    entries.sort(key=lambda x: (x["type"] != "dir", x["name"].lower()))
-    shown = os.path.relpath(path, root).replace(os.sep, "/")
-    out = {"path": "" if shown == "." else shown, "entries": entries[:LIST_MAX]}
-    if len(entries) > LIST_MAX:
-        out["truncated"] = len(entries)
-    return out
-
-
 def read(agent, args: dict) -> bytes:
     rel = args.get("path") or ""
     path = resolve(agent.workspace.root, rel)
@@ -75,4 +43,4 @@ def read(agent, args: dict) -> bytes:
         return f.read(max(0, min(want, READ_MAX)))
 
 
-REQUESTS = {"files": files, "read": read}
+REQUESTS = {"read": read}

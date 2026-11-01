@@ -423,25 +423,25 @@ genau's page, rewired as a renderer of `outputs/`.
   with ids, and metadata (name, color, tags, bounds).
 - New: the outputs list; sequence slider and value plot; wireframe of real
   CAD edges; hover/click a face or edge to see its id and tags and copy a
-  selector; a files browser for `/workspace`; snapshot history (open any
-  output as of any snapshot); STEP/3MF download; settings (RunPod key, API
-  and SSH keys); usage.
+  selector; STEP/3MF download; settings (RunPod key, API and SSH keys);
+  usage.
 - The code editor stays for small edits; saving writes to `/workspace`
   (not built yet).
 
-As built (milestone 5): tabs for Outputs, Files and History; overlays
+As built (milestone 5): the outputs list; overlays
 (faces colored by severity or role, load arrows, a legend); the sequence
-plot; downloads; snapshot history (outputs as they were, tessellated by the
-machine from the snapshot's chunks) with Restore; assembly placement
-(`"transform"`: a row-major 4×4 matrix per part); and **annotations**: the
+plot; downloads; assembly placement (`"transform"`: a row-major 4×4 matrix per
+part); CAD edges always drawn; and **annotations**: the
 user draws strokes or picks and labels faces, and Save writes
 `/workspace/annotations/<time>/annotation.png` and `annotation.json` (strokes
 mapped to B-rep faces, labelled picks, the camera, a one-line `summary`) for
 their agent to read, e.g. to place boundary conditions, which the agent shows
 back as an overlay for the user to confirm before running topology
 optimization. The page talks to the machine through the generic request relay
-(`files`, `read`, `mesh_chunks`, `annotate`, `annotations`; the handlers are in
-`runtime/files.py`, `runtime/annotations.py`, `runtime/tule_agent.py`). Settings and
+(`read`, `annotate`, `annotations`; the handlers are in `runtime/files.py`,
+`runtime/annotations.py`). A files browser and snapshot history were built
+and removed again: the agent works with files over SSH, and going back to a
+snapshot is `tule restore` (or asking the agent). Settings and
 usage are server pages (see "Accounts").
 
 ## Python API (`tule`)
@@ -599,8 +599,9 @@ tule/
    paths, the Claude plugin. **Done** (2026-11-01) except the Claude plugin:
    see "Accounts".
 5. **Viewer:** outputs (part, assembly, sequence), faces and edges, picking,
-   files browser, snapshot history, STEP download. **Done** (2026-11-01),
-   with overlays and annotations; the code editor is not built.
+   STEP download. **Done** (2026-11-01), with overlays and annotations; the
+   code editor is not built (the files browser and snapshot history were
+   dropped, see "Viewer").
 6. **Engineering libraries:** `tule.dfm` v0, `tule.topopt` v0. **Done**
    (2026-11-01): see "Engineering libraries".
 7. **GPU:** RunPod backend (settings, encrypted key, `tule up --gpu`),

@@ -48,7 +48,6 @@ import signal
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 
 import websockets
@@ -538,31 +537,10 @@ def _ping(agent: "Agent", args: dict) -> dict:
     return {"pong": True, "workspace": WORKSPACE}
 
 
-def _mesh_chunks(agent: "Agent", args: dict) -> bytes:
-    """A file of a snapshot, by its chunk hashes (from the snapshot's manifest), tessellated
-    like a live output: {name: "bracket.step", chunks: [sha256, ...]} -> encode_mesh bytes."""
-    name = os.path.basename(str(args.get("name") or ""))
-    chunks = args.get("chunks")
-    if not name.lower().endswith(GEOMETRY):
-        raise ValueError(f"{name!r}: not a geometry file ({', '.join(GEOMETRY)})")
-    if not isinstance(chunks, list) or not chunks or not all(isinstance(h, str) and len(h) == 64 for h in chunks):
-        raise ValueError("chunks: the file's sha256 chunk hashes, from the snapshot's manifest")
-
-    def make():
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, name)
-            with open(path, "wb") as f:
-                for h in chunks:
-                    f.write(agent.workspace.api.get(h))
-            return encode_mesh(path)
-
-    return agent.outputs.cached("chunks:" + hashlib.sha256(",".join(chunks).encode()).hexdigest(), make)
-
-
 # viewer requests by op (see Agent.request): a handler returns a dict or bytes;
-# a dict's "broadcast" entry is an event for every viewer. files.py: files,
-# read; annotations.py: annotate, annotations.
-REQUESTS = {"ping": _ping, "mesh_chunks": _mesh_chunks, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
+# a dict's "broadcast" entry is an event for every viewer. files.py: read
+# (the viewer's Download); annotations.py: annotate, annotations.
+REQUESTS = {"ping": _ping, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
 
 
 def new_project(root: str):

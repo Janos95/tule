@@ -266,6 +266,7 @@ async function app(req: Request, env: Env): Promise<Response> {
   const html = await res.text();
   const headers = new Headers(res.headers);
   headers.delete("Content-Length");
+  headers.set("Cache-Control", "no-store"); // the page must always be the latest build
   return new Response(html.includes("/__dev/version") ? html : html.replace("</body>", `${RELOAD_SCRIPT}</body>`), { status: res.status, headers });
 }
 
