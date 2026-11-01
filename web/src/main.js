@@ -13,6 +13,7 @@
 //
 // Output kinds (output.json "kind"): part, assembly, sequence, overlay
 // (overlay.js has its format).
+import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
 import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
@@ -29,17 +30,32 @@ try {
 }
 const parts = viewer ? initParts({ viewer, project: () => project ?? "" }) : null;
 const overlay = viewer ? initOverlay({ viewer, legend: $("legend"), marks: $("marks") }) : null;
-
 const state = {
+  machine: "unknown", // the machine's state: running, starting, stopped, offline
   outputs: [], // the index from the machine
   selected: new URLSearchParams(location.search).get("o"),
   shown: null, // the key of what is drawn (output name and file hashes)
   frame: 0,
+  meshes: [], // what is drawn
+  record: null, // what is drawn, for an annotation: {name, kind, title, files, frame}
 };
 const meshes = new Map(); // hash -> Promise<parts>
 const pending = new Map(); // rid -> {resolve, reject, raw: bytes wanted as they are}
 let ws = null;
 let rid = 0;
+const listeners = new Set(); // the agent's broadcasts ({t: "event", event, ...})
+
+const annotate = viewer
+  ? initAnnotate({
+      viewer,
+      req,
+      machine: () => state.machine,
+      output: () => state.record,
+      meshes: () => state.meshes,
+      select: (name) => select(name),
+      on: (f) => listeners.add(f),
+    })
+  : null;
 
 function setStatus(text) {
   $("status").textContent = text;
@@ -89,7 +105,6 @@ function onText(m) {
   }
 }
 
-const listeners = new Set(); // the agent's broadcasts ({t: "event", event, ...})
 
 /** A request to the machine's agent (REQUESTS in runtime/tule_agent.py):
  * resolves to its answer (an object, or an ArrayBuffer for bytes). */
@@ -155,6 +170,8 @@ function request(file) {
 }
 
 function machine(s) {
+  state.machine = s.state;
+  annotate?.machineChanged();
   const el = $("machine");
   el.dataset.state = s.state;
   const text = {
@@ -199,23 +216,29 @@ function renderList() {
     b.innerHTML = `<span class="output-name"></span><small></small>`;
     b.firstChild.textContent = o.meta?.title || o.name;
     b.lastChild.textContent = o.error ? o.error : `${kind} · ${n}`;
-    b.addEventListener("click", () => {
-      state.selected = o.name;
-      state.frame = 0;
-      const u = new URL(location.href);
-      u.searchParams.set("o", o.name);
-      history.replaceState(null, "", u);
-      renderList();
-      show();
-    });
+    b.addEventListener("click", () => select(o.name));
     list.append(b);
   }
+}
+
+/** Shows an output by name; resolves once it is drawn. */
+function select(name) {
+  if (state.selected === name && state.shown) return Promise.resolve();
+  state.selected = name;
+  state.frame = 0;
+  const u = new URL(location.href);
+  u.searchParams.set("o", name);
+  history.replaceState(null, "", u);
+  renderList();
+  return show();
 }
 
 async function show() {
   const o = state.outputs.find((x) => x.name === state.selected);
   if (!o) {
     state.shown = null;
+    state.meshes = [];
+    state.record = null;
     viewer?.clear();
     $("sequence").hidden = true;
     $("counts").textContent = "";
@@ -223,6 +246,7 @@ async function show() {
   }
   const kind = kindOf(o);
   let files = o.files;
+  let frame = null;
   const seq = $("sequence");
   seq.hidden = kind !== "sequence";
   if (kind === "sequence") {
@@ -236,6 +260,7 @@ async function show() {
     const values = cur?.values ? Object.entries(cur.values).map(([k, v]) => `${k} ${+v.toPrecision(4)}`).join(" · ") : "";
     $("frame").textContent = cur ? [cur.label ?? `frame ${state.frame}`, values].filter(Boolean).join(" · ") : "";
     files = cur ? [cur.f] : [];
+    frame = state.frame;
   } else if (kind === "overlay" || kind === "part") {
     const f = o.files.find((x) => x.file === o.meta?.file) ?? o.files[0];
     files = f ? [f] : [];
@@ -244,6 +269,7 @@ async function show() {
   if (key === state.shown) return;
   const first = !state.shown || !state.shown.startsWith(o.name + "|");
   state.shown = key;
+  if (first) annotate?.reset();
   setStatus(meshes.size === 0 || !files.every((f) => meshes.has(f.hash)) ? "Loading…" : "");
   try {
     const loaded = await Promise.all(files.map(request));
@@ -256,6 +282,8 @@ async function show() {
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first ? true : "auto", style);
     overlay?.apply(kind === "overlay" ? o.meta : null);
+    state.meshes = all;
+    state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: files.map((f) => f.path), frame };
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles`;
     setStatus("");

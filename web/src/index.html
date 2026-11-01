@@ -28,6 +28,9 @@
             <button id="parts-toggle" class="toggle" title="Parts (P)" aria-controls="parts" aria-expanded="false" hidden>
               <svg viewBox="0 0 16 16"><path d="M8 2 14 5 8 8 2 5zM2 8l6 3 6-3M2 11l6 3 6-3" /></svg><span class="label">Parts</span>
             </button>
+            <button id="annotate-toggle" class="toggle" title="Annotate: draw and pick faces for your agent" aria-controls="annotate" aria-expanded="false">
+              <svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8H2.5v-3zM9 4l3 3" /></svg><span class="label">Annotate</span>
+            </button>
             <button id="wire" class="toggle on" title="CAD edges (W)" aria-pressed="true">
               <svg viewBox="0 0 16 16"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5zM8 1.5V8m0 0 6-3M8 8 2 5m6 3v6.5" /></svg>Edges
             </button>
@@ -37,6 +40,40 @@
           </div>
           <div id="parts" role="tree" aria-label="Parts" hidden></div>
           <div id="marks" aria-hidden="true"></div>
+          <canvas id="ink" aria-hidden="true"></canvas>
+          <div id="annot-shown" class="annot-shown" hidden><span id="annot-shown-text"></span><button id="annot-shown-hide" type="button">Hide</button></div>
+          <div id="annotate" class="annot" aria-label="Annotate" hidden>
+            <div class="annot-head"><b>Annotate for your agent</b><button id="annot-close" class="close" type="button" aria-label="Close">×</button></div>
+            <div class="annot-tools">
+              <div class="seg" role="group" aria-label="Tool">
+                <button id="annot-draw" type="button" aria-pressed="true">Draw</button>
+                <button id="annot-pick" type="button" aria-pressed="false">Pick faces</button>
+              </div>
+              <div id="annot-colors" class="ink-colors"></div>
+              <span class="annot-gap"></span>
+              <button id="annot-undo" type="button" title="Undo the last stroke (⌘Z)">Undo</button>
+              <button id="annot-clear" type="button" title="Remove strokes and picks">Clear</button>
+            </div>
+            <p id="annot-hint" class="annot-hint"></p>
+            <form id="annot-label-form" class="annot-label-row" hidden>
+              <input id="annot-label" list="annot-labels" placeholder="fixed, load 500 N down, …" aria-label="Label for the selected faces" autocomplete="off" />
+              <button id="annot-label-add" type="submit">Label</button>
+            </form>
+            <datalist id="annot-labels"><option value="fixed"></option><option value="load"></option><option value="keep"></option><option value="remove"></option><option value="too thin"></option><option value="round this"></option></datalist>
+            <div id="annot-picks"></div>
+            <textarea id="annot-note" rows="2" placeholder="Note for your agent (optional)"></textarea>
+            <div class="annot-save"><button id="annot-save" class="primary" type="button">Save</button><span id="annot-why"></span></div>
+            <div id="annot-done" class="annot-done" hidden>
+              <div>Saved to <code></code></div>
+              <div class="annot-tell"><span>Tell your agent:</span><button id="annot-copy" type="button">Copy</button></div>
+              <q class="annot-say"></q>
+              <small class="annot-summary"></small>
+            </div>
+            <details id="annot-past" hidden>
+              <summary>Earlier annotations (<span id="annot-past-count"></span>)</summary>
+              <div id="annot-past-list"></div>
+            </details>
+          </div>
           <div id="legend" class="legend" aria-label="Findings and conditions" hidden></div>
           <div id="status" class="status"></div>
           <div id="pick" class="pick-label" hidden></div>
