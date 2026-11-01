@@ -20,6 +20,7 @@
         <div class="side-tabs" role="tablist" aria-label="Project">
           <button type="button" role="tab" data-tab="outputs" aria-selected="true" aria-controls="tab-outputs">Outputs</button>
           <button type="button" role="tab" data-tab="files" aria-selected="false" aria-controls="tab-files">Files</button>
+          <button type="button" role="tab" data-tab="history" aria-selected="false" aria-controls="tab-history">History</button>
         </div>
         <div id="tab-outputs" class="side-pane" role="tabpanel">
           <div id="output-list" role="listbox" aria-label="Outputs"></div>
@@ -30,8 +31,17 @@
           <p id="files-note" class="files-note" hidden></p>
           <div id="file-list" class="file-list"></div>
         </div>
+        <div id="tab-history" class="side-pane" role="tabpanel" hidden>
+          <p id="history-note" class="files-note" hidden></p>
+          <div id="snapshot-list" class="file-list"></div>
+        </div>
       </aside>
       <section id="right">
+        <div id="snapshot-bar" class="snapshot-bar" hidden>
+          <span id="snapshot-text"></span>
+          <button id="snapshot-restore" type="button" title="Make /workspace match this snapshot">Restore…</button>
+          <button id="snapshot-live" type="button" class="primary">Back to live</button>
+        </div>
         <div id="stage">
           <div id="viewer"></div>
           <div id="hud" class="hud">

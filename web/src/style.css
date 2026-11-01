@@ -1741,3 +1741,35 @@ main {
 .preview .close { border: none; background: none; font-size: 19px; width: 28px; padding: 0; justify-content: center; color: var(--muted); }
 .preview pre { flex: 1; min-height: 0; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.45 var(--mono); white-space: pre; tab-size: 4; }
 .dl .menu button { justify-content: space-between; }
+
+/* ---------------------------------------------------------------- snapshots */
+
+.snap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  height: auto;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  background: none;
+  text-align: left;
+}
+.snap:hover { background: #e9edf1; }
+.snap[aria-selected="true"] { background: var(--bg); border-color: var(--line); }
+.snap span { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.snap small { color: var(--muted); font-size: 11.5px; }
+.snapshot-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  background: #fdf3dc;
+  border-bottom: 1px solid #efd9a6;
+  font-size: 12.5px;
+  color: #6b4a00;
+}
+.snapshot-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snapshot-bar button { height: 26px; font-size: 12px; flex: none; }

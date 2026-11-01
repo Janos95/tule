@@ -15,7 +15,8 @@
 // (overlay.js has its format).
 import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
-import { initFiles, size } from "./files.js";
+import { initFiles, save, size } from "./files.js";
+import { initHistory } from "./history.js";
 import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
 import { initPlot } from "./plot.js";
@@ -39,7 +40,9 @@ const plot = initPlot($("plot"), (i) => {
 const overlay = viewer ? initOverlay({ viewer, legend: $("legend"), marks: $("marks") }) : null;
 const state = {
   machine: "unknown", // the machine's state: running, starting, stopped, offline
-  outputs: [], // the index from the machine
+  outputs: [], // the listed outputs: the live index, or a snapshot's
+  live: [], // the index from the machine
+  source: null, // the snapshot being viewed ({id, at, reason}), or null for live
   selected: new URLSearchParams(location.search).get("o"),
   shown: null, // the key of what is drawn (output name and file hashes)
   frame: 0,
@@ -76,6 +79,26 @@ function flash(text) {
 }
 
 const files = initFiles({ req, machine: () => state.machine, notify: flash });
+const snapshots = initHistory({
+  project,
+  machine: () => state.machine,
+  notify: flash,
+  view(snapshot, outputs) {
+    state.source = snapshot;
+    state.outputs = outputs;
+    state.shown = null;
+    setTab("outputs");
+    renderList();
+    show();
+  },
+  live() {
+    state.source = null;
+    state.outputs = state.live;
+    state.shown = null;
+    renderList();
+    show();
+  },
+});
 
 // ------------------------------------------------------------ connection
 
@@ -103,7 +126,9 @@ async function connect(delay = 500) {
 function onText(m) {
   if (m.t === "outputs") {
     if (m.status) machine(m.status);
-    state.outputs = m.outputs ?? [];
+    state.live = m.outputs ?? [];
+    if (state.source) return;
+    state.outputs = state.live;
     renderList();
     show();
   } else if (m.t === "mesh-error" || m.t === "res") {
@@ -168,6 +193,12 @@ function decode(buf, at) {
 }
 
 function request(file) {
+  if (!meshes.has(file.hash) && file.chunks) {
+    // a file of a snapshot: the machine tessellates it from its chunks
+    const promise = req("mesh_chunks", { name: file.file, chunks: file.chunks }, 300_000).then((buf) => decode(buf, 0));
+    promise.catch(() => meshes.delete(file.hash));
+    meshes.set(file.hash, promise);
+  }
   if (!meshes.has(file.hash)) {
     const promise = new Promise((resolve, reject) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected"));
@@ -300,7 +331,7 @@ async function show() {
     viewer?.setMeshes(all, first ? true : "auto", style);
     overlay?.apply(kind === "overlay" ? o.meta : null);
     state.meshes = all;
-    state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
+    state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame, snapshot: state.source?.id ?? null };
     offerDownload(kind === "assembly" ? o.files : shownFiles);
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles`;
@@ -373,14 +404,14 @@ $("viewer").addEventListener("pointerleave", () => ($("pick").hidden = true));
 // ------------------------------------------------------------ the side tabs and downloads
 
 let tab = "outputs";
-for (const b of document.querySelectorAll(".side-tabs [role=tab]")) {
-  b.addEventListener("click", () => {
-    tab = b.dataset.tab;
-    for (const x of document.querySelectorAll(".side-tabs [role=tab]")) x.setAttribute("aria-selected", String(x === b));
-    for (const pane of document.querySelectorAll(".side-pane")) pane.hidden = pane.id !== `tab-${tab}`;
-    if (tab === "files") files.show();
-  });
+function setTab(name) {
+  tab = name;
+  for (const x of document.querySelectorAll(".side-tabs [role=tab]")) x.setAttribute("aria-selected", String(x.dataset.tab === name));
+  for (const pane of document.querySelectorAll(".side-pane")) pane.hidden = pane.id !== `tab-${name}`;
+  if (name === "files") files.show();
+  if (name === "history") snapshots.show();
 }
+for (const b of document.querySelectorAll(".side-tabs [role=tab]")) b.addEventListener("click", () => setTab(b.dataset.tab));
 
 let downloads = [];
 /** The Download button offers the shown output's geometry files. */
@@ -389,9 +420,14 @@ function offerDownload(list) {
   $("download").hidden = !list.length;
   $("download-menu").hidden = true;
 }
-function download(f) {
+async function download(f) {
   $("download-menu").hidden = true;
-  files.download(`outputs/${f.path}`, f.file);
+  if (!f.chunks) return files.download(`outputs/${f.path}`, f.file);
+  try {
+    save(await snapshots.bytes(f.chunks), f.file.split("/").pop()); // a snapshot's file, from its chunks
+  } catch (e) {
+    flash(`Cannot download ${f.file}: ${e.message}`);
+  }
 }
 $("download").addEventListener("click", (e) => {
   e.stopPropagation();
