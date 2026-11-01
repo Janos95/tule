@@ -626,3 +626,4 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
+| Machines | one per project (2026-11-01). Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's snapshot. |
