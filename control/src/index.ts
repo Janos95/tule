@@ -254,6 +254,7 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
     quota: Number(env.CPU_HOURS_MONTH || 100),
     newKey,
     message,
+    origin: env.PUBLIC_URL || url.origin,
   });
 }
 

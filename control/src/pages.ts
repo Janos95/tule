@@ -40,16 +40,27 @@ label{display:flex;flex-direction:column;gap:4px;font-size:14px}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted);font-weight:500}
 .card{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--panel)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#b8c0c8;margin-right:6px}.dot.running{background:#3aa45b}.dot.starting{background:#e0a526}
+.plist{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.prow{display:grid;grid-template-columns:1fr auto 96px;align-items:center;gap:16px;padding:12px 8px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.prow:hover{background:var(--panel)}
+.pname{font-weight:500}.pstate{color:var(--muted);font-size:14px}.pdate{color:var(--muted);font-size:13px;text-align:right}
+.newp{border-bottom:1px solid var(--line)}
+.newp summary{list-style:none;cursor:pointer;padding:12px 8px;color:var(--muted)}
+.newp summary::-webkit-details-marker{display:none}
+.newp summary:hover{color:var(--text)}
+.newp .plus{display:inline-block;width:14px}
+.newp-form{display:flex;gap:8px;padding:0 8px 12px}
+.newp-form input{max-width:360px}
+.newp .warn{padding:0 8px}
 .hero{padding:48px 0 24px}.hero h1{font-size:30px}.hero p{font-size:17px;color:var(--muted);max-width:620px}
-@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}}
+@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow{grid-template-columns:1fr auto}.pdate{display:none}}
 `;
 
 const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#a8cf74" stroke-width="32" stroke-linecap="round"/></svg>`;
 
 export function layout(title: string, body: Html | string, user?: User | null): string {
   const nav = user
-    ? html`<nav><a href="/">Projects</a><a href="/settings">Settings</a>
-        <form method="post" action="/auth/logout" style="margin:0"><button>Sign out</button></form></nav>`
+    ? html`<nav><a href="/settings">Settings</a></nav>`
     : html`<nav><a class="button" href="/auth/login">Sign in</a></nav>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}</style></head>
@@ -81,32 +92,43 @@ export function landing(_origin: string): Response {
 
 export type ProjectRow = ProjectRef & { state: string; machine: string | null };
 
-export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string): Response {
-  const list = rows.length
-    ? html`<table><tr><th>Project</th><th>Machine</th><th>Created</th><th></th></tr>
-        ${rows.map(
-          (p) => html`<tr><td><a href="/p/${p.name}"><b>${p.name}</b></a></td>
-            <td><span class="dot ${p.state}"></span>${p.state === "stopped" ? "stopped" : `${p.machine ?? ""} · ${p.state}`}</td>
-            <td class="muted">${new Date(p.created).toISOString().slice(0, 10)}</td>
-            <td style="text-align:right"><a class="button" href="/p/${p.name}">Open viewer</a></td></tr>`,
-        )}</table>`
-    : html`<p class="muted">No projects yet. Create one here, or ask your agent to ("start a Tule project for a camera bracket").</p>`;
-  const body = html`${list}
-    <h2>New project</h2>
-    ${error ? html`<p class="warn">${error}</p>` : ""}
-    <form method="post" action="/projects/new" class="row">
-      <label>Name<input name="name" pattern="[a-z0-9][a-z0-9-]{0,62}" placeholder="camera-bracket" required /></label>
-      <button class="primary">Create</button>
-    </form>
-    <h2>Connect your agent</h2>
-    <div class="card">
-      <p><b>MCP connector</b> (projects, machines, keys): <code>${origin}/mcp</code></p>
+/** How an agent connects: the MCP connector (the control plane) and the CLI (the work). */
+function connect(origin: string): Html {
+  return html`<div class="card">
+      <p><b>MCP connector</b> (projects, machines, keys): <code>${origin}/mcp</code><br>
+      <span class="muted">Add it as a custom connector in Claude or ChatGPT, or as a remote MCP server in Claude Code, Codex or Cursor.</span></p>
       <p><b>CLI</b> (the work, over SSH):</p>
       <pre>pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"
 tule login --url ${origin}
 tule ssh -p &lt;project&gt;</pre>
     </div>`;
-  return page("Projects", body, 200, user);
+}
+
+export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string): Response {
+  const state = (p: ProjectRow) => (p.state === "stopped" ? "stopped" : `${p.machine ?? ""} · ${p.state}`);
+  const create = html`<details class="newp"${error || !rows.length ? html` open` : ""}>
+      <summary><span class="plus">+</span> New project</summary>
+      <form method="post" action="/projects/new" class="newp-form">
+        <input name="name" pattern="[a-z0-9][a-z0-9-]{0,62}" placeholder="camera-bracket" aria-label="Project name" required autofocus />
+        <button class="primary">Create</button>
+      </form>
+      ${error ? html`<p class="warn">${error}</p>` : ""}
+    </details>`;
+  const body = rows.length
+    ? html`<div class="plist">
+        ${rows.map(
+          (p) => html`<a class="prow" href="/p/${p.name}">
+            <span class="pname">${p.name}</span>
+            <span class="pstate"><span class="dot ${p.state}"></span>${state(p)}</span>
+            <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>`,
+        )}
+        ${create}
+      </div>`
+    : html`<p class="muted">Start your first project, or ask your agent to ("start a Tule project for a camera bracket").</p>
+      <div class="plist">${create}</div>
+      <h2>Connect your agent</h2>
+      ${connect(origin)}`;
+  return page("Your projects", body, 200, user);
 }
 
 export type SettingsData = {
@@ -117,6 +139,7 @@ export type SettingsData = {
   quota: number;
   newKey?: string;
   message?: string;
+  origin: string;
 };
 
 const day = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : "never");
@@ -129,7 +152,8 @@ export function settingsPage(user: User, d: SettingsData): Response {
         RunPod's own limits (prepaid balance, spend limit) are the budget.</p>`;
   const body = html`
     ${d.message ? html`<p class="ok">${d.message}</p>` : ""}
-    <p class="muted">Signed in as ${user.email}.</p>
+    <h2>Connect your agent</h2>
+    ${connect(d.origin)}
     <h2>RunPod (GPU machines)</h2>
     ${rp}
     <form method="post" action="/settings/runpod" class="row" autocomplete="off">
@@ -167,5 +191,8 @@ export function settingsPage(user: User, d: SettingsData): Response {
       <label>Name<input name="name" placeholder="CI" required /></label>
       <button>Create key</button>
     </form>`;
-  return page("Settings", body, 200, user);
+  const account = html`<h2>Account</h2>
+    <div class="row" style="align-items:center"><span class="muted">Signed in as ${user.email}</span>
+      <form method="post" action="/auth/logout" style="margin:0 0 0 auto"><button>Sign out</button></form></div>`;
+  return page("Settings", html`${body}${account}`, 200, user);
 }
