@@ -252,8 +252,11 @@ outputs/
 - **Kinds in v1:** `part` (one file), `assembly` (several files with names,
   colors, optional transforms; shown in the Parts panel), `sequence` (ordered
   frames with labels and values; slider, play, a plot of the values;
-  `"status": "running"` means more frames are coming). Later: `overlay`
-  (per-face or per-vertex data on a part, for DFM findings or stress) and
+  `"status": "running"` means more frames are coming), `overlay` (a part
+  with faces colored by `role` or `severity` and labeled, plus arrows:
+  boundary conditions, DFM findings, what the agent understood from an
+  annotation; `{"file", "faces": {"12": {"role", "label"}}, "arrows":
+  [{"at", "dir", "label"}]}`). Later: per-vertex data (stress) and
   `variants` (side by side).
 - **The JSON is optional.** Without it the viewer infers the kind: one file is
   a part, several an assembly, numbered files a sequence.

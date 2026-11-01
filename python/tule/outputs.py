@@ -13,6 +13,9 @@ for i, (verts, tris, c) in enumerate(steps):
     seq.add(mesh=(verts, tris), label=f"iteration {i}", compliance=c)
 seq.done()
 outputs.overlay("bracket-dfm", part, dfm.cnc(part))  # per-face findings on the part
+outputs.overlay("bracket-loads", part,                # colored faces and arrows on a part
+                faces={part.faces["load"]: {"role": "load", "label": "500 N"}},
+                arrows=[{"at": (0, 0, 18), "dir": (0, 0, -1), "label": "500 N"}])
 ```
 
 Nothing here is required: any tool may write the files and JSON directly.
@@ -60,6 +63,7 @@ from typing import Any, Union
 from .assembly import Assembly
 from .errors import TuleError
 from .io import Mesh, export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
+from .selection import Selection
 from .shape import Shape
 
 VERSION = 1
@@ -252,6 +256,12 @@ def _face_entries(shape: Shape, data) -> tuple[dict, list | None, str | None]:
     if isinstance(data, dict):
         faces: dict[str, dict] = {}
         for k, v in data.items():
+            if isinstance(k, Selection):  # part.faces["load"]: every face of the selection
+                if k.kind != "face":
+                    raise TuleError(f"overlay keys must be faces, got {k.kind}s", op="overlay")
+                for i in shape._resolve(k, "face").ids:
+                    faces.update(_face_entries(shape, {i: v})[0])
+                continue
             i = check(int(k), "face id")
             if isinstance(v, dict):
                 entry = dict(v)
@@ -282,9 +292,9 @@ def _face_entries(shape: Shape, data) -> tuple[dict, list | None, str | None]:
 def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None = None) -> str:
     """Write a part with per-face data: ``outputs/<name>/<part>.step`` plus an overlay ``output.json``.
 
-    ``faces`` is a ``dfm`` Report, a list of findings, or a mapping from face
-    id to a number, a label, or a dict (``severity``, ``role``, ``label``,
-    ``value``). ``arrows`` are dicts ``{"at": point, "dir": vector, "label": text}``.
+    ``faces`` is a ``dfm`` Report, a list of findings, or a mapping from a face
+    id or a face selection (``part.faces["load"]``) to a number, a label, or a
+    dict (``severity``, ``role``, ``label``, ``value``). ``arrows`` are dicts ``{"at": point, "dir": vector, "label": text}``.
     The format is described at the top of this module. Returns the folder.
     """
     if not isinstance(part, Shape):

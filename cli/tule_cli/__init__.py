@@ -10,6 +10,12 @@
     tule snapshot | snapshots | restore <id>   save /workspace now, list snapshots, go back to one
     tule status | down | open | join | keys add <file>
 
+On the machine (and on a laptop, for local files; see machine.py):
+
+    tule screenshot -o view.png [--output NAME | FILE] [--view iso] [--labels]
+    tule inspect FILE | tule docs [topic]
+    tule snapshot                            on the machine: the local tule-agent saves /workspace now
+
 The project comes from -p, else $TULE_PROJECT, else the last one used.
 `tule login` stores the control plane's URL and an API key for your account
 in ~/.config/tule/config.json ($TULE_URL and $TULE_TOKEN override them).
@@ -366,7 +372,13 @@ def cmd_open(args):
 
 
 def cmd_snapshot(args):
-    p = project_of(args, load())
+    cfg = load()
+    if not args.project and not (cfg.get("url") and cfg.get("token")):
+        from . import machine
+
+        if machine.on_machine():
+            return machine.snapshot_here()
+    p = project_of(args, cfg)
     r = api("POST", f"/api/projects/{p}/snapshot")
     print(f"tule: {p}: snapshot {r['snapshot']}" + ("" if r.get("changed", True) else " (nothing changed since)"))
 
@@ -433,7 +445,7 @@ def main(argv=None):
     sp = add("open", cmd_open, "open the viewer")
     sp.add_argument("--print", action="store_true", help="only print the link")
     add("join", cmd_join, "a join token for a machine you start yourself")
-    add("snapshot", cmd_snapshot, "save /workspace now")
+    add("snapshot", cmd_snapshot, "save /workspace now (on the machine: through the local tule-agent)")
     sp = add("snapshots", cmd_snapshots, "list the snapshots of /workspace, newest first")
     sp.add_argument("--limit", type=int, default=20)
     sp = add("restore", cmd_restore, "make /workspace match a snapshot (saves the current state first)")
@@ -441,6 +453,9 @@ def main(argv=None):
     sp = add("keys", cmd_keys, "SSH keys: tule keys ls | tule keys add ~/.ssh/id_ed25519.pub", project=False)
     sp.add_argument("action", choices=["add", "ls"])
     sp.add_argument("file", nargs="?")
+    from . import machine
+
+    machine.add_commands(add)
 
     args = ap.parse_args(argv)
     if args.cmd == "ssh" and args.command[:1] == ["--"]:
