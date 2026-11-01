@@ -36,50 +36,7 @@ tule screenshot -o loads.png --output bracket-loads      # read it: load and bol
 tule inspect outputs/bracket/bracket.step                # tags: load f.., fixed f.., f.., f.., f..
 ```
 
-Tell the user to check `bracket-loads` in the viewer; once confirmed, commit, then optimize (`tule docs topopt`) or check manufacturability (`tule docs dfm`).
-
-## Make this part machinable (3-axis CNC)
-
-Sharp internal vertical corners cannot be milled: a 6 mm end mill leaves 3 mm radii. To try this without a supplier file, make one:
-
-```python
-import os
-from tule import *
-
-os.makedirs("supplier", exist_ok=True)
-block = box(80, 50, 30, center=True)
-block -= box(50, 30, 20).at(-25, -15, -5)                 # a pocket with sharp corners
-block -= cylinder(4, 50, center=True).at(32, 18, 0)
-export_step(block.named("housing"), "supplier/housing.step")
-```
-
-```python
-from tule import *
-
-TOOL_R = 3.0                                              # 6 mm end mill
-part = import_step("supplier/housing.step")
-print(part, part.is_valid, part.size)
-lo, hi = part.bounds
-margin = (0.01, 0.01, -1)
-inner = part.edges.parallel(Z).within(lo + margin, hi - margin)   # vertical edges away from the outside
-print("sharp internal corners:", inner)
-R = TOOL_R + 0.2                                          # a little more than the tool, for a clean cut
-try:
-    fixed = part.fillet(inner, R)
-except TuleError as e:                                    # corner too tight for this tool
-    print(e)
-    R = 0.9 * e.data["max_radius"]
-    fixed = part.fillet(inner, R)
-outputs.overlay("housing-machinable", fixed, title=f"Pocket corners r{R:g} for a {2 * TOOL_R:g} mm end mill",
-                faces={fixed.faces["fillet"]: {"severity": "ok", "label": f"r{R:g}"}})
-outputs.part("housing", fixed.named("housing", "#c8ccd0"))
-```
-
-```sh
-tule screenshot -o cnc.png --output housing-machinable --view top
-```
-
-Report what changed (which corners, which radius, and that the pocket floor corners still need a ball or bull-nose end mill if they must be round). With `tule.dfm` (`tule docs dfm`) the check finds these and more.
+Tell the user to check `bracket-loads` in the viewer; once confirmed, commit, then optimize (`tule docs topopt`).
 
 ## Run a study on a GPU
 

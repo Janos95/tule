@@ -28,6 +28,5 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 | `outputs` | what the viewer shows and how to write it |
 | `occt` | an operation failed: fillets, Booleans, shells, tolerances |
 | `annotations` | the user drew on the model in the viewer |
-| `dfm` | checking manufacturability (CNC, 3D printing) |
 | `topopt` | topology optimization from loads and fixed faces |
 | `golden-paths` | tested end-to-end recipes to copy from |

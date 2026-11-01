@@ -30,7 +30,6 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 | `outputs` | what the viewer shows and how to write it |
 | `occt` | an operation failed: fillets, Booleans, shells, tolerances |
 | `annotations` | the user drew on the model in the viewer |
-| `dfm` | checking manufacturability (CNC, 3D printing) |
 | `topopt` | topology optimization from loads and fixed faces |
 | `golden-paths` | tested end-to-end recipes to copy from |
 
@@ -146,7 +145,7 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 ## Roles and tags
 
 - **Roles**: primitives and features name their faces: `box(...).faces["top"]` (`top bottom left right front back`), `cylinder(...).faces["side"]`, extrusions `top/bottom/side`, `fillet`, `chamfer`, shell `inner`. A role resolves through later operations when you select on the feature itself: `part.fillet(boss.edges["bottom"], 2)`. After a Boolean, `part.faces["top"]` is not defined (it would be ambiguous).
-- **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation, are written into STEP files, show in the viewer (`f12 · load`) and are what analysis (`tule.dfm`, `tule.topopt`) reads. Tag what matters: loads, fixed faces, mating faces, cosmetic faces.
+- **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation, are written into STEP files, show in the viewer (`f12 · load`) and are what analysis (`tule.topopt`) reads. Tag what matters: loads, fixed faces, mating faces, cosmetic faces.
 
 ## Errors
 
@@ -217,7 +216,7 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 {"version": 1, "kind": "sequence", "status": "running",
  "frames": [{"file": "frame_0000.stl", "label": "iteration 0", "values": {"compliance": 41.2}}]}
 {"version": 1, "kind": "overlay", "file": "bracket.step",
- "faces": {"12": {"role": "load", "label": "500 N"}, "3": {"severity": "warning", "label": "r < tool"},
+ "faces": {"12": {"role": "load", "label": "500 N"}, "3": {"severity": "warning", "label": "wall 0.6 mm"},
            "7": {"value": 1.8}},
  "scale": {"label": "wall thickness", "unit": "mm", "min": 0, "max": 3},
  "arrows": [{"at": [0, 0, 18], "dir": [0, 0, -1], "label": "500 N"}],

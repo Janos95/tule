@@ -48,7 +48,7 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 {"version": 1, "kind": "sequence", "status": "running",
  "frames": [{"file": "frame_0000.stl", "label": "iteration 0", "values": {"compliance": 41.2}}]}
 {"version": 1, "kind": "overlay", "file": "bracket.step",
- "faces": {"12": {"role": "load", "label": "500 N"}, "3": {"severity": "warning", "label": "r < tool"},
+ "faces": {"12": {"role": "load", "label": "500 N"}, "3": {"severity": "warning", "label": "wall 0.6 mm"},
            "7": {"value": 1.8}},
  "scale": {"label": "wall thickness", "unit": "mm", "min": 0, "max": 3},
  "arrows": [{"at": [0, 0, 18], "dir": [0, 0, -1], "label": "500 N"}],

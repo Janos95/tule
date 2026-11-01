@@ -12,7 +12,6 @@ seq = outputs.sequence("bracket-topopt", "Topology optimization")
 for i, (verts, tris, c) in enumerate(steps):
     seq.add(mesh=(verts, tris), label=f"iteration {i}", compliance=c)
 seq.done()
-outputs.overlay("bracket-dfm", part, dfm.cnc(part))  # per-face findings on the part
 outputs.overlay("bracket-loads", part,                # colored faces and arrows on a part
                 faces={part.faces["load"]: {"role": "load", "label": "500 N"}},
                 arrows=[{"at": (0, 0, 18), "dir": (0, 0, -1), "label": "500 N"}])
@@ -24,16 +23,16 @@ outputs.part("bracket", part, info={"material": "aluminium 6061", "mass": "20.8 
 Nothing here is required: any tool may write the files and JSON directly.
 
 **Overlay** (``kind: "overlay"``): data shown on the faces of one part,
-for DFM findings, boundary conditions, or any per-face values. The faces are
+for boundary conditions, checks, or any per-face values. The faces are
 B-rep face ids, the same as ``part.faces`` and the viewer's ``f12``::
 
     {
       "version": 1,
       "kind": "overlay",
       "file": "bracket.step",                 # the part, in the same folder
-      "title": "DFM cnc-3axis: 2 errors",     # optional
+      "title": "Loads and supports",          # optional
       "faces": {                              # face id (string) -> what to show
-        "12": {"severity": "error", "label": "internal corner r1 < tool r3"},
+        "12": {"severity": "warning", "label": "wall 0.6 mm"},
         "4":  {"role": "fixed", "label": "fixed"},
         "7":  {"role": "load", "label": "500 N -Z"},
         "9":  {"value": 0.31}
@@ -42,18 +41,12 @@ B-rep face ids, the same as ``part.faces`` and the viewer's ``f12``::
         {"at": [x, y, z], "dir": [0, 0, -1], "label": "500 N"}
       ],
       "scale": {"label": "wall thickness", "unit": "mm", "min": 0, "max": 3},  # optional: for "value"s
-      "findings": [                           # optional: the full list, for a panel
-        {"check": "corner_radius", "severity": "error", "label": "...", "message": "...",
-         "faces": [12, 13], "edges": [31], "tags": ["pocket"], "values": {"radius": 1.0, "tool_radius": 3.0}}
-      ],
-      "summary": "DFM cnc-3axis (...): NOT OK, 2 errors, ..."   # optional, the report as text
     }
 
 Every key of a face entry is optional: ``severity`` (``"error"``,
-``"warning"``, ``"info"``), ``role`` (``"fixed"``, ``"load"``, ``"keep"``,
+``"warning"``, ``"info"``, ``"ok"``), ``role`` (``"fixed"``, ``"load"``, ``"keep"``,
 ``"void"``, or another word), ``label`` (short text), ``value`` (a number to
-color by). When several findings share a face, its entry has the worst
-severity and their labels joined with ``"; "``, worst first. ``dir`` is a
+color by). ``dir`` is a
 unit vector; ``at`` is in model units (mm). Faces not listed have no data.
 A face with only a ``value`` is colored on a blue-to-red scale from
 ``scale.min`` to ``scale.max`` (default: the values' range), with a legend
@@ -272,69 +265,44 @@ def sequence(name: str, title: str | None = None, fmt: str = "stl") -> Sequence:
 
 # ---------------------------------------------------------------- overlay
 
-_RANK = {"error": 0, "warning": 1, "info": 2}
-
-
-def _face_entries(shape: Shape, data) -> tuple[dict, list | None, str | None]:
-    """Normalize a Report, findings, or a ``{face id: value}`` mapping into overlay face entries."""
-    from .dfm import Finding, Report
-
-    nfaces = len(shape.faces)
-    summary = None
-    if isinstance(data, Report):
-        summary = str(data)
-        data = data.findings
+def _face_entries(shape: Shape, data) -> dict:
+    """Normalize a ``{face id or face selection: value}`` mapping into overlay face entries."""
     if data is None:
-        return {}, None, summary
-
-    def check(i: int, what: str) -> int:
+        return {}
+    if not isinstance(data, dict):
+        raise TuleError("faces is a {face id: value} dict", op="overlay",
+                        hint='{part.faces["load"]: {"role": "load", "label": "500 N"}, 12: 1.8}')
+    nfaces = len(shape.faces)
+    faces: dict[str, dict] = {}
+    for k, v in data.items():
+        if isinstance(k, Selection):  # part.faces["load"]: every face of the selection
+            if k.kind != "face":
+                raise TuleError(f"overlay keys must be faces, got {k.kind}s", op="overlay")
+            for i in shape._resolve(k, "face").ids:
+                faces.update(_face_entries(shape, {i: v}))
+            continue
+        i = int(k)
         if not 0 <= i < nfaces:
-            raise TuleError(f"{what} {i} is not a face of this part", op="overlay",
+            raise TuleError(f"face id {i} is not a face of this part", op="overlay",
                             hint=f"face ids run from 0 to {nfaces - 1}; pass the part the data was made for")
-        return i
-
-    if isinstance(data, dict):
-        faces: dict[str, dict] = {}
-        for k, v in data.items():
-            if isinstance(k, Selection):  # part.faces["load"]: every face of the selection
-                if k.kind != "face":
-                    raise TuleError(f"overlay keys must be faces, got {k.kind}s", op="overlay")
-                for i in shape._resolve(k, "face").ids:
-                    faces.update(_face_entries(shape, {i: v})[0])
-                continue
-            i = check(int(k), "face id")
-            if isinstance(v, dict):
-                entry = dict(v)
-            elif isinstance(v, str):
-                entry = {"label": v}
-            elif isinstance(v, (int, float)):
-                entry = {"value": float(v)}  # the viewer labels it with the scale's unit
-            else:
-                raise TuleError(f"cannot show a {type(v).__name__} on a face", op="overlay",
-                                hint="use a number, a label, or a dict with severity/role/label/value")
-            faces[str(i)] = entry
-        return faces, None, summary
-    findings = list(data)
-    if not all(isinstance(f, Finding) for f in findings):
-        raise TuleError("expected a dfm Report, a list of findings, or a {face id: value} dict", op="overlay")
-    per_face: dict[int, list] = {}
-    for f in sorted(findings, key=lambda f: _RANK.get(f.severity, 3)):
-        for i in f.faces:
-            per_face.setdefault(check(i, "a finding refers to face"), []).append(f)
-    faces = {}
-    for i in sorted(per_face):
-        fs = per_face[i]
-        labels = list(dict.fromkeys(f.label for f in fs))
-        faces[str(i)] = {"severity": fs[0].severity, "label": "; ".join(labels)}
-    return faces, [f.to_dict() for f in findings], summary
+        if isinstance(v, dict):
+            entry = dict(v)
+        elif isinstance(v, str):
+            entry = {"label": v}
+        elif isinstance(v, (int, float)):
+            entry = {"value": float(v)}  # the viewer labels it with the scale's unit
+        else:
+            raise TuleError(f"cannot show a {type(v).__name__} on a face", op="overlay",
+                            hint="use a number, a label, or a dict with severity/role/label/value")
+        faces[str(i)] = entry
+    return faces
 
 
 def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None = None,
             scale: dict | None = None, info: dict | None = None) -> str:
     """Write a part with per-face data: ``outputs/<name>/<part>.step`` plus an overlay ``output.json``.
 
-    ``faces`` is a ``dfm`` Report, a list of findings, or a mapping from a face
-    id or a face selection (``part.faces["load"]``) to a number, a label, or a
+    ``faces`` maps a face id or a face selection (``part.faces["load"]``) to a number, a label, or a
     dict (``severity``, ``role``, ``label``, ``value``). ``arrows`` are dicts ``{"at": point, "dir": vector, "label": text}``.
     ``scale`` names the values' color scale: ``{"label", "unit", "min", "max"}``
     (all optional). ``info``: facts shown under the view.
@@ -348,7 +316,7 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
             raise TuleError("scale is a dict with label, unit, min and max (all optional)", op="overlay",
                             hint='{"label": "wall thickness", "unit": "mm", "min": 0, "max": 3}')
         scale = {k: (float(v) if k in ("min", "max") else str(v)) for k, v in scale.items() if v is not None}
-    entries, findings, summary = _face_entries(part, faces)
+    entries = _face_entries(part, faces)
     folder = _folder(name)
     fname = f"{_slug(part.name or name)}.step"
     _write_geometry(os.path.join(folder, fname), part)
@@ -368,9 +336,5 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
         meta["scale"] = scale
     if info:
         meta["info"] = info
-    if findings is not None:
-        meta["findings"] = findings
-    if summary:
-        meta["summary"] = summary
     _write_json(folder, meta)
     return folder

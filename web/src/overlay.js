@@ -5,7 +5,7 @@
 //
 //   kind "overlay": data on the part's B-rep faces (ids as in the viewer: f12)
 //     {"version": 1, "kind": "overlay", "file": "part.step", "title": "...",
-//      "faces": {"12": {"severity": "error" | "warning" | "info", "label": "..."},
+//      "faces": {"12": {"severity": "error" | "warning" | "info" | "ok", "label": "..."},
 //                "11": {"role": "fixed" | "load" | <any>, "label": "500 N -Z"},
 //                "7":  {"value": 1.8, "label": "1.8 mm"}},
 //      "scale": {"label": "wall thickness", "unit": "mm", "min": 0, "max": 4},
@@ -22,13 +22,13 @@
 import { color } from "./colors.js";
 
 // severities, the two known roles and arrows mean something: palette.css variables, read when drawn
-const SEVERITY = { error: "--danger-fill", warning: "--warn-fill", info: "--info-fill" };
+const SEVERITY = { error: "--danger-fill", warning: "--warn-fill", info: "--info-fill", ok: "--ok-fill" };
 const ROLES = { fixed: { color: "--info-fill", hatch: true }, load: { color: "--reed" } };
 const ARROW = "--reed";
 // further roles, in order of appearance: plain series colors (stem green, purple, teal, pink),
 // apart from the status and role colors above
 const MORE = ["#4f8a3c", "#8a6bb8", "#2f9a95", "#c8689a"];
-const RANK = { error: 0, warning: 1, info: 2 };
+const RANK = { error: 0, warning: 1, info: 2, ok: 3 };
 // a diverging blue-yellow-red ramp, low to high
 const RAMP = ["#3b4cc0", "#6f92f3", "#aac7fd", "#f2e5a0", "#f7a889", "#e26952", "#b40426"];
 

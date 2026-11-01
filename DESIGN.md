@@ -2,7 +2,7 @@
 
 Tule is an engineering computer for your own AI agent. Each project gets an
 isolated machine with OpenCascade, Tule's Python modeling API and engineering
-libraries (DFM, topology optimization, later FEA) preinstalled. Your agent
+libraries (topology optimization, later FEA) preinstalled. Your agent
 manages projects through the Tule connector and works on the machine over
 SSH; everything in the project's `/workspace` is saved; a web viewer shows
 the project's outputs, live.
@@ -21,7 +21,7 @@ Agents (Claude Code, Codex, Cursor, Claude and ChatGPT chats) already have
 shells and persistent machines. What they lack for engineering work, and what
 Tule provides:
 
-1. **An engineering stack, ready and pinned.** OCCT, the `tule` API, DFM,
+1. **An engineering stack, ready and pinned.** OCCT, the `tule` API,
    topology optimization, meshers, solvers, in one image, the same for every
    run, natively (`pip install tule`) and in CI.
 2. **Compute.** Bigger CPU machines than an agent's sandbox, and GPU machines
@@ -305,13 +305,13 @@ outputs/
   frames with labels and values; slider, play, a plot of the values;
   `"status": "running"` means more frames are coming), `overlay` (a part
   with faces colored by `role` or `severity` and labeled, or by a number
-  `value` on a color scale, plus arrows: boundary conditions, DFM findings,
-  per-face measurements, what the agent understood from an annotation;
+  `value` on a color scale, plus arrows: boundary conditions, per-face checks
+  and measurements, what the agent understood from an annotation;
   `{"file", "faces": {"12": {"role" | "severity" | "value", "label"}},
   "scale": {"label", "unit", "min", "max"}, "arrows": [{"at", "dir",
   "label"}]}`). Any kind may carry `"info"`: facts about the output
   (material, mass, ...), shown as rows under the view. The viewer shows
-  info, the value scale and an overlay's findings in a strip under the view,
+  info, the value scale and an overlay's legend in a strip under the view,
   never over the part. Later: per-vertex data (stress) and `variants` (side
   by side).
 - **The JSON is optional.** Without it the viewer infers the kind: one file is
@@ -466,7 +466,7 @@ work inside them (the same limit as RunPod).
 
 - `python main.py`, any script, any tool; results go to `outputs/`.
 - `tule screenshot`, `tule docs [topic]`, `tule inspect <file>`.
-- The libraries: `tule` (modeling), `tule.dfm`, `tule.topopt`, `tule.outputs`,
+- The libraries: `tule` (modeling), `tule.topopt`, `tule.outputs`,
   later `tule.fea`.
 
 ### Skills and the Claude plugin
@@ -484,10 +484,10 @@ later. Content:
 - the workspace and `outputs/` conventions;
 - the loop: edit → run → write outputs → `tule screenshot` → inspect →
   iterate, branches for variants;
-- DFM and topology optimization: loads, fixed faces, processes;
+- topology optimization: loads, fixed faces;
 - OCCT pitfalls (fillets, tolerances, sewing) and how errors read;
 - golden paths: tested end-to-end examples ("bracket from load cases",
-  "make this part machinable on a 3-axis mill", "run a study on a GPU").
+  "run a study on a GPU").
 
 ## Viewer
 
@@ -607,14 +607,6 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 
 ## Engineering libraries
 
-- **`tule.dfm`** v0: CNC 3-axis (tool access and undercuts along a setup
-  axis, internal corner radius vs tool, pocket depth ratio, thin walls) and
-  FDM (overhangs, minimum wall, bridging, bed contact). Findings carry face
-  ids, tags, severity and values, shown with `outputs.overlay(name, part,
-  report)`. As built: `dfm.cnc(part, axis=-Z, tool_radius=3, ...)`,
-  `dfm.fdm(part, up=+Z, max_overhang=45, ...)` return a `Report`; access and
-  thickness come from ray casts on the tessellation (about the 0.05 mm
-  tolerance); tool holders and shanks are not checked yet.
 - **`tule.topopt`** v0: density-based SIMP (minimum compliance under a volume
   constraint) with a density filter and optimality-criteria updates (MMA can
   plug into the update table later). The solver decides how large a problem
@@ -630,9 +622,11 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   `.show(name)` writes the boundary conditions as an overlay to confirm;
   `optimize()` streams a `sequence` output and returns a smooth isosurface
   mesh (marching cubes behind one function, so dual contouring can replace
-  it) that converts to a `Shape` for later Booleans. Manufacturing
-  constraints (symmetry, extrusion and milling directions, overhang limits)
-  come later with DFM. The GPU path is untested.
+  it) that converts to a `Shape` for later Booleans. The GPU path
+  is untested.
+- **Not now:** design-for-manufacturing checks (CNC, 3D printing). A `tule.dfm`
+  v0 was built and removed on 2026-11-01 to keep the feature set small;
+  overlays with a `severity` per face still show checks an agent writes itself.
 - **Later:** `tule.fea` (linear static, gmsh + scikit-fem), cost estimates,
   drawings.
 
@@ -640,7 +634,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 
 ```
 tule/
-  python/tule/        modeling API + outputs, dfm, topopt (pip package)
+  python/tule/        modeling API + outputs, topopt (pip package)
   python/tests/
   cli/                the `tule` CLI (Python, pip package `tule-cli`)
   runtime/            Dockerfiles (cpu, later cuda), tule-agent
@@ -692,8 +686,9 @@ tule/
    STEP download. **Done** (2026-11-01), with overlays and annotations; the
    code editor is not built (the files browser and snapshot history were
    dropped, see "Viewer").
-6. **Engineering libraries:** `tule.dfm` v0, `tule.topopt` v0. **Done**
-   (2026-11-01): see "Engineering libraries".
+6. **Engineering libraries:** `tule.topopt` v0. **Done** (2026-11-01): see
+   "Engineering libraries". `tule.dfm` was built and then removed
+   (2026-11-01): a small feature set done well comes first.
 7. **GPU:** RunPod backend (settings, encrypted key, `tule up --gpu`),
    agent-provisioned pods via join tokens, then `tule.remote`. The backend,
    settings and `tule up --gpu` are built; `tule.remote` is later.

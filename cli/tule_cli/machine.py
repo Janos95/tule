@@ -20,7 +20,7 @@ import sys
 
 GEOMETRY = (".step", ".stp", ".stl")
 SOCKET = os.environ.get("TULE_AGENT_SOCKET", "/run/tule/agent.sock")
-DOC_ORDER = ["index", "setup", "loop", "modeling", "outputs", "occt", "annotations", "dfm", "topopt", "golden-paths"]
+DOC_ORDER = ["index", "setup", "loop", "modeling", "outputs", "occt", "annotations", "topopt", "golden-paths"]
 
 
 from . import CliError
