@@ -5,13 +5,22 @@
 // What changed for Tule: meshes come from the machine's tessellation
 // (indexed, normals from the surfaces, a B-rep face id per triangle) and the
 // wireframe draws the real CAD edges (line segments from the B-rep) instead of
-// polygon edges in a shader. pick(x, y) returns the part and B-rep face under
-// a pixel, for the face labels.
+// polygon edges in a shader. pick(x, y) returns the part, B-rep face and 3D
+// point under a pixel, for the face labels, overlays and annotations.
+//
+// Faces are colored by layers (setFaces: "overlay", "annotate", "hover"; a
+// later layer wins): each part's triangles are sorted by face id once, so a
+// face is one range of the index and a style is a geometry group with its own
+// material; nothing is copied. setDim greys every face no layer colors.
+// Arrows (setArrows) are 3D glyphs whose tip touches the point they act on.
+// A part may carry a placement (mesh.matrix, 16 numbers, row-major).
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
 const GHOST_OPACITY = 0.12; // the other parts while one is highlighted
+const DIM = "#d4d8dd"; // faces an overlay does not mention
+const LAYERS = ["overlay", "annotate", "hover"];
 // surfaces sit a little behind their edges and behind opaque parts they touch
 const BEHIND = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 };
 
@@ -56,24 +65,29 @@ export class Viewer {
     this.controls.screenSpacePanning = true;
 
     this.group = new THREE.Group(); // one child per part: its surface, edges and glass
-    this.scene.add(this.group);
+    this.arrows = new THREE.Group();
+    this.scene.add(this.group, this.arrows);
     this.materials = new Map();
     this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x18202a, transparent: true, opacity: 0.75 });
     this.depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, ...BEHIND });
     this.style = { hidden: null, lit: null };
+    this.layers = new Map(); // layer -> [{part: index | null (all), faces: [ids], color, hatch}]
+    this.dim = false;
     this.wire = true;
     this.fitted = null;
     this.dirty = true;
     this.raycaster = new THREE.Raycaster();
+    this.listeners = new Set(); // after each render (HTML labels follow the view)
 
     new ResizeObserver(() => this.resize()).observe(el);
     this.resize();
-    r.domElement.addEventListener("dblclick", () => this.fit());
+    r.domElement.addEventListener("dblclick", () => this.controls.enabled && this.fit());
     const loop = () => {
       requestAnimationFrame(loop);
       if (this.controls.update() || this.dirty) {
         this.dirty = false;
         r.render(this.scene, cam);
+        for (const f of this.listeners) f();
       }
     };
     loop();
@@ -86,6 +100,7 @@ export class Viewer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.render(this.scene, this.camera);
+    this.dirty = true;
   }
 
   material(color) {
@@ -93,6 +108,27 @@ export class Viewer {
     if (!m) {
       m = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide, ...BEHIND });
       this.materials.set(color, m);
+    }
+    return m;
+  }
+
+  // a face style: solid, or with light diagonal stripes in screen space (hatch)
+  faceMaterial(color, hatch) {
+    if (!hatch) return this.material(color);
+    const key = `${color}/hatch`;
+    let m = this.materials.get(key);
+    if (!m) {
+      m = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.62, side: THREE.DoubleSide, ...BEHIND });
+      m.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "#include <dithering_fragment>",
+          `#include <dithering_fragment>
+          float stripe = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 12.0));
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(1.0), 0.55 * stripe);`,
+        );
+      };
+      m.customProgramCacheKey = () => "tule-hatch";
+      this.materials.set(key, m);
     }
     return m;
   }
@@ -118,7 +154,8 @@ export class Viewer {
 
   /** Replaces the shown parts: [{name, color, positions: Float32Array (xyz),
    * normals, indices: Uint32Array, faceIds: Uint32Array (per triangle),
-   * edges: Float32Array (segment endpoints) | null, tags: {tag: [face ids]}}].
+   * edges: Float32Array (segment endpoints) | null, tags: {tag: [face ids]},
+   * matrix: 16 numbers, row-major | null}].
    * fit: true, false or "auto" (fit when the bounds are new or far from the
    * last fit). */
   setMeshes(meshes, fit = false, style = this.style) {
@@ -129,6 +166,7 @@ export class Viewer {
     this.group.clear();
     meshes.forEach((m, index) => {
       if (!m.positions.length) return;
+      sortByFace(m);
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(m.positions, 3));
       g.setAttribute("normal", new THREE.BufferAttribute(m.normals, 3));
@@ -136,6 +174,10 @@ export class Viewer {
       g.computeBoundingBox();
       g.computeBoundingSphere();
       const part = new THREE.Group();
+      if (m.matrix) {
+        part.matrixAutoUpdate = false;
+        part.matrix.set(...m.matrix);
+      }
       const color = m.color || "#8a96a3";
       part.userData = { index, color, geometry: g, mesh: m };
       part.add(new THREE.Mesh(g, this.material(color)));
@@ -149,6 +191,8 @@ export class Viewer {
       }
       this.group.add(part);
     });
+    this.group.updateMatrixWorld(true);
+    this.paintFaces();
     this.setStyle(style);
     if (this.bounds && (fit === true || (fit === "auto" && this.farFromFit(this.bounds)))) this.fit();
   }
@@ -161,7 +205,7 @@ export class Viewer {
     for (const part of this.group.children) {
       const { index, color, geometry } = part.userData;
       part.visible = !hidden?.has(index);
-      if (part.visible) box.union(geometry.boundingBox);
+      if (part.visible) box.union(geometry.boundingBox.clone().applyMatrix4(part.matrix));
       const ghost = lit && !lit.has(index);
       const [solid] = part.children;
       solid.visible = !ghost;
@@ -182,6 +226,86 @@ export class Viewer {
     }
     this.bounds = box.isEmpty() ? null : box;
     this.dirty = true;
+  }
+
+  /** Colors faces: styles [{part: index or null for every part, faces: [B-rep
+   * face ids], color, hatch}] under a layer name ("overlay", "annotate",
+   * "hover"); an empty list removes the layer. */
+  setFaces(layer, styles) {
+    if (styles?.length) this.layers.set(layer, styles);
+    else this.layers.delete(layer);
+    this.paintFaces();
+  }
+
+  /** Greys every face that no layer colors (an overlay's "the rest"). */
+  setDim(on) {
+    this.dim = !!on;
+    this.paintFaces();
+  }
+
+  paintFaces() {
+    for (const part of this.group.children) {
+      const { index, color, mesh, geometry } = part.userData;
+      const solid = part.children[0];
+      const pick = new Map(); // face id -> material
+      for (const layer of LAYERS)
+        for (const s of this.layers.get(layer) ?? [])
+          if (s.part == null || s.part === index) for (const f of s.faces) pick.set(+f, this.faceMaterial(s.color, s.hatch));
+      const base = this.dim ? this.material(DIM) : this.material(color);
+      geometry.clearGroups();
+      if (!pick.size) {
+        solid.material = base;
+        continue;
+      }
+      const mats = [base];
+      const slot = (m) => (mats.includes(m) ? mats.indexOf(m) : mats.push(m) - 1);
+      const ids = mesh.faceIds;
+      let start = 0;
+      let cur = -1;
+      for (let t = 0; t <= ids.length; t++) {
+        const m = t < ids.length ? slot(pick.get(ids[t]) ?? base) : -2;
+        if (m === cur) continue;
+        if (cur >= 0) geometry.addGroup(start * 3, (t - start) * 3, cur);
+        start = t;
+        cur = m;
+      }
+      solid.material = mats;
+    }
+    this.dirty = true;
+  }
+
+  /** Arrows [{at: [x,y,z], dir: [dx,dy,dz], color}]: the tip touches `at`,
+   * the length is a fraction of the shown parts' size. */
+  setArrows(list) {
+    for (const a of this.arrows.children) for (const c of a.children) c.geometry.dispose();
+    this.arrows.clear();
+    const r = this.bounds ? this.bounds.getBoundingSphere(new THREE.Sphere()).radius : 1;
+    const len = 0.32 * r;
+    const shaft = new THREE.CylinderGeometry(len * 0.03, len * 0.03, len * 0.72, 12);
+    shaft.translate(0, -len * 0.64, 0);
+    const head = new THREE.ConeGeometry(len * 0.085, len * 0.28, 20);
+    head.translate(0, -len * 0.14, 0);
+    (list ?? []).forEach((a, i) => {
+      const dir = new THREE.Vector3(...a.dir);
+      if (!(dir.lengthSq() > 0)) return;
+      const g = new THREE.Group();
+      const m = this.material(a.color ?? "#f07c1a");
+      g.add(new THREE.Mesh(shaft.clone(), m), new THREE.Mesh(head.clone(), m));
+      // the glyph points along +y with its tip at the origin: turn +y onto dir
+      g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+      g.position.set(...a.at);
+      g.userData = { arrow: i, tail: new THREE.Vector3(...a.at).addScaledVector(dir, -len) };
+      this.arrows.add(g);
+    });
+    shaft.dispose();
+    head.dispose();
+    this.arrows.updateMatrixWorld(true);
+    this.dirty = true;
+  }
+
+  /** Where arrow i starts (its tail), for labels. */
+  arrowTail(i) {
+    return this.arrows.children.find((a) => a.userData.arrow === i)?.userData.tail ?? null;
   }
 
   farFromFit(box) {
@@ -214,12 +338,17 @@ export class Viewer {
     dist = Math.max(dist, 1.05 * r, 1e-3);
     this.controls.target.copy(c);
     cam.position.copy(c).addScaledVector(dir, dist);
-    cam.near = Math.max(dist - r, dist / 100) / 10;
-    cam.far = (dist + r) * 10;
-    cam.updateProjectionMatrix();
+    this.clip(dist, r);
     this.controls.update();
     this.fitted = this.bounds.clone();
     this.dirty = true;
+  }
+
+  clip(dist, r) {
+    const cam = this.camera;
+    cam.near = Math.max(dist - r, dist / 100) / 10;
+    cam.far = (dist + r) * 10;
+    cam.updateProjectionMatrix();
   }
 
   view(name) {
@@ -229,16 +358,63 @@ export class Viewer {
     this.fit();
   }
 
-  /** The visible part and B-rep face under a client pixel: {index, mesh, face} or null. */
+  /** The camera as plain numbers: {position, target, up, fov (degrees)}. */
+  getCamera() {
+    const v = (x) => [x.x, x.y, x.z].map((n) => +n.toPrecision(7));
+    return { position: v(this.camera.position), target: v(this.controls.target), up: v(this.camera.up), fov: this.camera.fov };
+  }
+
+  setCamera({ position, target, up, fov }) {
+    const cam = this.camera;
+    cam.position.set(...position);
+    this.controls.target.set(...target);
+    if (up) cam.up.set(...up);
+    if (fov) cam.fov = fov;
+    const r = this.bounds ? this.bounds.getBoundingSphere(new THREE.Sphere()).radius : 1;
+    this.clip(cam.position.distanceTo(this.controls.target), r);
+    this.controls.update();
+    this.fitted ||= this.bounds?.clone() ?? null;
+    this.dirty = true;
+  }
+
+  /** Orbit, pan and zoom on or off (annotation strokes keep their view). */
+  setLocked(on) {
+    this.controls.enabled = !on;
+  }
+
+  /** A world point in CSS pixels from the viewer's top left, and whether it is in front of the camera. */
+  project(p) {
+    const v = p.clone().project(this.camera);
+    return { x: ((v.x + 1) / 2) * this.el.clientWidth, y: ((1 - v.y) / 2) * this.el.clientHeight, front: v.z < 1 };
+  }
+
+  /** What is under a client pixel: {index, mesh, face, point: [x,y,z]} for a
+   * visible part's B-rep face, {arrow: i} for an arrow, or null. */
   pick(clientX, clientY) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
     const solids = this.group.children.filter((p) => p.visible && p.children[0].visible).map((p) => p.children[0]);
-    const hit = this.raycaster.intersectObjects(solids, false)[0];
+    const hit = this.raycaster.intersectObjects([...solids, ...this.arrows.children], true)[0];
     if (!hit) return null;
+    const arrow = hit.object.parent?.userData.arrow;
+    if (arrow !== undefined) return { arrow };
     const { index, mesh } = hit.object.parent.userData;
-    return { index, mesh, face: mesh.faceIds[hit.faceIndex] };
+    return { index, mesh, face: mesh.faceIds[hit.faceIndex], point: [hit.point.x, hit.point.y, hit.point.z] };
+  }
+
+  /** The view as drawn, on a plain background: a canvas at the device's resolution. */
+  capture(background = "#eef1f4") {
+    const src = this.renderer.domElement;
+    this.renderer.render(this.scene, this.camera);
+    const out = document.createElement("canvas");
+    out.width = src.width;
+    out.height = src.height;
+    const g = out.getContext("2d");
+    g.fillStyle = background;
+    g.fillRect(0, 0, out.width, out.height);
+    g.drawImage(src, 0, 0);
+    return out;
   }
 
   setWireframe(on) {
@@ -248,5 +424,26 @@ export class Viewer {
 
   clear() {
     this.setMeshes([]);
+    this.setArrows([]);
   }
+}
+
+// Reorders a mesh's triangles by B-rep face id (once), so each face is one
+// range of the index buffer. Returns the mesh.
+export function sortByFace(m) {
+  if (m.sorted) return m;
+  const n = m.faceIds.length;
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => m.faceIds[a] - m.faceIds[b] || a - b);
+  const idx = new Uint32Array(n * 3);
+  const ids = new Uint32Array(n);
+  order.forEach((t, i) => {
+    idx[3 * i] = m.indices[3 * t];
+    idx[3 * i + 1] = m.indices[3 * t + 1];
+    idx[3 * i + 2] = m.indices[3 * t + 2];
+    ids[i] = m.faceIds[t];
+  });
+  m.indices = idx;
+  m.faceIds = ids;
+  m.sorted = true;
+  return m;
 }

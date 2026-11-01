@@ -6,20 +6,36 @@
 // by hash) and answers [rid u32][header length u32][JSON header][arrays]
 // (runtime/tule_agent.py, encode_mesh).
 //
-// The dev token (until accounts exist) comes once in the link's fragment,
-// #t=<token> (tule open), and is kept in localStorage.
+// New requests use the generic relay: req(op, args) sends {t: "req", rid, op,
+// args}; the agent's REQUESTS[op] answers {t: "res", rid, ...} (an object) or
+// [rid u32][bytes] (an ArrayBuffer). {t: "event"} messages are the agent's
+// broadcasts. Credentials: auth.js, the only place that knows them.
+//
+// Output kinds (output.json "kind"): part, assembly, sequence, overlay
+// (overlay.js has its format).
+//
+// Assembly placement: a part entry of an assembly's output.json may carry
+// "transform", a 4x4 matrix in row-major order that maps the file's
+// coordinates to the assembly's (rotation in the upper left 3x3, the
+// translation in the last column, in the file's units):
+//
+//   {"kind": "assembly", "parts": [{"file": "finger.step", "name": "finger_l",
+//     "transform": [[1, 0, 0, 20], [0, 1, 0, 0], [0, 0, 1, 5], [0, 0, 0, 1]]}]}
+//
+// (4 rows of 4 numbers, numpy's M.tolist(); a flat list of 16 numbers in the
+// same order is read the same way). Without it a part stays where its file
+// puts it.
+import { initAnnotate } from "./annotate.js";
+import { auth } from "./auth.js";
+import { initFiles, save, size } from "./files.js";
+import { initHistory } from "./history.js";
+import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
-import { store } from "./store.js";
-import { Viewer } from "./viewer.js";
+import { initPlot } from "./plot.js";
+import { Viewer, sortByFace } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
 const project = (location.pathname.match(/^\/p\/([a-z0-9][a-z0-9-]{0,62})\/?$/) ?? [])[1];
-const frag = new URLSearchParams(location.hash.slice(1));
-if (frag.get("t")) {
-  store.setItem("tule/token", frag.get("t"));
-  history.replaceState(null, "", location.pathname + location.search);
-}
-const token = store.getItem("tule/token");
 
 let viewer;
 try {
@@ -28,45 +44,85 @@ try {
   $("viewer").innerHTML = `<div class="nogl">This browser cannot show 3D (WebGL): ${e.message}</div>`;
 }
 const parts = viewer ? initParts({ viewer, project: () => project ?? "" }) : null;
-
+const plot = initPlot($("plot"), (i) => {
+  play(false);
+  state.frame = i;
+  show();
+});
+const overlay = viewer ? initOverlay({ viewer, legend: $("legend"), marks: $("marks") }) : null;
 const state = {
-  outputs: [], // the index from the machine
+  machine: "unknown", // the machine's state: running, starting, stopped, offline
+  outputs: [], // the listed outputs: the live index, or a snapshot's
+  live: [], // the index from the machine
+  source: null, // the snapshot being viewed ({id, at, reason}), or null for live
   selected: new URLSearchParams(location.search).get("o"),
   shown: null, // the key of what is drawn (output name and file hashes)
   frame: 0,
+  meshes: [], // what is drawn
+  record: null, // what is drawn, for an annotation: {name, kind, title, files, frame, snapshot}
 };
 const meshes = new Map(); // hash -> Promise<parts>
-const pending = new Map(); // rid -> {resolve, reject}
+const pending = new Map(); // rid -> {resolve, reject, raw: bytes wanted as they are}
 let ws = null;
 let rid = 0;
+const listeners = new Set(); // the agent's broadcasts ({t: "event", event, ...})
+
+const annotate = viewer
+  ? initAnnotate({
+      viewer,
+      req,
+      machine: () => state.machine,
+      output: () => state.record,
+      meshes: () => state.meshes,
+      select: (name) => select(name),
+      on: (f) => listeners.add(f),
+    })
+  : null;
 
 function setStatus(text) {
   $("status").textContent = text;
   $("status").hidden = !text;
 }
 
-// ------------------------------------------------------------ connection
-
-/** Signed in? The session cookie (or, in local tests, a dev token from #t=). Else off to sign in. */
-async function signedIn() {
-  const r = await fetch("/api/me", token ? { headers: { Authorization: `Bearer ${token}` } } : {});
-  if (r.status === 401) {
-    location.href = `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`;
-    return false;
-  }
-  return r.ok;
+/** A message that goes away by itself. */
+function flash(text) {
+  setStatus(text);
+  setTimeout(() => $("status").textContent === text && setStatus(""), 6000);
 }
+
+const files = initFiles({ req, machine: () => state.machine, notify: flash });
+const snapshots = initHistory({
+  project,
+  machine: () => state.machine,
+  notify: flash,
+  view(snapshot, outputs) {
+    state.source = snapshot;
+    state.outputs = outputs;
+    state.shown = null;
+    setTab("outputs");
+    renderList();
+    show();
+  },
+  live() {
+    state.source = null;
+    state.outputs = state.live;
+    state.shown = null;
+    renderList();
+    show();
+  },
+});
+
+// ------------------------------------------------------------ connection
 
 async function connect(delay = 500) {
   if (!project) {
     setStatus("Open a project: /p/<name> (tule open -p <name>)");
     return;
   }
-  if (!(await signedIn().catch(() => true))) return;
+  if (!(await auth.signedIn())) return;
   $("project-title").textContent = project;
   document.title = `${project} · Tule`;
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${proto}//${location.host}/api/projects/${project}/view${token ? `?t=${encodeURIComponent(token)}` : ""}`);
+  ws = new WebSocket(auth.socket(`/api/projects/${project}/view`));
   ws.binaryType = "arraybuffer";
   ws.onopen = () => (delay = 500);
   ws.onmessage = (e) => (typeof e.data === "string" ? onText(JSON.parse(e.data)) : onMesh(e.data));
@@ -74,7 +130,7 @@ async function connect(delay = 500) {
     for (const p of pending.values()) p.reject(new Error("disconnected"));
     pending.clear();
     machine({ state: "offline" });
-    if (e.code === 1008 || e.code === 4401) return setStatus("Not authorized: open this page with tule open");
+    if (e.code === 1008 || e.code === 4401) return setStatus("Not authorized for this project: sign in with the account that owns it");
     setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay);
   };
 }
@@ -82,14 +138,37 @@ async function connect(delay = 500) {
 function onText(m) {
   if (m.t === "outputs") {
     if (m.status) machine(m.status);
-    state.outputs = m.outputs ?? [];
+    state.live = m.outputs ?? [];
+    if (state.source) return;
+    state.outputs = state.live;
     renderList();
     show();
-  } else if (m.t === "mesh-error") {
+  } else if (m.t === "mesh-error" || m.t === "res") {
     const p = pending.get(m.rid);
     pending.delete(m.rid);
-    p?.reject(new Error(m.error));
+    if (!p) return;
+    if (m.error) p.reject(new Error(m.error));
+    else p.resolve(m);
+  } else if (m.t === "event") {
+    for (const f of listeners) f(m);
   }
+}
+
+
+/** A request to the machine's agent (REQUESTS in runtime/tule_agent.py):
+ * resolves to its answer (an object, or an ArrayBuffer for bytes). */
+function req(op, args = {}, timeoutMs = 120_000) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected to the project"));
+    const id = ++rid;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`the machine did not answer ${op} within ${timeoutMs / 1000} s`));
+    }, timeoutMs);
+    const done = (f) => (v) => (clearTimeout(timer), f(v));
+    pending.set(id, { resolve: done(resolve), reject: done(reject), raw: true });
+    ws.send(JSON.stringify({ t: "req", rid: id, op, args }));
+  });
 }
 
 function onMesh(buf) {
@@ -99,7 +178,7 @@ function onMesh(buf) {
   pending.delete(id);
   if (!p) return;
   try {
-    p.resolve(decode(buf, 4));
+    p.resolve(p.raw ? buf.slice(4) : decode(buf, 4));
   } catch (e) {
     p.reject(e);
   }
@@ -111,19 +190,27 @@ function decode(buf, at) {
   const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, at + 4, hl)));
   const base = at + 4 + hl;
   const arr = (Type, r) => (r ? new Type(buf.slice(base + r[0], base + r[0] + r[1])) : null);
-  return header.parts.map((p) => ({
-    name: p.name || null,
-    color: p.color,
-    tags: p.tags ?? {},
-    positions: arr(Float32Array, p.positions),
-    normals: arr(Float32Array, p.normals),
-    indices: arr(Uint32Array, p.indices),
-    faceIds: arr(Uint32Array, p.faceIds),
-    edges: arr(Float32Array, p.edges),
-  }));
+  return header.parts.map((p) =>
+    sortByFace({
+      name: p.name || null,
+      color: p.color,
+      tags: p.tags ?? {},
+      positions: arr(Float32Array, p.positions),
+      normals: arr(Float32Array, p.normals),
+      indices: arr(Uint32Array, p.indices),
+      faceIds: arr(Uint32Array, p.faceIds),
+      edges: arr(Float32Array, p.edges),
+    }),
+  );
 }
 
 function request(file) {
+  if (!meshes.has(file.hash) && file.chunks) {
+    // a file of a snapshot: the machine tessellates it from its chunks
+    const promise = req("mesh_chunks", { name: file.file, chunks: file.chunks }, 300_000).then((buf) => decode(buf, 0));
+    promise.catch(() => meshes.delete(file.hash));
+    meshes.set(file.hash, promise);
+  }
   if (!meshes.has(file.hash)) {
     const promise = new Promise((resolve, reject) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected"));
@@ -138,6 +225,10 @@ function request(file) {
 }
 
 function machine(s) {
+  const changed = state.machine !== s.state;
+  state.machine = s.state;
+  annotate?.machineChanged();
+  if (changed && tab === "files") files.show();
   const el = $("machine");
   el.dataset.state = s.state;
   const text = {
@@ -152,7 +243,7 @@ function machine(s) {
 
 // ------------------------------------------------------------ outputs
 
-/** part, assembly or sequence: output.json's kind, else inferred from the files. */
+/** part, assembly, sequence or overlay: output.json's kind, else inferred from the files. */
 function kindOf(o) {
   if (o.meta?.kind) return o.meta.kind;
   if (o.files.length === 1) return "part";
@@ -178,34 +269,50 @@ function renderList() {
     b.role = "option";
     b.setAttribute("aria-selected", String(o.name === state.selected));
     const kind = kindOf(o);
-    const n = kind === "sequence" ? `${frames(o).length} frames${o.meta?.status === "running" ? " · running" : ""}` : kind === "assembly" ? `${o.files.length} parts` : o.files[0]?.file ?? "";
+    const n = kind === "sequence" ? `${frames(o).length} frames${o.meta?.status === "running" ? " · running" : ""}` : kind === "assembly" ? `${Array.isArray(o.meta?.parts) ? o.meta.parts.length : o.files.length} parts` : o.files[0]?.file ?? "";
     b.innerHTML = `<span class="output-name"></span><small></small>`;
     b.firstChild.textContent = o.meta?.title || o.name;
     b.lastChild.textContent = o.error ? o.error : `${kind} · ${n}`;
-    b.addEventListener("click", () => {
-      state.selected = o.name;
-      state.frame = 0;
-      const u = new URL(location.href);
-      u.searchParams.set("o", o.name);
-      history.replaceState(null, "", u);
-      renderList();
-      show();
-    });
+    b.addEventListener("click", () => select(o.name));
     list.append(b);
   }
+}
+
+/** An assembly part's "transform" as 16 numbers, row-major; throws saying what is wrong. */
+function placement(t, file) {
+  const flat = Array.isArray(t) && t.length === 4 && t.every(Array.isArray) ? t.flat() : t;
+  if (!Array.isArray(flat) || flat.length !== 16 || !flat.every(Number.isFinite))
+    throw new Error(`output.json: the transform of ${file} must be a 4x4 matrix, row-major: [[r00, r01, r02, tx], [r10, r11, r12, ty], [r20, r21, r22, tz], [0, 0, 0, 1]]`);
+  return flat;
+}
+
+/** Shows an output by name; resolves once it is drawn. */
+function select(name) {
+  if (state.selected === name && state.shown) return Promise.resolve();
+  state.selected = name;
+  state.frame = 0;
+  const u = new URL(location.href);
+  u.searchParams.set("o", name);
+  history.replaceState(null, "", u);
+  renderList();
+  return show();
 }
 
 async function show() {
   const o = state.outputs.find((x) => x.name === state.selected);
   if (!o) {
     state.shown = null;
+    state.meshes = [];
+    state.record = null;
     viewer?.clear();
+    offerDownload([]);
     $("sequence").hidden = true;
     $("counts").textContent = "";
     return;
   }
   const kind = kindOf(o);
-  let files = o.files;
+  let shownFiles = o.files;
+  let frame = null;
   const seq = $("sequence");
   seq.hidden = kind !== "sequence";
   if (kind === "sequence") {
@@ -213,28 +320,44 @@ async function show() {
     const following = state.frame >= +$("scrub").max; // stay on the newest frame while it grows
     $("scrub").max = String(Math.max(0, fr.length - 1));
     if (following) state.frame = fr.length - 1;
-    state.frame = Math.min(state.frame, fr.length - 1);
+    state.frame = Math.max(0, Math.min(state.frame, fr.length - 1));
     $("scrub").value = String(state.frame);
     const cur = fr[state.frame];
-    const values = cur?.values ? Object.entries(cur.values).map(([k, v]) => `${k} ${+v.toPrecision(4)}`).join(" · ") : "";
-    $("frame").textContent = cur ? [cur.label ?? `frame ${state.frame}`, values].filter(Boolean).join(" · ") : "";
-    files = cur ? [cur.f] : [];
+    plot.set(fr, state.frame);
+    // the plot's legend names the frame and its values; without values, the label goes here
+    $("frame").textContent = `${state.frame + 1} / ${fr.length}${$("plot").hidden && cur?.label ? ` · ${cur.label}` : ""}`;
+    $("live").hidden = o.meta?.status !== "running";
+    shownFiles = cur ? [cur.f] : [];
+    frame = state.frame;
+  } else if (kind === "overlay" || kind === "part") {
+    const f = o.files.find((x) => x.file === o.meta?.file) ?? o.files[0];
+    shownFiles = f ? [f] : [];
   }
-  const key = o.name + "|" + files.map((f) => f.hash).join(",");
+  // an assembly's parts: output.json's list when it has one (a file may be placed more than once)
+  const entries = kind === "assembly" && Array.isArray(o.meta?.parts) ? o.meta.parts.filter((p) => o.files.some((f) => f.file === p?.file)) : null;
+  if (entries?.length) shownFiles = entries.map((p) => o.files.find((f) => f.file === p.file));
+  // what is drawn: the files and, but for a growing sequence, output.json (overlay faces, placements)
+  const key = o.name + "|" + shownFiles.map((f) => f.hash).join(",") + (kind === "sequence" ? "" : "|" + JSON.stringify(o.meta ?? null));
   if (key === state.shown) return;
   const first = !state.shown || !state.shown.startsWith(o.name + "|");
   state.shown = key;
-  setStatus(meshes.size === 0 || !files.every((f) => meshes.has(f.hash)) ? "Loading…" : "");
+  if (first) annotate?.reset();
+  setStatus(meshes.size === 0 || !shownFiles.every((f) => meshes.has(f.hash)) ? "Loading…" : "");
   try {
-    const loaded = await Promise.all(files.map(request));
+    const loaded = await Promise.all(shownFiles.map(request));
     if (state.shown !== key) return;
-    const named = (m, f) => {
-      const entry = o.meta?.parts?.find((p) => p.file === f.file);
-      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color };
+    const named = (m, f, i) => {
+      const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
+      const matrix = kind === "assembly" && entry?.transform != null ? placement(entry.transform, f.file) : null;
+      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color, matrix };
     };
-    const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, files[i])));
+    const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first ? true : "auto", style);
+    overlay?.apply(kind === "overlay" ? o.meta : null);
+    state.meshes = all;
+    state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame, snapshot: state.source?.id ?? null };
+    offerDownload(kind === "assembly" ? o.files : shownFiles);
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles`;
     setStatus("");
@@ -288,8 +411,12 @@ $("viewer").addEventListener("pointermove", (e) => {
     const hit = viewer?.pick(e.clientX, e.clientY);
     const label = $("pick");
     if (!hit) return (label.hidden = true);
-    const tags = Object.entries(hit.mesh.tags).filter(([, ids]) => ids.includes(hit.face)).map(([t]) => t);
-    label.textContent = [hit.mesh.name, `f${hit.face}`, ...tags].filter(Boolean).join(" · ");
+    const notes = overlay?.describe(hit) ?? [];
+    if (hit.arrow !== undefined) label.textContent = notes.join(" · ");
+    else {
+      const tags = Object.entries(hit.mesh.tags).filter(([, ids]) => ids.includes(hit.face)).map(([t]) => t);
+      label.textContent = [hit.mesh.name, `f${hit.face}`, ...tags, ...notes].filter(Boolean).join(" · ");
+    }
     const r = $("stage").getBoundingClientRect();
     label.style.left = `${e.clientX - r.left + 14}px`;
     label.style.top = `${e.clientY - r.top + 14}px`;
@@ -297,5 +424,54 @@ $("viewer").addEventListener("pointermove", (e) => {
   });
 });
 $("viewer").addEventListener("pointerleave", () => ($("pick").hidden = true));
+
+
+// ------------------------------------------------------------ the side tabs and downloads
+
+let tab = "outputs";
+function setTab(name) {
+  tab = name;
+  for (const x of document.querySelectorAll(".side-tabs [role=tab]")) x.setAttribute("aria-selected", String(x.dataset.tab === name));
+  for (const pane of document.querySelectorAll(".side-pane")) pane.hidden = pane.id !== `tab-${name}`;
+  if (name === "files") files.show();
+  if (name === "history") snapshots.show();
+}
+for (const b of document.querySelectorAll(".side-tabs [role=tab]")) b.addEventListener("click", () => setTab(b.dataset.tab));
+
+let downloads = [];
+/** The Download button offers the shown output's geometry files. */
+function offerDownload(list) {
+  downloads = list;
+  $("download").hidden = !list.length;
+  $("download-menu").hidden = true;
+}
+async function download(f) {
+  $("download-menu").hidden = true;
+  if (!f.chunks) return files.download(`outputs/${f.path}`, f.file);
+  try {
+    save(await snapshots.bytes(f.chunks), f.file.split("/").pop()); // a snapshot's file, from its chunks
+  } catch (e) {
+    flash(`Cannot download ${f.file}: ${e.message}`);
+  }
+}
+$("download").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (downloads.length === 1) return download(downloads[0]);
+  const menu = $("download-menu");
+  menu.textContent = "";
+  for (const f of downloads) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    b.innerHTML = "<span></span><small></small>";
+    b.firstChild.textContent = f.file;
+    b.lastChild.textContent = size(f.size);
+    b.addEventListener("click", () => download(f));
+    menu.append(b);
+  }
+  menu.hidden = !menu.hidden;
+  $("download").setAttribute("aria-expanded", String(!menu.hidden));
+});
+document.addEventListener("click", () => ($("download-menu").hidden = true));
 
 connect();

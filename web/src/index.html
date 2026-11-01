@@ -17,17 +17,46 @@
     </header>
     <main>
       <aside id="outputs" aria-label="Outputs">
-        <div class="outputs-head">Outputs</div>
-        <div id="output-list" role="listbox" aria-label="Outputs"></div>
-        <p id="outputs-empty" class="outputs-empty" hidden>Nothing in <code>outputs/</code> yet. Write a STEP or STL file to <code>/workspace/outputs/&lt;name&gt;/</code> on the machine.</p>
+        <div class="side-tabs" role="tablist" aria-label="Project">
+          <button type="button" role="tab" data-tab="outputs" aria-selected="true" aria-controls="tab-outputs">Outputs</button>
+          <button type="button" role="tab" data-tab="files" aria-selected="false" aria-controls="tab-files">Files</button>
+          <button type="button" role="tab" data-tab="history" aria-selected="false" aria-controls="tab-history">History</button>
+        </div>
+        <div id="tab-outputs" class="side-pane" role="tabpanel">
+          <div id="output-list" role="listbox" aria-label="Outputs"></div>
+          <p id="outputs-empty" class="outputs-empty" hidden>Nothing in <code>outputs/</code> yet. Write a STEP or STL file to <code>/workspace/outputs/&lt;name&gt;/</code> on the machine.</p>
+        </div>
+        <div id="tab-files" class="side-pane" role="tabpanel" hidden>
+          <div id="file-path" class="file-path"></div>
+          <p id="files-note" class="files-note" hidden></p>
+          <div id="file-list" class="file-list"></div>
+        </div>
+        <div id="tab-history" class="side-pane" role="tabpanel" hidden>
+          <p id="history-note" class="files-note" hidden></p>
+          <div id="snapshot-list" class="file-list"></div>
+        </div>
       </aside>
       <section id="right">
+        <div id="snapshot-bar" class="snapshot-bar" hidden>
+          <span id="snapshot-text"></span>
+          <button id="snapshot-restore" type="button" title="Make /workspace match this snapshot">Restore…</button>
+          <button id="snapshot-live" type="button" class="primary">Back to live</button>
+        </div>
         <div id="stage">
           <div id="viewer"></div>
           <div id="hud" class="hud">
             <button id="parts-toggle" class="toggle" title="Parts (P)" aria-controls="parts" aria-expanded="false" hidden>
               <svg viewBox="0 0 16 16"><path d="M8 2 14 5 8 8 2 5zM2 8l6 3 6-3M2 11l6 3 6-3" /></svg><span class="label">Parts</span>
             </button>
+            <button id="annotate-toggle" class="toggle" title="Annotate: draw and pick faces for your agent" aria-controls="annotate" aria-expanded="false">
+              <svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8H2.5v-3zM9 4l3 3" /></svg><span class="label">Annotate</span>
+            </button>
+            <div class="dl">
+              <button id="download" type="button" title="Download this output's files" aria-haspopup="menu" aria-expanded="false" hidden>
+                <svg viewBox="0 0 16 16"><path d="M8 2v8m-3.5-3.5L8 10l3.5-3.5M3 13.5h10" /></svg><span class="label">Download</span>
+              </button>
+              <div id="download-menu" class="menu" role="menu" hidden></div>
+            </div>
             <button id="wire" class="toggle on" title="CAD edges (W)" aria-pressed="true">
               <svg viewBox="0 0 16 16"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5zM8 1.5V8m0 0 6-3M8 8 2 5m6 3v6.5" /></svg>Edges
             </button>
@@ -36,14 +65,58 @@
             </button>
           </div>
           <div id="parts" role="tree" aria-label="Parts" hidden></div>
+          <div id="marks" aria-hidden="true"></div>
+          <canvas id="ink" aria-hidden="true"></canvas>
+          <div id="preview" class="preview" aria-label="File preview" hidden>
+            <div class="preview-head"><code id="preview-name"></code><small id="preview-size"></small><button id="preview-download" type="button">Download</button><button id="preview-close" class="close" type="button" aria-label="Close">×</button></div>
+            <pre id="preview-body"></pre>
+          </div>
+          <div id="annot-shown" class="annot-shown" hidden><span id="annot-shown-text"></span><button id="annot-shown-hide" type="button">Hide</button></div>
+          <div id="annotate" class="annot" aria-label="Annotate" hidden>
+            <div class="annot-head"><b>Annotate for your agent</b><button id="annot-close" class="close" type="button" aria-label="Close">×</button></div>
+            <div class="annot-tools">
+              <div class="seg" role="group" aria-label="Tool">
+                <button id="annot-draw" type="button" aria-pressed="true">Draw</button>
+                <button id="annot-pick" type="button" aria-pressed="false">Pick faces</button>
+              </div>
+              <div id="annot-colors" class="ink-colors"></div>
+              <span class="annot-gap"></span>
+              <button id="annot-undo" type="button" title="Undo the last stroke (⌘Z)">Undo</button>
+              <button id="annot-clear" type="button" title="Remove strokes and picks">Clear</button>
+            </div>
+            <p id="annot-hint" class="annot-hint"></p>
+            <form id="annot-label-form" class="annot-label-row" hidden>
+              <input id="annot-label" list="annot-labels" placeholder="fixed, load 500 N down, …" aria-label="Label for the selected faces" autocomplete="off" />
+              <button id="annot-label-add" type="submit">Label</button>
+            </form>
+            <datalist id="annot-labels"><option value="fixed"></option><option value="load"></option><option value="keep"></option><option value="remove"></option><option value="too thin"></option><option value="round this"></option></datalist>
+            <div id="annot-picks"></div>
+            <textarea id="annot-note" rows="2" placeholder="Note for your agent (optional)"></textarea>
+            <div class="annot-save"><button id="annot-save" class="primary" type="button">Save</button><span id="annot-why"></span></div>
+            <div id="annot-done" class="annot-done" hidden>
+              <div>Saved to <code></code></div>
+              <div class="annot-tell"><span>Tell your agent:</span><button id="annot-copy" type="button">Copy</button></div>
+              <q class="annot-say"></q>
+              <small class="annot-summary"></small>
+            </div>
+            <details id="annot-past" hidden>
+              <summary>Earlier annotations (<span id="annot-past-count"></span>)</summary>
+              <div id="annot-past-list"></div>
+            </details>
+          </div>
+          <div id="legend" class="legend" aria-label="Findings and conditions" hidden></div>
           <div id="status" class="status"></div>
           <div id="pick" class="pick-label" hidden></div>
           <div id="counts"></div>
         </div>
         <footer id="sequence" hidden>
-          <button id="play" title="Play the frames" aria-label="Play the frames"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z" /></svg></button>
-          <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Frame" />
-          <span id="frame"></span>
+          <div id="plot" class="plot" aria-label="The frames' values" hidden></div>
+          <div class="seq-row">
+            <button id="play" title="Play the frames" aria-label="Play the frames"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z" /></svg></button>
+            <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Frame" />
+            <span id="frame"></span>
+            <span id="live" class="live" title="output.json says more frames are coming" hidden>running</span>
+          </div>
         </footer>
       </section>
     </main>

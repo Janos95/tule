@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 const web = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(web, "dist");
 const tmp = path.join(dist, ".next");
-await fs.rm(dist, { recursive: true, force: true });
+// empty dist but keep the folder, so a running `wrangler dev` sees the new files
+await fs.mkdir(dist, { recursive: true });
+for (const f of await fs.readdir(dist)) await fs.rm(path.join(dist, f), { recursive: true, force: true });
 await build({
   absWorkingDir: web,
   entryPoints: { app: "src/main.js" },
