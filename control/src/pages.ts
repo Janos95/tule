@@ -63,14 +63,20 @@ export function page(title: string, body: Html | string, status = 200, user?: Us
   });
 }
 
-export function landing(origin: string): Response {
-  const body = html`<div class="hero"><p>An engineering computer for your own AI agent: an isolated machine per project with
-    OpenCascade, a Python modeling API and engineering libraries, reached over SSH, with a live viewer of what your agent
-    builds.</p><p><a class="button primary" href="/auth/login">Sign in with Google</a></p></div>
-    <h2>Connect your agent</h2>
-    <p>Add <code>${origin}/mcp</code> as a custom connector (Claude, ChatGPT) or a remote MCP server (Claude Code, Codex,
-    Cursor). The agent signs in through this site the first time.</p>`;
-  return new Response(layout("Tule", body).replace("<h1>Tule</h1>", ""), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+const GOOGLE = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.9 6.1C12.4 13.7 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 7l7.4 5.7c4.3-4 6.9-9.9 6.9-17.2z"/><path fill="#FBBC05" d="M10.5 28.6A14.5 14.5 0 0 1 9.5 24c0-1.6.3-3.2.8-4.6l-7.9-6.1A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.3 0-11.6-4.2-13.5-10l-7.9 6.1C6.6 42.6 14.6 48 24 48z"/></svg>`;
+
+/** The signed-out front page: the name and one way in. */
+export function landing(_origin: string): Response {
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}
+.center{min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;padding:16px}
+.mark{display:flex;align-items:center;gap:12px;font-size:30px;font-weight:700;letter-spacing:.2px}
+.google{display:inline-flex;align-items:center;gap:10px;padding:10px 18px;font-size:15px;border-radius:9px}</style></head>
+<body><div class="center"><div class="mark">${LOGO.replace(/width="22" height="22"/, 'width="40" height="40"')}tule</div>
+<a class="button google" href="/auth/login">${GOOGLE}Sign in with Google</a></div></body></html>`,
+    { headers: { "Content-Type": "text/html; charset=utf-8" } },
+  );
 }
 
 export type ProjectRow = ProjectRef & { state: string; machine: string | null };
