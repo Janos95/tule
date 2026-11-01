@@ -12,6 +12,9 @@ seq = outputs.sequence("bracket-topopt", "Topology optimization")
 for i, (verts, tris, c) in enumerate(steps):
     seq.add(mesh=(verts, tris), label=f"iteration {i}", compliance=c)
 seq.done()
+outputs.overlay("bracket-loads", part,                # colored faces and arrows on a part
+                faces={part.faces["load"]: {"role": "load", "label": "500 N"}},
+                arrows=[{"at": (0, 0, 18), "dir": (0, 0, -1), "label": "500 N"}])
 ```
 
 Nothing here is required: any tool may write the files and JSON directly.
@@ -27,6 +30,7 @@ from typing import Any, Union
 from .assembly import Assembly
 from .errors import TuleError
 from .io import export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
+from .selection import Selection
 from .shape import Shape
 
 VERSION = 1
@@ -168,3 +172,46 @@ class Sequence:
 
 def sequence(name: str, title: str | None = None, fmt: str = "stl") -> Sequence:
     return Sequence(name, title, fmt)
+
+
+def overlay(name: str, shape: Shape, faces: dict | None = None, arrows: list | None = None,
+            title: str | None = None) -> str:
+    """Show facts on a part's faces: boundary conditions, DFM findings, what the user marked.
+
+    ``faces`` maps a face selection (``part.faces["load"]``) or a face id to
+    ``{"role": "load" | "fixed" | ..., "label": "500 N"}`` or
+    ``{"severity": "error" | "warning" | "info" | "ok", "label": "..."}`` (a
+    plain string is a label). ``arrows`` are ``{"at": (x, y, z), "dir":
+    (dx, dy, dz), "label": "500 N"}``: an arrow along ``dir`` ending at ``at``.
+    Faces not mentioned are drawn gray. Returns the folder.
+    """
+    folder = _folder(name)
+    fname = f"{_slug(shape.name or name)}.step"
+    out: dict[str, dict] = {}
+    for key, spec in (faces or {}).items():
+        spec = {"label": spec} if isinstance(spec, str) else dict(spec)
+        if isinstance(key, Selection):
+            if key.kind != "face":
+                raise TuleError(f"overlay keys must be faces, got {key.kind}s", op="overlay")
+            ids = shape._resolve(key, "face").ids
+        elif isinstance(key, int):
+            if not 0 <= key < len(shape.faces):
+                raise TuleError(f"no face f{key}", op="overlay", hint=f"face ids are 0..{len(shape.faces) - 1}")
+            ids = [key]
+        else:
+            raise TuleError(f"overlay keys are face selections or face ids, got {key!r}", op="overlay")
+        for i in ids:
+            out[str(i)] = spec
+    arr = []
+    for a in arrows or []:
+        if "at" not in a or "dir" not in a:
+            raise TuleError("an arrow needs 'at' and 'dir'", op="overlay",
+                            hint='{"at": (x, y, z), "dir": (0, 0, -1), "label": "500 N"}')
+        arr.append({"at": [float(v) for v in a["at"]], "dir": [float(v) for v in a["dir"]],
+                    **({"label": a["label"]} if a.get("label") else {})})
+    export_step(shape, os.path.join(folder, fname))
+    meta: dict[str, Any] = {"kind": "overlay", "file": fname, "faces": out, "arrows": arr}
+    if title:
+        meta["title"] = title
+    _write_json(folder, meta)
+    return folder
