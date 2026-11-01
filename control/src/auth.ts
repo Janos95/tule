@@ -21,7 +21,7 @@ function cookie(req: Request, name: string): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
-function setCookie(req: Request, name: string, value: string, maxAge: number): string {
+export function setCookie(req: Request, name: string, value: string, maxAge: number): string {
   const secure = new URL(req.url).protocol === "https:" ? "; Secure" : "";
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
@@ -47,7 +47,9 @@ export async function who(req: Request, env: Env): Promise<User | null> {
     return null;
   }
   const s = cookie(req, SESSION_COOKIE);
-  return s ? a.sessionUser(s) : null;
+  const user = s ? await a.sessionUser(s) : null;
+  if (user?.guest) await a.seen(user.id);
+  return user;
 }
 
 /** The URL to sign in and come back to `next`. */
@@ -111,6 +113,10 @@ export async function authRoutes(req: Request, env: Env, url: URL): Promise<Resp
     if (!allowed(env, claims.email))
       return page("Not invited yet", `<p>Tule is invite-only for now, and ${esc(claims.email)} is not on the list.</p>`, 403);
     const user = await accounts(env).googleUser(claims.sub, claims.email, claims.name ?? claims.email);
+    // signing in from a guest session: the guest's projects come along
+    const before = cookie(req, SESSION_COOKIE);
+    const guest = before ? await accounts(env).sessionUser(before) : null;
+    if (guest?.guest) await accounts(env).mergeGuest(guest.id, user.id);
     const session = await accounts(env).createSession(user.id);
     const h = new Headers({ Location: login.next });
     h.append("Set-Cookie", setCookie(req, SESSION_COOKIE, session, 30 * 86400));

@@ -3,12 +3,19 @@
 // `tule login`, SSH keys, projects (name -> project id per user), the RunPod
 // connection (key encrypted with ENCRYPTION_KEY) and usage per month.
 //
+// Guests: a first visit without an account makes a guest user (no Google
+// identity, `guest` = 1) so people can try Tule before signing in. Guests have
+// tight limits (GUEST_* vars: projects, machine minutes per day, machines
+// running at once site-wide) and are deleted, with their projects, a day
+// (GUEST_DAYS) after their last visit; signing in with Google moves a guest's
+// projects to the account.
+//
 // Secrets (session tokens, API keys, device codes) are stored as SHA-256
 // hashes only. Project ids ("p_" + random) name the Project Durable Objects;
 // users address projects by name.
 import { DurableObject } from "cloudflare:workers";
 
-export type User = { id: string; email: string; name: string };
+export type User = { id: string; email: string; name: string; guest?: boolean };
 export type ProjectRef = { id: string; name: string; created: number };
 type Result = Record<string, unknown>;
 
@@ -25,6 +32,7 @@ export async function sha256hex(s: string): Promise<string> {
 }
 
 const month = (t = Date.now()) => new Date(t).toISOString().slice(0, 7);
+const day = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
 
 /** A short code a person types: 8 letters without look-alikes, shown as ABCD-EFGH. */
 function userCode(): string {
@@ -56,7 +64,18 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, created INTEGER, UNIQUE(user_id, name));
       CREATE TABLE IF NOT EXISTS runpod (user_id TEXT PRIMARY KEY, iv TEXT, ct TEXT, updated INTEGER);
       CREATE TABLE IF NOT EXISTS usage (user_id TEXT, month TEXT, kind TEXT, seconds REAL, cost REAL, PRIMARY KEY (user_id, month, kind));
+      CREATE TABLE IF NOT EXISTS usage_day (user_id TEXT, day TEXT, seconds REAL, PRIMARY KEY (user_id, day));
+      CREATE TABLE IF NOT EXISTS guest_ips (ip TEXT, day TEXT, n INTEGER, PRIMARY KEY (ip, day));
+      CREATE TABLE IF NOT EXISTS running (project_id TEXT PRIMARY KEY, user_id TEXT, guest INTEGER, since INTEGER);
     `);
+    // columns added after the first deploy
+    for (const col of ["guest INTEGER DEFAULT 0", "last_seen INTEGER"]) {
+      try {
+        this.sql.exec(`ALTER TABLE users ADD COLUMN ${col}`);
+      } catch {
+        // already there
+      }
+    }
   }
 
   one<T>(q: string, ...args: unknown[]): T | undefined {
@@ -77,19 +96,132 @@ export class Accounts extends DurableObject<Env> {
       return { ...u, email, name };
     }
     const id = `u_${rand(12)}`;
-    this.sql.exec("INSERT INTO users VALUES (?, ?, ?, ?, ?)", id, sub, email, name, Date.now());
+    this.sql.exec("INSERT INTO users (id, google_sub, email, name, created) VALUES (?, ?, ?, ?, ?)", id, sub, email, name, Date.now());
     return { id, email, name };
   }
 
   user(id: string): User | null {
-    return this.one<User>("SELECT id, email, name FROM users WHERE id = ?", id) ?? null;
+    const u = this.one<{ id: string; email: string | null; name: string | null; guest: number }>("SELECT id, email, name, guest FROM users WHERE id = ?", id);
+    return u ? { id: u.id, email: u.email ?? "guest", name: u.name ?? "Guest", ...(u.guest ? { guest: true } : {}) } : null;
+  }
+
+  // ------------------------------------------------------------ guests
+
+  limits() {
+    const n = (v: string | undefined, d: number) => (Number.isFinite(Number(v)) && v !== "" && v != null ? Number(v) : d);
+    return {
+      projects: n(this.env.GUEST_PROJECTS, 1),
+      minutesPerDay: n(this.env.GUEST_MINUTES_DAY, 30),
+      machines: n(this.env.GUEST_MACHINES, 2),
+      days: n(this.env.GUEST_DAYS, 1),
+      perIpPerDay: 5,
+    };
+  }
+
+  /** A new guest for a first visit, or why not (too many from this address today). */
+  async createGuest(ip: string): Promise<{ user: User; session: string } | { error: string }> {
+    const d = day();
+    const seen = this.one<{ n: number }>("SELECT n FROM guest_ips WHERE ip = ? AND day = ?", ip, d)?.n ?? 0;
+    if (seen >= this.limits().perIpPerDay) return { error: "too many guest sessions from your network today; sign in instead" };
+    this.sql.exec("INSERT INTO guest_ips VALUES (?, ?, 1) ON CONFLICT (ip, day) DO UPDATE SET n = n + 1", ip, d);
+    this.sql.exec("DELETE FROM guest_ips WHERE day < ?", d);
+    const id = `u_g${rand(12)}`;
+    this.sql.exec("INSERT INTO users (id, google_sub, email, name, created, guest, last_seen) VALUES (?, NULL, NULL, NULL, ?, 1, ?)", id, Date.now(), Date.now());
+    await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
+    return { user: { id, email: "guest", name: "Guest", guest: true }, session: await this.createSession(id) };
+  }
+
+  /** A guest was here: their projects live on (at most once an hour). */
+  seen(userId: string) {
+    this.sql.exec("UPDATE users SET last_seen = ? WHERE id = ? AND guest = 1 AND (last_seen IS NULL OR last_seen < ?)", Date.now(), userId, Date.now() - 3_600_000);
+  }
+
+  /** A machine may start: guests within their minutes and the site-wide guest machine count. Records it as running. */
+  machineStart(projectId: string, userId: string): { error?: string; hint?: string } {
+    const u = this.user(userId);
+    if (u?.guest) {
+      const L = this.limits();
+      const used = this.one<{ seconds: number }>("SELECT seconds FROM usage_day WHERE user_id = ? AND day = ?", userId, day())?.seconds ?? 0;
+      if (used >= L.minutesPerDay * 60)
+        return { error: `today's guest machine time is used up (${L.minutesPerDay} minutes)`, hint: "sign in to keep working, or come back tomorrow" };
+      const others = this.one<{ n: number }>("SELECT COUNT(*) AS n FROM running WHERE guest = 1 AND project_id != ?", projectId)?.n ?? 0;
+      if (others >= L.machines) return { error: "all guest machines are busy right now", hint: "sign in, or try again in a few minutes" };
+    }
+    this.sql.exec("INSERT OR REPLACE INTO running VALUES (?, ?, ?, ?)", projectId, userId, u?.guest ? 1 : 0, Date.now());
+    return {};
+  }
+
+  machineStopped(projectId: string) {
+    this.sql.exec("DELETE FROM running WHERE project_id = ?", projectId);
+  }
+
+  /** A guest machine still within today's minutes? (the Project object asks while it runs) */
+  guestTimeLeft(userId: string): number {
+    const u = this.user(userId);
+    if (!u?.guest) return Infinity;
+    const used = this.one<{ seconds: number }>("SELECT seconds FROM usage_day WHERE user_id = ? AND day = ?", userId, day())?.seconds ?? 0;
+    return this.limits().minutesPerDay * 60 - used;
+  }
+
+  /** Signing in from a guest session: the guest's projects and keys move to the account. */
+  async mergeGuest(guestId: string, userId: string): Promise<number> {
+    const g = this.user(guestId);
+    if (!g?.guest || guestId === userId) return 0;
+    const moved = this.projects(guestId);
+    for (const p of moved) {
+      let name = p.name;
+      for (let i = 2; this.project(userId, name); i++) name = `${p.name}-${i}`;
+      this.sql.exec("UPDATE projects SET user_id = ?, name = ? WHERE id = ?", userId, name, p.id);
+      await (this.env.PROJECT.getByName(p.id) as unknown as { adopt(owner: string, name: string): Promise<void> }).adopt(userId, name);
+    }
+    for (const t of ["api_keys", "ssh_keys", "usage", "usage_day", "running"]) {
+      try {
+        this.sql.exec(`UPDATE OR IGNORE ${t} SET user_id = ? WHERE user_id = ?`, userId, guestId);
+      } catch {
+        // a primary-key clash (the same SSH key twice): the account's row stays
+      }
+    }
+    this.deleteUser(guestId);
+    return moved.length;
+  }
+
+  deleteUser(id: string) {
+    for (const t of ["sessions", "api_keys", "devices", "ssh_keys", "projects", "runpod", "usage", "usage_day", "running"]) this.sql.exec(`DELETE FROM ${t} WHERE user_id = ?`, id);
+    this.sql.exec("DELETE FROM users WHERE id = ?", id);
+  }
+
+  async alarm() {
+    await this.sweep();
+  }
+
+  /** Every hour: guests not seen for GUEST_DAYS lose their projects (machines stopped, snapshots deleted), then themselves. */
+  async sweep(): Promise<number> {
+    const cutoff = Date.now() - this.limits().days * 86_400_000;
+    const old = this.all<{ id: string }>("SELECT id FROM users WHERE guest = 1 AND COALESCE(last_seen, created) < ? LIMIT 50", cutoff);
+    for (const { id } of old) {
+      for (const p of this.projects(id)) {
+        try {
+          await (this.env.PROJECT.getByName(p.id) as unknown as { destroyProject(): Promise<unknown> }).destroyProject();
+        } catch (e) {
+          console.log(JSON.stringify({ event: "guest-sweep", project: p.id, error: String(e) }));
+          continue;
+        }
+      }
+      this.deleteUser(id);
+    }
+    // running rows a crashed machine never cleared (guests cannot run longer than their minutes)
+    this.sql.exec("DELETE FROM running WHERE guest = 1 AND since < ?", Date.now() - 2 * 3_600_000);
+    if (old.length) console.log(JSON.stringify({ event: "guest-sweep", deleted: old.length }));
+    const any = this.one<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE guest = 1")?.n ?? 0;
+    if (any) await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
+    return old.length;
   }
 
   /** The dev token's user (until accounts are the only way in). */
   devUser(): User {
     const u = this.user("u_dev");
     if (u) return u;
-    this.sql.exec("INSERT INTO users VALUES ('u_dev', NULL, 'dev@tule.local', 'Dev token', ?)", Date.now());
+    this.sql.exec("INSERT INTO users (id, google_sub, email, name, created) VALUES ('u_dev', NULL, 'dev@tule.local', 'Dev token', ?)", Date.now());
     return { id: "u_dev", email: "dev@tule.local", name: "Dev token" };
   }
 
@@ -212,6 +344,8 @@ export class Accounts extends DurableObject<Env> {
 
   createProject(userId: string, name: string): ProjectRef | { error: string; hint?: string } {
     if (this.project(userId, name)) return { error: `a project named ${JSON.stringify(name)} exists`, hint: "pick another name" };
+    if (this.user(userId)?.guest && this.projects(userId).length >= this.limits().projects)
+      return { error: `guests can have ${this.limits().projects} project${this.limits().projects === 1 ? "" : "s"}`, hint: "sign in to make more" };
     const p = { id: `p_${rand(12).toLowerCase().replace(/[^a-z0-9]/g, "0")}`, name, created: Date.now() };
     this.sql.exec("INSERT INTO projects VALUES (?, ?, ?, ?)", p.id, userId, name, p.created);
     return p;
@@ -270,6 +404,7 @@ export class Accounts extends DurableObject<Env> {
       "INSERT INTO usage VALUES (?, ?, ?, ?, ?) ON CONFLICT (user_id, month, kind) DO UPDATE SET seconds = seconds + excluded.seconds, cost = cost + excluded.cost",
       userId, month(), kind, seconds, cost,
     );
+    this.sql.exec("INSERT INTO usage_day VALUES (?, ?, ?) ON CONFLICT (user_id, day) DO UPDATE SET seconds = seconds + excluded.seconds", userId, day(), seconds);
   }
 
   usage(userId: string, m = month()): { month: string; cpuHours: number; gpuHours: number; gpuCost: number } {

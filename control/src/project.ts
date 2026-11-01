@@ -42,6 +42,7 @@ const MACHINES: Record<string, "standard-2" | "standard-3" | "standard-4"> = {
   "cpu-4": "standard-4", // 4 vCPU, 12 GiB
 };
 const IDLE_MS = 30 * 60_000; // no SSH session and no activity for this long: stop the machine
+const GUEST_IDLE_MS = 10 * 60_000; // the same for guests
 const CHECK_MS = 5 * 60_000;
 const SSH = 1;
 const MESH = 2;
@@ -52,6 +53,7 @@ type State = {
   owner?: string; // user id
   billedUntil?: number; // machine time is added to the owner's usage up to here
   pod?: { id: string; cost: number; gpu: string; cloud: string }; // a RunPod pod (gpu-* machines)
+  guest?: boolean; // the owner was a guest when the machine started (tighter idle stop and minutes)
   machine?: string; // "cpu-1", or "external" for a machine started with a join token
   joinHash?: string;
   upAt?: number; // start() called
@@ -138,6 +140,14 @@ export class Project extends DurableObject<Env> {
     await this.save();
   }
 
+  /** A guest signed in: the project now belongs to their account (Accounts.mergeGuest). */
+  async adopt(owner: string, name: string) {
+    this.state = { ...this.state, owner, name, guest: false };
+    await this.save();
+    await this.sendConfig(); // the account's SSH keys
+    this.broadcast();
+  }
+
   async rename(name: string) {
     this.state.name = name;
     await this.save();
@@ -209,6 +219,9 @@ export class Project extends DurableObject<Env> {
   }
 
   async up(machine: string, origin: string): Promise<Result> {
+    const owner = this.state.owner ? await this.accounts().user(this.state.owner) : null;
+    if (owner?.guest && machine !== "cpu-1")
+      return { error: `guests can use cpu-1 machines only`, hint: "sign in for bigger machines and GPUs" };
     if (machine.startsWith("gpu-")) return this.upGpu(machine, origin);
     const name = this.state.name;
     const instance = MACHINES[machine];
@@ -226,13 +239,15 @@ export class Project extends DurableObject<Env> {
       await this.stopMachine("resize");
     }
     if (this.state.owner) {
+      const ok = await this.accounts().machineStart(this.state.id ?? "", this.state.owner);
+      if (ok.error) return ok;
       const quota = Number(this.env.CPU_HOURS_MONTH || 100);
       const u = await this.accounts().usage(this.state.owner);
       if (u.cpuHours >= quota)
         return { error: `this month's CPU machine time is used up (${u.cpuHours} of ${quota} h)`, hint: "it renews on the 1st; GPU machines on your RunPod account are not limited by it" };
     }
     const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
-    this.state = { ...this.state, machine, joinHash: await sha256(token), upAt: Date.now(), billedUntil: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lastActive: Date.now() };
+    this.state = { ...this.state, machine, guest: !!owner?.guest, joinHash: await sha256(token), upAt: Date.now(), billedUntil: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lastActive: Date.now() };
     await this.save();
     c.start({
       image: c.images.cpu,
@@ -241,7 +256,7 @@ export class Project extends DurableObject<Env> {
       env: { TULE_URL: origin, TULE_PROJECT: this.state.id ?? "", TULE_NAME: name ?? "", TULE_JOIN_TOKEN: token },
     });
     await c.setInactivityTimeout(IDLE_MS + 2 * CHECK_MS);
-    await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    await this.ctx.storage.setAlarm(Date.now() + (this.state.guest ? 60_000 : CHECK_MS));
     return this.status();
   }
 
@@ -363,6 +378,7 @@ export class Project extends DurableObject<Env> {
       }
     }
     await this.bill();
+    if (this.state.id) await this.accounts().machineStopped(this.state.id);
     if (this.state.pod && this.state.owner) {
       const key = await this.accounts().runpodKey(this.state.owner);
       try {
@@ -396,13 +412,18 @@ export class Project extends DurableObject<Env> {
     }
     if (!c?.running && !this.agent() && !pod) return;
     await this.bill();
+    if (this.state.guest && this.state.owner && (await this.accounts().guestTimeLeft(this.state.owner)) <= 0) {
+      console.log(JSON.stringify({ event: "guest-minutes", project: this.state.name }));
+      await this.stopMachine("today's guest machine time is used up");
+      return;
+    }
     const idle = Date.now() - (this.state.lastActive ?? 0);
-    if (this.sessions() === 0 && idle > IDLE_MS) {
+    if (this.sessions() === 0 && idle > (this.state.guest ? GUEST_IDLE_MS : IDLE_MS)) {
       console.log(JSON.stringify({ event: "idle-stop", project: this.state.name, idleMin: Math.round(idle / 60_000) }));
       await this.stopMachine("idle");
       return;
     }
-    await this.ctx.storage.setAlarm(Date.now() + (pod ? 60_000 : CHECK_MS));
+    await this.ctx.storage.setAlarm(Date.now() + (pod || this.state.guest ? 60_000 : CHECK_MS));
   }
 
   // ------------------------------------------------------------ sockets

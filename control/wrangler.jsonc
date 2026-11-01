@@ -26,6 +26,12 @@
     "PUBLIC_URL": "https://tule.janosmeny.com",
     "ALLOWED_EMAILS": "janos.meny@googlemail.com",
     "CPU_HOURS_MONTH": "100",
+    // guests (no sign-in): projects each, machine minutes a day each, guest
+    // machines running at once site-wide, days kept after the last visit
+    "GUEST_PROJECTS": "1",
+    "GUEST_MINUTES_DAY": "30",
+    "GUEST_MACHINES": "2",
+    "GUEST_DAYS": "1",
     // GPU machines run this image on RunPod (built by .github/workflows/runtime.yml)
     "GPU_IMAGE": "ghcr.io/janos95/tule-runtime:cuda"
   },

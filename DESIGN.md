@@ -54,7 +54,9 @@ Tule does not run or bill for an agent. Users bring their own.
 
 ## User journey
 
-1. **Sign in** on the Tule site with Google (GitHub as an alternative).
+1. **Open the site:** it is the projects page, with nothing to sign up for:
+   a first visit makes a guest account (see "Guests") to try Tule with. **Sign
+   in** with Google (GitHub as an alternative) to keep projects.
 2. **Add the connector** to the agent: in Claude or ChatGPT as a custom
    connector (`https://<tule>/mcp`), in Claude Code as a remote MCP server or
    the Tule plugin, in Codex/Cursor as a remote MCP server.
@@ -343,8 +345,28 @@ request `id`.
 - **MCP:** `@cloudflare/workers-oauth-provider` wraps the Worker: `/mcp` takes
   its OAuth tokens (dynamic client registration, `/authorize` signs the user
   in with the site's session and asks for consent) or a Tule API key.
-- **Pages** (server-rendered): the projects list, Settings (RunPod, usage, SSH
-  and API keys), the device approval, the consent page.
+- **Pages** (server-rendered): the projects list (the site's front page),
+  Settings (connecting an agent, RunPod, usage, SSH and API keys, account),
+  the device approval, the consent page.
+
+### Guests
+
+- A first visit to `/` without a session makes a **guest** user (no Google
+  identity) with a session cookie, so Tule can be tried without signing in.
+  Everything is stored under the guest's user id exactly as for an account;
+  the cookie is the only way back to it (and any CLI the guest logged in).
+- **Limits** (vars, the stricter defaults): `GUEST_PROJECTS` 1 project,
+  `GUEST_MINUTES_DAY` 30 machine minutes a day (checked at start and every
+  minute while running), `cpu-1` only with a 10-minute idle stop, no GPUs,
+  `GUEST_MACHINES` 2 guest machines running at once site-wide, at most 5 new
+  guests per IP address a day.
+- **Expiry:** each visit updates `last_seen` (at most hourly); an hourly sweep
+  in the Accounts object deletes guests not seen for `GUEST_DAYS` (1) with
+  their projects (machines stopped, snapshots deleted).
+- **Signing in** from a guest session moves the guest's projects (renamed on a
+  name clash), keys and usage to the account; snapshots stay where they are,
+  since they are stored by project id. Signing in itself stays invite-only
+  (`ALLOWED_EMAILS`).
 
 ## Interfaces
 

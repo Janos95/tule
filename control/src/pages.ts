@@ -33,7 +33,8 @@ a{color:var(--accent)}code{font:13px var(--mono);background:var(--panel);padding
 pre{font:13px/1.45 var(--mono);background:var(--panel);padding:12px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
 .muted{color:var(--muted)}.warn{color:var(--warn)}.ok{color:#2f8a4c}
 button,.button{font:inherit;font-size:14px;padding:6px 14px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);cursor:pointer;text-decoration:none;display:inline-block}
-button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.danger{color:var(--danger)}
+button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.button.small{padding:3px 10px;font-size:13px}button.danger{color:var(--danger)}
 input{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);width:100%}
 label{display:flex;flex-direction:column;gap:4px;font-size:14px}
 .stack{display:flex;flex-direction:column;gap:12px;max-width:520px}.row{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.row>label{flex:1;min-width:200px}
@@ -69,7 +70,9 @@ const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512
 
 export function layout(title: string, body: Html | string, user?: User | null): string {
   const nav = user
-    ? html`<nav><a href="/settings">Settings</a></nav>`
+    ? user.guest
+      ? html`<nav><a href="/settings">Settings</a><a class="button primary" href="/auth/login">Sign in</a></nav>`
+      : html`<nav><a href="/settings">Settings</a></nav>`
     : html`<nav><a class="button" href="/auth/login">Sign in</a></nav>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}</style></head>
@@ -86,7 +89,7 @@ export function page(title: string, body: Html | string, status = 200, user?: Us
 const GOOGLE = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.9 6.1C12.4 13.7 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 7l7.4 5.7c4.3-4 6.9-9.9 6.9-17.2z"/><path fill="#FBBC05" d="M10.5 28.6A14.5 14.5 0 0 1 9.5 24c0-1.6.3-3.2.8-4.6l-7.9-6.1A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.3 0-11.6-4.2-13.5-10l-7.9 6.1C6.6 42.6 14.6 48 24 48z"/></svg>`;
 
 /** The signed-out front page: the name and one way in. */
-export function landing(_origin: string): Response {
+export function landing(_origin: string, note = ""): Response {
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}
@@ -94,7 +97,7 @@ export function landing(_origin: string): Response {
 .mark{display:flex;align-items:center;gap:12px;font-size:30px;font-weight:700;letter-spacing:.2px}
 .google{display:inline-flex;align-items:center;gap:10px;padding:10px 18px;font-size:15px;border-radius:9px}</style></head>
 <body><div class="center"><div class="mark">${LOGO.replace(/width="22" height="22"/, 'width="40" height="40"')}tule</div>
-<a class="button google" href="/auth/login">${GOOGLE}Sign in with Google</a></div></body></html>`,
+<a class="button google" href="/auth/login">${GOOGLE}Sign in with Google</a>${note ? `<p class="muted" style="max-width:360px;text-align:center">${esc(note)}</p>` : ""}</div></body></html>`,
     { headers: { "Content-Type": "text/html; charset=utf-8" } },
   );
 }
@@ -113,7 +116,9 @@ tule ssh -p &lt;project&gt;</pre>
     </div>`;
 }
 
-export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string): Response {
+export type GuestLimits = { projects: number; minutesPerDay: number; days: number };
+
+export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, limits?: GuestLimits): Response {
   const state = (p: ProjectRow) => (p.state === "stopped" ? "stopped" : `${p.machine ?? ""} · ${p.state}`);
   const create = html`<details class="newp"${error || !rows.length ? html` open` : ""}>
       <summary><span class="plus">+</span> New project</summary>
@@ -123,8 +128,12 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
       </form>
       ${error ? html`<p class="warn">${error}</p>` : ""}
     </details>`;
+  const L = limits ?? { projects: 1, minutesPerDay: 30, days: 1 };
+  const guest = user.guest
+    ? html`<p class="notice">You're trying Tule as a guest: ${L.projects} project, ${L.minutesPerDay} machine minutes a day, deleted ${L.days === 1 ? "a day" : `${L.days} days`} after your last visit. <a href="/auth/login">Sign in</a> to keep your work.</p>`
+    : "";
   const body = rows.length
-    ? html`<div class="plist">
+    ? html`${guest}<div class="plist">
         ${rows.map(
           (p) => html`<a class="prow" href="/p/${p.name}">
             <span class="pname">${p.name}</span>
@@ -133,7 +142,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
         )}
         ${create}
       </div>`
-    : html`<p class="muted">Start your first project, or ask your agent to ("start a Tule project for a camera bracket").</p>
+    : html`${guest}<p class="muted">Start your first project, or ask your agent to ("start a Tule project for a camera bracket").</p>
       <div class="plist">${create}</div>
       <h2>Connect your agent</h2>
       ${connect(origin)}`;
@@ -183,7 +192,9 @@ export function settingsPage(user: User, d: SettingsData): Response {
   );
 
   const rp = d.runpod;
-  const runpod = section(
+  const runpod = user.guest
+    ? section("GPU machines", "GPU machines run on your own RunPod account.", item("RunPod", "sign in to connect it", html`<a class="button small" href="/auth/login">Sign in</a>`))
+    : section(
     "GPU machines",
     "GPU machines run on your RunPod account and are paid from its balance. Tule stores the key encrypted and never passes it to a machine.",
     html`${rp.connected
@@ -222,7 +233,9 @@ export function settingsPage(user: User, d: SettingsData): Response {
       ${addRow("Create API key", "Create", "/settings/keys/new", html`<input name="name" placeholder="CI" aria-label="Key name" required />`)}`,
   );
 
-  const account = section("Account", "", item(user.email, "", html`<form method="post" action="/auth/logout"><button class="small">Sign out</button></form>`));
+  const account = user.guest
+    ? section("Account", "You're a guest: your project is deleted a day after your last visit. Signing in keeps it.", item("Guest", "", html`<a class="button small primary" href="/auth/login">Sign in</a>`))
+    : section("Account", "", item(user.email, "", html`<form method="post" action="/auth/logout"><button class="small">Sign out</button></form>`));
 
   const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${runpod}${usage}${ssh}${api}${account}
     <script>document.addEventListener("click",(e)=>{const b=e.target.closest("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)})</script>`;

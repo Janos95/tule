@@ -28,7 +28,7 @@
 // MCP: /mcp, behind the OAuth provider (tokens from /authorize, or an API key).
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Accounts, type User } from "./accounts";
-import { accounts, authorize, authRoutes, deviceApi, devicePage, loginUrl, sameOrigin, who } from "./auth";
+import { accounts, authorize, authRoutes, deviceApi, devicePage, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
@@ -294,15 +294,20 @@ async function route(req: Request, env: Env): Promise<Response> {
     return userApi(req, env, url, user, origin);
   }
   if (path === "/") {
-    if (!user) return landing(origin);
-    return projectsPage(user, await projectRows(env, user), origin);
+    if (user) return projectsPage(user, await projectRows(env, user), origin, undefined, user.guest ? await accounts(env).limits() : undefined);
+    // a first visit: a guest account, so Tule can be tried without signing in
+    const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
+    if ("error" in g) return landing(origin, g.error);
+    const res = projectsPage(g.user, [], origin, undefined, await accounts(env).limits());
+    res.headers.append("Set-Cookie", setCookie(req, SESSION_COOKIE, g.session, 30 * 86400));
+    return res;
   }
   if (path === "/projects/new" && req.method === "POST") {
     if (!user) return Response.redirect(`${origin}${loginUrl("/")}`, 302);
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403, user);
     const name = String((await req.formData()).get("name") ?? "").trim();
     const r = await ops.createProject(env, user, name, origin);
-    if (r.error) return projectsPage(user, await projectRows(env, user), origin, `${r.error}${r.hint ? ` (${r.hint})` : ""}`);
+    if (r.error) return projectsPage(user, await projectRows(env, user), origin, `${r.error}${r.hint ? ` (${r.hint})` : ""}`, user.guest ? await accounts(env).limits() : undefined);
     return new Response(null, { status: 303, headers: { Location: `/p/${name}` } });
   }
   if (path === "/settings" || path.startsWith("/settings/")) {
