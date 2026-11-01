@@ -1293,37 +1293,22 @@ main {
   min-width: 0;
 }
 
-.project-switch {
-  position: relative;
+/* the sidebar's top: back to your projects, and this project's name */
+.project-head { flex: none; padding: 10px 10px 4px; }
+.project-head .back {
   display: inline-flex;
   align-items: center;
-}
-.project-switch select {
-  appearance: none;
-  -webkit-appearance: none;
-  height: 30px;
-  max-width: 46vw;
-  padding: 0 26px 0 8px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: none;
-  font: 600 14px var(--sans);
+  gap: 3px;
+  margin-left: -2px;
+  padding: 2px 4px 2px 0;
+  border-radius: 5px;
   color: var(--muted);
-  cursor: pointer;
-  text-overflow: ellipsis;
+  font-size: 12.5px;
+  text-decoration: none;
 }
-.project-switch select:hover { border-color: var(--line); color: var(--text); }
-.project-switch svg {
-  position: absolute;
-  right: 8px;
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  color: var(--muted);
-  pointer-events: none;
-}
+.project-head .back:hover { color: var(--text); }
+.project-head .back svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.project-name { margin-top: 4px; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .machine {
   display: inline-flex;
@@ -1617,7 +1602,7 @@ main {
 /* ---------------------------------------------------------------- the outputs list */
 
 #outputs { padding: 0; display: flex; flex-direction: column; }
-#outputs .outputs-head { flex: none; padding: 12px 14px 4px; }
+#outputs .outputs-head { flex: none; padding: 10px 14px 4px; }
 .side-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
 .dl .menu button { justify-content: space-between; }
 
