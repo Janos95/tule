@@ -64,8 +64,10 @@ Tule does not run or bill for an agent. Users bring their own.
    The agent's CLI is linked the same way when the agent first runs
    `tule login` (device code: the agent shows a link and code, the user
    approves it in the browser). No keys are copied by hand.
-4. **Connect RunPod (optional)** in Tule's settings: paste a RunPod API key,
-   Tule validates it, shows the balance, and the user sets a monthly GPU cap.
+4. **Connect RunPod (optional)** in Tule's settings: paste a RunPod API key;
+   Tule validates it and shows the balance. RunPod's own limits (prepaid
+   balance, account spend limit) are the budget; Tule adds no cap of its own.
+   Later, users may simply buy compute from Tule instead of bringing a key.
 5. **Create projects** on the site or by asking the agent ("start a Tule
    project for a camera bracket"); both call the same control plane.
 
@@ -142,10 +144,9 @@ stop, provisions the new one, and routes SSH there once its agent dials in.
 The agent sees one project whose machine got bigger.
 
 **Shutdown and budgets:** the Durable Object stops a machine after an idle
-timeout (no SSH sessions, no running processes it was told about), when a
-per-session budget is reached, or when the monthly cap is hit. RunPod also
-stops pods when the balance reaches $0, so the prepaid balance is a hard
-limit.
+timeout (no SSH sessions, no running processes it was told about). Spending
+limits come from RunPod: it stops pods when the prepaid balance reaches $0
+and enforces an account spend limit.
 
 **GPU functions from a CPU session** (later): `tule.remote(gpu="rtx4090",
 max_cost=1.0)(fn)(...)` runs one function on a short-lived GPU machine with
@@ -156,8 +157,8 @@ workspace.
 **RunPod credentials:** the key is encrypted at rest in the Accounts Durable
 Object (key from a Worker secret), used only by the control plane to create,
 query and stop pods, and never passed into a machine. Creating pods needs a
-key with write access to RunPod's API; the settings page says so, suggests a
-dedicated key, and shows the user's cap. Users who prefer not to store a key
+key with write access to RunPod's API; the settings page says so and suggests
+a dedicated key. Users who prefer not to store a key
 can let their agent create the pod with their own RunPod connector, passing
 a join token from Tule; the pod then joins the project the same way.
 
@@ -241,8 +242,8 @@ outputs/
 - One machine per project; full freedom inside; isolated from other users.
 - Outbound network: package registries (PyPI, npm, GitHub) by default, a
   per-project allowlist for more; no open internet.
-- Quotas: CPU machine-hours per user (Tule pays), GPU spend against the user's
-  cap (the user's RunPod pays), concurrent machines.
+- Quotas: CPU machine-hours per user (Tule pays) and concurrent machines. GPU
+  time is paid from the user's RunPod balance and limited by RunPod.
 
 ## Interfaces
 
@@ -262,7 +263,7 @@ grouped by resource:
 - **Snapshots and outputs:** list snapshots, restore; list outputs with viewer
   links.
 - **Keys:** SSH keys (list, add, remove), API keys (create, revoke).
-- **Usage:** machine hours, GPU spend, caps.
+- **Usage:** machine hours, GPU spend.
 
 No exec or file tools: like RunPod's, the MCP never carries the work.
 
@@ -302,7 +303,7 @@ plugin (connector plus skills), in every project as `AGENTS.md`/`CLAUDE.md`,
 and on the machine as `tule docs`. Content:
 
 - a router (start here): when to use the MCP, when the CLI and SSH;
-- setup: `tule login`, SSH key, connect, machines and GPUs, budgets;
+- setup: `tule login`, SSH key, connect, machines and GPUs;
 - the modeling API and its style, selection, tags, parameters;
 - the workspace and `outputs/` conventions;
 - the loop: edit → run → write outputs → `tule screenshot` → inspect →
@@ -323,8 +324,8 @@ genau's page, rewired as a renderer of `outputs/`.
 - New: the outputs list; sequence slider and value plot; wireframe of real
   CAD edges; hover/click a face or edge to see its id and tags and copy a
   selector; a files browser for `/workspace`; snapshot history (open any
-  output as of any snapshot); STEP/3MF download; settings (RunPod, caps, keys);
-  usage.
+  output as of any snapshot); STEP/3MF download; settings (RunPod key, API
+  and SSH keys); usage.
 - The code editor stays for small edits; saving writes to `/workspace`.
 
 ## Python API (`tule`)
@@ -445,7 +446,7 @@ tule/
 5. **Viewer:** outputs (part, assembly, sequence), faces and edges, picking,
    files browser, snapshot history, STEP download.
 6. **Engineering libraries:** `tule.dfm` v0, `tule.topopt` v0.
-7. **GPU:** RunPod backend (settings, encrypted key, caps, `tule up --gpu`),
+7. **GPU:** RunPod backend (settings, encrypted key, `tule up --gpu`),
    agent-provisioned pods via join tokens, then `tule.remote`.
 8. **Deploy** and a live smoke test.
 
