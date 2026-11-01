@@ -572,6 +572,8 @@ def main():
     async def run():
         agent = Agent(url, project, token)
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: asyncio.ensure_future(agent.final()))
+        import local  # the control socket for commands on the machine, e.g. `tule snapshot` (runtime/local.py)
+        agent.local = asyncio.create_task(local.serve(agent))
         await agent.run()
 
     asyncio.run(run())

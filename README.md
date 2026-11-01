@@ -7,8 +7,8 @@ See [DESIGN.md](DESIGN.md).
 ## Run it
 
 ```sh
-pip install -e python -e cli          # the modeling API and the tule CLI
-python -m pytest python               # API tests
+pip install -e "python[test]" -e "cli[test]"   # the modeling API and the tule CLI
+python -m pytest python cli           # tests
 
 cd web && npm ci && npm run build     # the viewer, into web/dist
 cd ../control && npm ci
