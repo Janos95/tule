@@ -1374,26 +1374,42 @@ main {
 
 .output {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  height: auto;
-  padding: 7px 8px;
+  height: 32px;
+  padding: 0 8px;
   border: 1px solid transparent;
+  border-radius: 7px;
   background: none;
   text-align: left;
-  gap: 1px;
 }
+.output:hover { background: #e9edf1; }
+.output-icon { flex: none; width: 15px; height: 15px; fill: none; stroke: var(--muted); stroke-width: 1.3; stroke-linejoin: round; }
+.output-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.output small { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.output small[data-tone="error"] { color: var(--danger); }
+.output small[data-tone="warning"] { color: #a3610b; }
+.output small[data-tone="live"] { color: #2f8a4c; }
+.output small[data-tone="ok"] { color: #2f8a4c; }
+.output[aria-selected="true"] { background: var(--bg); border-color: var(--line); }
+.output[aria-selected="true"] .output-icon { stroke: var(--accent); }
 
-.output small {
-  color: var(--muted);
-  font-size: 11.5px;
+/* the selected output's title, above the view (overlays show theirs in the legend) */
+.caption {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  max-width: calc(100% - 420px);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
-
-.output[aria-selected="true"] {
-  background: var(--bg);
-  border-color: var(--line);
-}
+@media (max-width: 640px) { .caption { display: none; } }
 
 .outputs-empty {
   color: var(--muted);

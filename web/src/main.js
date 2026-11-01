@@ -223,6 +223,30 @@ function frames(o) {
   return [...o.files].sort((a, b) => a.file.localeCompare(b.file, undefined, { numeric: true })).map((f) => ({ file: f.file, f }));
 }
 
+const ICONS = {
+  part: '<path d="M8 1.5 14 5v6l-6 3.5L2 11V5zM8 8v6.5M8 8l6-3M8 8 2 5"/>',
+  assembly: '<path d="M8 2 14 5 8 8 2 5zM2 8l6 3 6-3M2 11l6 3 6-3"/>',
+  sequence: '<rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M5 3.5v9M11 3.5v9"/>',
+  overlay: '<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.2"/>',
+};
+
+/** One short fact for a row, and how to color it: "11 errors", "31 frames", "3 parts". */
+function fact(o, kind) {
+  if (o.error) return ["error", "error"];
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  if (kind === "sequence") return o.meta?.status === "running" ? ["running", "live"] : [plural(frames(o).length, "frame"), ""];
+  if (kind === "assembly") return [plural(Array.isArray(o.meta?.parts) ? o.meta.parts.length : o.files.length, "part"), ""];
+  if (kind === "overlay") {
+    const faces = Object.values(o.meta?.faces ?? {});
+    const n = (s) => faces.filter((f) => f?.severity === s).length;
+    if (n("error")) return [plural(n("error"), "error"), "error"];
+    if (n("warning")) return [plural(n("warning"), "warning"), "warning"];
+    const conds = faces.filter((f) => f?.role).length + (o.meta?.arrows?.length ?? 0);
+    return conds ? [plural(conds, "condition"), ""] : ["ok", "ok"];
+  }
+  return ["", ""];
+}
+
 function renderList() {
   const list = $("output-list");
   list.textContent = "";
@@ -236,10 +260,12 @@ function renderList() {
     b.role = "option";
     b.setAttribute("aria-selected", String(o.name === state.selected));
     const kind = kindOf(o);
-    const n = kind === "sequence" ? `${frames(o).length} frames${o.meta?.status === "running" ? " · running" : ""}` : kind === "assembly" ? `${Array.isArray(o.meta?.parts) ? o.meta.parts.length : o.files.length} parts` : o.files[0]?.file ?? "";
-    b.innerHTML = `<span class="output-name"></span><small></small>`;
-    b.firstChild.textContent = o.meta?.title || o.name;
-    b.lastChild.textContent = o.error ? o.error : `${kind} · ${n}`;
+    const [text, tone] = fact(o, kind);
+    b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${ICONS[kind] ?? ICONS.part}</svg><span class="output-name"></span><small></small>`;
+    b.children[1].textContent = o.name;
+    b.children[2].textContent = text;
+    if (tone) b.children[2].dataset.tone = tone;
+    b.title = [o.meta?.title, `${kind}${o.files.length ? ` · ${o.files.map((f) => f.file).join(", ")}` : ""}`, o.error].filter(Boolean).join("\n");
     b.addEventListener("click", () => select(o.name));
     list.append(b);
   }
@@ -268,6 +294,7 @@ function select(name) {
 async function show() {
   const o = state.outputs.find((x) => x.name === state.selected);
   if (!o) {
+    $("caption").hidden = true;
     state.shown = null;
     state.meshes = [];
     state.record = null;
@@ -278,6 +305,8 @@ async function show() {
     return;
   }
   const kind = kindOf(o);
+  $("caption").hidden = kind === "overlay" || !o.meta?.title;
+  $("caption").textContent = o.meta?.title ?? "";
   let shownFiles = o.files;
   let frame = null;
   const seq = $("sequence");
