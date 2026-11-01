@@ -47,19 +47,26 @@ function setStatus(text) {
 
 // ------------------------------------------------------------ connection
 
-function connect(delay = 500) {
+/** Signed in? The session cookie (or, in local tests, a dev token from #t=). Else off to sign in. */
+async function signedIn() {
+  const r = await fetch("/api/me", token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+  if (r.status === 401) {
+    location.href = `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+    return false;
+  }
+  return r.ok;
+}
+
+async function connect(delay = 500) {
   if (!project) {
     setStatus("Open a project: /p/<name> (tule open -p <name>)");
     return;
   }
-  if (!token) {
-    setStatus("No access token: open this page with tule open");
-    return;
-  }
+  if (!(await signedIn().catch(() => true))) return;
   $("project-title").textContent = project;
   document.title = `${project} · Tule`;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${proto}//${location.host}/api/projects/${project}/view?t=${encodeURIComponent(token)}`);
+  ws = new WebSocket(`${proto}//${location.host}/api/projects/${project}/view${token ? `?t=${encodeURIComponent(token)}` : ""}`);
   ws.binaryType = "arraybuffer";
   ws.onopen = () => (delay = 500);
   ws.onmessage = (e) => (typeof e.data === "string" ? onText(JSON.parse(e.data)) : onMesh(e.data));

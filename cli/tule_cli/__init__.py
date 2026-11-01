@@ -1,6 +1,7 @@
 """The `tule` command line (see DESIGN.md, "`tule` CLI").
 
-    tule login --url https://tule.<account>.workers.dev --token <dev token>
+    tule login [--url https://tule.example]  sign in: approve a code in the browser once
+    tule new bracket                         create a project (tule ls lists them, tule delete removes one)
     tule up [-p bracket] [--machine cpu-1]   start the project's machine, wait until it is ready
     tule ssh [-p bracket] [cmd ...]          a shell or a command on the machine
     tule ssh --config [-p bracket]           write ~/.ssh/config so plain `ssh tule-bracket` works
@@ -9,8 +10,8 @@
     tule status | down | open | join | keys add <file>
 
 The project comes from -p, else $TULE_PROJECT, else the last one used.
-Until accounts exist (milestone 4) `tule login` stores the control plane's
-URL and its dev token in ~/.config/tule/config.json.
+`tule login` stores the control plane's URL and an API key for your account
+in ~/.config/tule/config.json ($TULE_URL and $TULE_TOKEN override them).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
+DEFAULT_URL = "https://tule.genau-mcp-relay.workers.dev"
 CONFIG_DIR = os.path.expanduser(os.environ.get("TULE_CONFIG_DIR", "~/.config/tule"))
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 KEY = os.path.join(CONFIG_DIR, "id_ed25519")
@@ -72,7 +74,7 @@ def store(**kv):
 
 def need(cfg: dict) -> tuple[str, str]:
     if not cfg.get("url") or not cfg.get("token"):
-        raise CliError("not logged in: run tule login --url <control plane URL> --token <dev token>")
+        raise CliError("not logged in: run tule login")
     return cfg["url"].rstrip("/"), cfg["token"]
 
 
@@ -155,13 +157,12 @@ def ensure_key() -> str:
 
 
 def ensure_access(p: str, s: dict):
-    """Adds the CLI's key to the project and pins the project's host key."""
+    """Adds the CLI's key to the account (once) and pins the project's host key."""
     pub = open(ensure_key() + ".pub").read().strip()
     cfg = load()
-    added = set(cfg.get("keysAdded", []))
-    if p not in added:
-        api("POST", f"/api/projects/{p}/keys", {"key": pub})
-        store(keysAdded=sorted(added | {p}))
+    if cfg.get("keyAdded") != cfg.get("url"):
+        api("POST", "/api/keys/ssh", {"key": pub, "name": f"tule CLI ({os.uname().nodename})"})
+        store(keyAdded=cfg.get("url"))
     host = HOST_PREFIX + p
     line = f"{host} {s['hostKey'].strip()}\n"
     lines = []
@@ -270,12 +271,57 @@ def cmd_proxy(args):
 
 
 def cmd_login(args):
-    url = args.url or load().get("url")
-    token = args.token or os.environ.get("TULE_TOKEN")
-    if not url or not token:
-        raise CliError("pass --url and --token (device-code sign-in comes with accounts)")
-    store(url=url.rstrip("/"), token=token)
-    print(f"tule: logged in to {url}")
+    url = (args.url or os.environ.get("TULE_URL") or load().get("url") or DEFAULT_URL).rstrip("/")
+    if args.token:  # an API key from Settings (or the dev token)
+        store(url=url, token=args.token, keyAdded=None)
+        print(f"tule: logged in to {url}")
+        return
+    req = urllib.request.Request(f"{url}/api/device/code", data=json.dumps({"client": f"tule CLI on {os.uname().nodename}"}).encode(),
+                                 method="POST", headers={"Content-Type": "application/json", "User-Agent": "tule-cli/0.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.load(r)
+    except urllib.error.URLError as e:
+        raise CliError(f"cannot reach {url}: {getattr(e, 'reason', e)}") from None
+    print(f"tule: to sign in, open {d['verification_uri_complete']}\n      and approve the code {d['user_code']}", file=sys.stderr)
+    if not args.no_browser:
+        webbrowser.open(d["verification_uri_complete"])
+    deadline = time.time() + d["expires_in"]
+    while time.time() < deadline:
+        time.sleep(d.get("interval", 2))
+        req = urllib.request.Request(f"{url}/api/device/token", data=json.dumps({"device_code": d["device_code"]}).encode(),
+                                     method="POST", headers={"Content-Type": "application/json", "User-Agent": "tule-cli/0.1"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                t = json.load(r)
+        except urllib.error.URLError:
+            continue
+        if t["status"] == "approved":
+            store(url=url, token=t["apiKey"], keyAdded=None)
+            print(f"tule: logged in to {url} as {t['email']}", file=sys.stderr)
+            return
+        if t["status"] == "expired":
+            break
+    raise CliError("the sign-in code expired; run tule login again")
+
+
+def cmd_new(args):
+    r = api("POST", "/api/projects", {"name": args.name})
+    store(project=args.name)
+    print(f"tule: created {args.name}; viewer: {r['viewer']}\n      start its machine: tule up -p {args.name}")
+
+
+def cmd_ls(args):
+    for p in api("GET", "/api/projects")["projects"]:
+        state = p["state"] if p["state"] == "stopped" else f"{p['machine']} {p['state']}"
+        print(f"{p['name']:<32} {state:<20} {p['viewer']}")
+
+
+def cmd_delete(args):
+    if args.yes != args.name:
+        raise CliError(f"this deletes {args.name}'s /workspace and every snapshot; confirm with --yes {args.name}")
+    api("DELETE", f"/api/projects/{args.name}")
+    print(f"tule: deleted {args.name}")
 
 
 def cmd_up(args):
@@ -297,14 +343,13 @@ def cmd_status(args):
 def cmd_join(args):
     p = project_of(args, load())
     r = api("POST", f"/api/projects/{p}/join")
-    url, _ = need(load())
-    print(f"TULE_URL={url} TULE_PROJECT={p} TULE_JOIN_TOKEN={r['joinToken']}")
+    print(" ".join(f"{k}={v}" for k, v in r["env"].items()))
 
 
 def cmd_open(args):
     p = project_of(args, load())
-    url, token = need(load())
-    link = f"{url}/p/{p}#t={token}"
+    url, _ = need(load())
+    link = f"{url}/p/{p}"
     print(link)
     if not args.print:
         webbrowser.open(link)
@@ -331,10 +376,15 @@ def cmd_restore(args):
 
 
 def cmd_keys(args):
-    p = project_of(args, load())
+    if args.action == "ls":
+        for k in api("GET", "/api/keys/ssh")["keys"]:
+            print(f"{k['id']}  {k['name']:<32} {k['key'][:40]}…")
+        return
+    if not args.file:
+        raise CliError("tule keys add <file.pub>")
     key = open(os.path.expanduser(args.file)).read()
-    r = api("POST", f"/api/projects/{p}/keys", {"key": key})
-    print(f"tule: {p} has {r['keys']} SSH key(s)")
+    r = api("POST", "/api/keys/ssh", {"key": key})
+    print(f"tule: SSH key {r['id']} {'added' if r.get('added') else 'was already there'}; it works on every project's machine")
 
 
 def main(argv=None):
@@ -348,9 +398,16 @@ def main(argv=None):
         sp.set_defaults(fn=fn)
         return sp
 
-    sp = add("login", cmd_login, "store the control plane URL and token", project=False)
-    sp.add_argument("--url")
-    sp.add_argument("--token")
+    sp = add("login", cmd_login, "sign in (approve a code in the browser)", project=False)
+    sp.add_argument("--url", help=f"the Tule site (default {DEFAULT_URL})")
+    sp.add_argument("--token", help="an API key from Settings instead of the browser")
+    sp.add_argument("--no-browser", action="store_true", help="only print the link")
+    sp = add("new", cmd_new, "create a project", project=False)
+    sp.add_argument("name")
+    add("ls", cmd_ls, "list your projects", project=False)
+    sp = add("delete", cmd_delete, "delete a project (its /workspace and snapshots)", project=False)
+    sp.add_argument("name")
+    sp.add_argument("--yes", metavar="NAME", help="the name again, to confirm")
     sp = add("up", cmd_up, "start (or resize) the project's machine")
     sp.add_argument("--machine", default="cpu-1", help="cpu-1 (default), cpu-2, cpu-4")
     add("down", cmd_down, "stop the project's machine")
@@ -369,9 +426,9 @@ def main(argv=None):
     sp.add_argument("--limit", type=int, default=20)
     sp = add("restore", cmd_restore, "make /workspace match a snapshot (saves the current state first)")
     sp.add_argument("id")
-    sp = add("keys", cmd_keys, "add an SSH public key: tule keys add ~/.ssh/id_ed25519.pub")
-    sp.add_argument("action", choices=["add"])
-    sp.add_argument("file")
+    sp = add("keys", cmd_keys, "SSH keys: tule keys ls | tule keys add ~/.ssh/id_ed25519.pub", project=False)
+    sp.add_argument("action", choices=["add", "ls"])
+    sp.add_argument("file", nargs="?")
 
     args = ap.parse_args(argv)
     if args.cmd == "ssh" and args.command[:1] == ["--"]:

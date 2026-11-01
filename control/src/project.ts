@@ -9,8 +9,13 @@
 // with kind 1 = SSH bytes of stream id, 2 = a mesh for request id. A viewer
 // gets meshes as [rid u32][payload] with its own request id.
 //
-// Stored: the project's state (machine, timings, join token hash), its SSH
-// keys and host key (so the host key survives restarts), the last outputs
+// Identity: the project id ("p_..." names this object), its name and owner
+// (a user of the Accounts object), set by init() when the project is made. The
+// machine dials /api/projects/<id>/agent; SSH keys are the owner's (Accounts),
+// sent to the machine on connect and when they change.
+//
+// Stored: the project's state (machine, timings, join token hash), its host
+// key (so the host key survives restarts), the last outputs
 // index (so the viewer lists outputs while the machine is down) and the index
 // of workspace snapshots ("snap:<id>": when, why, how many files and bytes;
 // the manifests and chunks are in R2, see index.ts).
@@ -26,6 +31,8 @@
 // agent answers {t: "reply", rid, ...}. A machine is "running" once its agent
 // has restored /workspace and sent {t: "ready"}.
 import { DurableObject } from "cloudflare:workers";
+import type { Accounts } from "./accounts";
+import { stub } from "./rpc";
 
 /** Machine names (DESIGN.md) to Cloudflare instance types. */
 const MACHINES: Record<string, "standard-2" | "standard-3" | "standard-4"> = {
@@ -39,7 +46,10 @@ const SSH = 1;
 const MESH = 2;
 
 type State = {
+  id?: string; // p_...
   name?: string;
+  owner?: string; // user id
+  billedUntil?: number; // machine time is added to the owner's usage up to here
   machine?: string; // "cpu-1", or "external" for a machine started with a join token
   joinHash?: string;
   upAt?: number; // start() called
@@ -74,7 +84,6 @@ function frame(kind: number, id: number, payload: Uint8Array): Uint8Array {
 
 export class Project extends DurableObject<Env> {
   state: State = {};
-  keys: string[] = [];
   outputs: unknown[] = [];
   pending = new Map<number, { ws: WebSocket; rid: number }>(); // mesh requests in flight
   asks = new Map<number, (reply: Result) => void>(); // commands to the agent awaiting a reply
@@ -84,7 +93,6 @@ export class Project extends DurableObject<Env> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.state = (await ctx.storage.get<State>("state")) ?? {};
-      this.keys = (await ctx.storage.get<string[]>("keys")) ?? [];
       this.outputs = (await ctx.storage.get<unknown[]>("outputs")) ?? [];
       // the timeout resets when the object restarts (a deploy)
       if (ctx.container?.running) await ctx.container.setInactivityTimeout(IDLE_MS + 2 * CHECK_MS);
@@ -118,8 +126,60 @@ export class Project extends DurableObject<Env> {
 
   // ------------------------------------------------------------ RPC (from the Worker)
 
-  async status(name: string): Promise<Result> {
-    this.state.name ??= name;
+  accounts() {
+    return stub<Accounts>(this.env.ACCOUNTS, "global");
+  }
+
+  /** Called once when the project is created. */
+  async init(id: string, name: string, owner: string) {
+    this.state = { ...this.state, id, name, owner };
+    await this.save();
+  }
+
+  async rename(name: string) {
+    this.state.name = name;
+    await this.save();
+    this.broadcast();
+  }
+
+  /** Stops the machine and forgets everything: storage here and the project's files in R2. */
+  async destroyProject(): Promise<Result> {
+    await this.stopMachine("delete");
+    const id = this.state.id;
+    if (id) {
+      let cursor: string | undefined;
+      do {
+        const l = await this.env.WORKSPACES.list({ prefix: `projects/${id}/`, cursor, limit: 1000 });
+        if (l.objects.length) await this.env.WORKSPACES.delete(l.objects.map((o) => o.key));
+        cursor = l.truncated ? l.cursor : undefined;
+      } while (cursor);
+    }
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    this.state = {};
+    this.outputs = [];
+    return { deleted: true };
+  }
+
+  outputsIndex(): unknown[] {
+    return this.outputs;
+  }
+
+  /** Adds the machine time since the last bill to the owner's usage. */
+  async bill() {
+    const s = this.state;
+    if (!s.owner || !s.upAt) return;
+    const from = Math.max(s.upAt, s.billedUntil ?? 0);
+    const now = Date.now();
+    if (now <= from) return;
+    const kind = s.machine?.startsWith("gpu") ? "gpu" : "cpu";
+    if (s.machine !== "external") await this.accounts().addUsage(s.owner, kind, (now - from) / 1000);
+    s.billedUntil = now;
+    await this.save();
+  }
+
+  async status(): Promise<Result> {
+    const name = this.state.name ?? null;
     const c = this.ctx.container;
     const agent = !!this.agent();
     const running = !!c?.running;
@@ -139,14 +199,13 @@ export class Project extends DurableObject<Env> {
       restoreMs: s.restoreMs ?? null,
       snapshot: (await this.latestSnapshot()) ?? null,
       hostKey: hostKey?.public ?? null,
-      keys: this.keys.length,
       outputs: this.outputs.length,
       containers: !!c,
     };
   }
 
-  async up(name: string, machine: string, origin: string): Promise<Result> {
-    this.state.name = name;
+  async up(machine: string, origin: string): Promise<Result> {
+    const name = this.state.name;
     const instance = MACHINES[machine];
     if (!instance)
       return { error: `unknown machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(MACHINES).join(", ")}` };
@@ -157,49 +216,42 @@ export class Project extends DurableObject<Env> {
         hint: "run wrangler dev with containers enabled, or start a machine yourself with a join token (POST .../join)",
       };
     if (c.running) {
-      if (this.state.machine === machine) return this.status(name);
+      if (this.state.machine === machine) return this.status();
       // resize: the old machine saves /workspace, the new one restores it
       await this.stopMachine("resize");
     }
+    if (this.state.owner) {
+      const quota = Number(this.env.CPU_HOURS_MONTH || 100);
+      const u = await this.accounts().usage(this.state.owner);
+      if (u.cpuHours >= quota)
+        return { error: `this month's CPU machine time is used up (${u.cpuHours} of ${quota} h)`, hint: "it renews on the 1st; GPU machines on your RunPod account are not limited by it" };
+    }
     const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
-    this.state = { ...this.state, machine, joinHash: await sha256(token), upAt: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lastActive: Date.now() };
+    this.state = { ...this.state, machine, joinHash: await sha256(token), upAt: Date.now(), billedUntil: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lastActive: Date.now() };
     await this.save();
     c.start({
       image: c.images.cpu,
       instance,
       enableInternet: true, // the agent dials out; pip and git need the internet too
-      env: { TULE_URL: origin, TULE_PROJECT: name, TULE_JOIN_TOKEN: token },
+      env: { TULE_URL: origin, TULE_PROJECT: this.state.id ?? "", TULE_NAME: name ?? "", TULE_JOIN_TOKEN: token },
     });
     await c.setInactivityTimeout(IDLE_MS + 2 * CHECK_MS);
     await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
-    return this.status(name);
+    return this.status();
   }
 
-  async down(name: string): Promise<Result> {
+  async down(): Promise<Result> {
     await this.stopMachine("down");
-    return this.status(name);
+    return this.status();
   }
 
   /** A join token for a machine started elsewhere (a RunPod pod, a local test). */
-  async join(name: string): Promise<Result> {
-    this.state.name = name;
+  async join(): Promise<Result> {
+    const name = this.state.name;
     const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
     this.state = { ...this.state, machine: this.ctx.container?.running ? this.state.machine : "external", joinHash: await sha256(token), upAt: Date.now(), helloAt: undefined, agentStarted: undefined, readyAt: undefined };
     await this.save();
-    return { project: name, joinToken: token, env: { TULE_PROJECT: name, TULE_JOIN_TOKEN: token } };
-  }
-
-  async addKey(name: string, key: string): Promise<Result> {
-    this.state.name = name;
-    const k = key.trim().split(/\s+/).slice(0, 3).join(" ");
-    if (!/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+/.test(k))
-      return { error: "not an SSH public key", hint: "pass the contents of ~/.ssh/id_ed25519.pub (ssh-keygen -t ed25519 makes one)" };
-    if (!this.keys.includes(k)) {
-      this.keys.push(k);
-      await this.ctx.storage.put("keys", this.keys);
-      await this.sendConfig();
-    }
-    return { project: name, keys: this.keys.length };
+    return { project: name, joinToken: token };
   }
 
   /** Whether `token` is the current machine's join token. */
@@ -209,7 +261,8 @@ export class Project extends DurableObject<Env> {
 
   // ------------------------------------------------------------ snapshots
 
-  async addSnapshot(name: string, reason: string, manifest: Record<string, unknown>): Promise<Result> {
+  async addSnapshot(reason: string, manifest: Record<string, unknown>): Promise<Result> {
+    const name = this.state.id ?? "";
     const id = `${Date.now().toString(36).padStart(9, "0")}-${b64url(crypto.getRandomValues(new Uint8Array(3))).toLowerCase().replace(/[^0-9a-z]/g, "0")}`;
     const files = (manifest.files ?? {}) as Record<string, { s?: number }>;
     const rec: Snapshot = {
@@ -254,8 +307,8 @@ export class Project extends DurableObject<Env> {
     });
   }
 
-  async command(name: string, msg: Result): Promise<Result> {
-    this.state.name ??= name;
+  async command(msg: Result): Promise<Result> {
+    const name = this.state.name;
     const r = await this.ask(msg, 600_000);
     this.touch();
     return { project: name, ...r };
@@ -277,6 +330,7 @@ export class Project extends DurableObject<Env> {
         console.log(JSON.stringify({ event: "destroy", error: String(e) }));
       }
     }
+    await this.bill();
     this.state = { ...this.state, joinHash: undefined, stoppedAt: Date.now() };
     await this.save();
     this.broadcast();
@@ -285,6 +339,7 @@ export class Project extends DurableObject<Env> {
   async alarm() {
     const c = this.ctx.container;
     if (!c?.running && !this.agent()) return;
+    await this.bill();
     const idle = Date.now() - (this.state.lastActive ?? 0);
     if (this.sessions() === 0 && idle > IDLE_MS) {
       console.log(JSON.stringify({ event: "idle-stop", project: this.state.name, idleMin: Math.round(idle / 60_000) }));
@@ -312,7 +367,7 @@ export class Project extends DurableObject<Env> {
     } else if (what === "ssh") {
       const agent = this.agent();
       if (!agent) {
-        const st = await this.status(this.state.name ?? "");
+        const st = await this.status();
         return new Response(`the project's machine is ${st.state}; start it with tule up\n`, { status: 503 });
       }
       const sid = crypto.getRandomValues(new Uint32Array(1))[0];
@@ -322,7 +377,7 @@ export class Project extends DurableObject<Env> {
       this.touch();
     } else if (what === "view") {
       this.ctx.acceptWebSocket(server, ["view"]);
-      server.send(JSON.stringify({ t: "outputs", outputs: this.outputs, status: await this.status(this.state.name ?? "") }));
+      server.send(JSON.stringify({ t: "outputs", outputs: this.outputs, status: await this.status() }));
     } else {
       return new Response("not found\n", { status: 404 });
     }
@@ -468,15 +523,17 @@ export class Project extends DurableObject<Env> {
     }
   }
 
+  /** The owner's SSH keys and the host key, to the machine (on connect and when keys change). */
   async sendConfig() {
     const agent = this.agent();
     if (!agent) return;
     const hostKey = (await this.ctx.storage.get<HostKey>("hostKey")) ?? null;
-    agent.send(JSON.stringify({ t: "config", keys: this.keys, hostKey }));
+    const keys = this.state.owner ? (await this.accounts().sshKeys(this.state.owner)).map((k) => k.key) : [];
+    agent.send(JSON.stringify({ t: "config", keys, hostKey }));
   }
 
   broadcast() {
-    void this.status(this.state.name ?? "").then((status) => {
+    void this.status().then((status) => {
       const msg = JSON.stringify({ t: "outputs", outputs: this.outputs, status });
       for (const v of this.ctx.getWebSockets("view")) {
         try {

@@ -3,7 +3,9 @@
   "private": true,
   "description": "Tule's control plane: a Worker with one Project Durable Object per project, which owns the project's machine; see DESIGN.md",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npm --prefix ../web run build && wrangler deploy",
@@ -13,5 +15,8 @@
   "devDependencies": {
     "typescript": "5.9.3",
     "wrangler": "4.156.0"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.4"
   }
 }
