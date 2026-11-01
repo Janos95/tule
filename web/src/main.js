@@ -249,6 +249,10 @@ function fact(o, kind) {
   return ["", ""];
 }
 
+// the parts tree moves into the list under the selected output; the list is rebuilt often,
+// which detaches it, so keep the element itself (a lookup by id would find nothing then)
+const partsTree = $("parts");
+
 function renderList() {
   const list = $("output-list");
   list.textContent = "";
@@ -271,7 +275,7 @@ function renderList() {
     b.addEventListener("click", () => select(o.name));
     list.append(b);
     // an assembly's parts open under its row
-    if (o.name === state.selected) list.append($("parts"));
+    if (o.name === state.selected) list.append(partsTree);
   }
 }
 
