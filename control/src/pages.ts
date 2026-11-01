@@ -27,7 +27,7 @@ const CSS = `${PALETTE}
 header{display:flex;align-items:center;gap:14px;height:52px;padding:0 16px;border-bottom:1px solid var(--line)}
 header .brand{display:flex;gap:8px;align-items:center;color:inherit;text-decoration:none;font-weight:700;font-size:17px}
 header nav{display:flex;gap:14px;margin-left:auto;align-items:center}header nav a{color:var(--muted);text-decoration:none}header nav a:not(.button):hover{color:var(--text)}
-main{max-width:860px;margin:0 auto;padding:24px 16px 64px}h1{font-size:22px;margin:0 0 16px}h2{font-size:17px;margin:32px 0 10px}
+main{max-width:860px;margin:0 auto;padding:24px 16px 64px}h1{font-size:18px;font-weight:600;letter-spacing:-0.01em;margin:8px 0 12px}h2{font-size:15px;font-weight:600;margin:32px 0 10px}
 a{color:var(--link)}code{font:13px var(--mono);background:var(--panel);padding:1px 5px;border-radius:4px}
 pre{font:13px/1.45 var(--mono);background:var(--panel);padding:12px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
 .muted{color:var(--muted)}.warn{color:var(--warn)}.ok{color:var(--ok)}
@@ -161,7 +161,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
     : html`<div class="plist">${create}</div>
       <h2>Connect your agent</h2>
       ${connect(origin)}`;
-  return page("Your projects", body, 200, user);
+  return page("Projects", body, 200, user);
 }
 
 export type SettingsData = {
