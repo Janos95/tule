@@ -395,9 +395,94 @@ outputs/
   (cached by content hash) and the viewer updates; a running sequence grows
   frame by frame.
 - **History for free:** outputs are part of `/workspace`, so the viewer can
-  show any output as of any snapshot or commit.
+  show any output as of any snapshot. They are not in git (they are
+  generated; see "Planned: project layout, builds and output types").
 - `tule.outputs` has small helpers that write these folders; nothing requires
   them.
+
+#### Planned: project layout, builds and output types (2026-11-02)
+
+Not built. Outputs can be out of step with the code that makes them (edit a
+script and forget to run it; a save merges code nobody ran), and nothing
+says so. The plan: a fixed layout, one build command that knows what made
+every output, and a viewer for every kind of output.
+
+**Layout.** Files are sorted by role, not by type:
+
+```
+inputs/    from outside the project: supplier STEP, scans, datasheets,
+           catalogs, customer load cases, and the agent's research results
+           (read-only to scripts; big files in LFS)
+src/       scripts; src/<name>.py makes outputs/<name>/ (a part, an
+           assembly, a BOM, an FEA run: all alike)
+lib/       shared code the scripts import; makes no outputs
+outputs/   made by scripts only, never edited by hand, not in git
+```
+
+- Choices are code, not data: a wall thickness, a safety factor, which load
+  case to run live in the scripts (or `lib/params.py`). `inputs/` holds only
+  facts nobody here chose.
+- The template starts with `src/` and `outputs/`; the others appear when
+  needed. `main.py` becomes `src/<example>.py`.
+
+**Scripts are functions.** A script reads inputs, code and other outputs, and
+writes only its own output folder. An assembly is a script that writes
+several files. No registry: the file name is the target, and extra facts
+(title, units) go in the script or `output.json`.
+
+**`tule build`** runs the scripts whose fingerprint changed and skips the
+rest:
+
+- the fingerprint covers what the script actually read, recorded while it
+  runs (an import hook and file-open tracking): the script, the local modules
+  it imports, the files it reads in `inputs/` and `outputs/`, and the version
+  of the `tule` library. Nothing is declared, so nothing can be forgotten;
+- a script that reads `outputs/bracket/` gets `bracket` built first, so the
+  order needs no declaring either;
+- each script writes into a fresh temporary folder that replaces its output
+  only when it succeeds; writing anywhere else is an error;
+- the fingerprint is stored with the output, so the agent and the viewer can
+  tell an output is stale without running anything.
+
+**Agent work is not re-run.** Finding suppliers, choosing a bearing or reading
+a datasheet is slow, costs money and takes judgment. Its result is saved in
+`inputs/` (e.g. `inputs/suppliers/bracket.json`) like anything imported, and
+scripts read it (`src/bom.py` puts prices in the BOM). The file records what
+it was based on ("outputs/bracket at fingerprint X"), so when the bracket
+changes the build reports it as possibly stale. The agent or the user then
+redoes the work or confirms it still holds; confirming updates only the
+"based on" note. Nothing ever re-runs an agent by itself.
+
+**Output types.** Every output gets a structured view; the file type decides
+which, and `output.json` only adds meaning (titles, units, colors):
+
+| Type | Files | View |
+|---|---|---|
+| geometry | STEP, STL, 3MF, OBJ, glTF | 3D: a part, or an assembly when there are several files |
+| sequence | numbered geometry files | 3D with a slider and a plot of the values |
+| overlay | geometry plus per-face values | 3D colored by value, with a legend |
+| table | CSV | a sortable table (BOM, results, supplier lists) |
+| chart | `*.vl.json` (Vega-Lite) | the chart, drawn by Tule |
+| document | Markdown, PDF | the rendered page (reports, datasheets, notes) |
+| image | PNG, JPG, SVG | the image |
+| anything else | any file | listed with a download, never hidden |
+
+- **Charts are Vega-Lite**, not HTML: data plus a description of how to show
+  it. No agent code runs in the page; Tule renders it with its own colors,
+  dark mode and phone layout; agents already know the format. Data comes
+  only from files in the same output folder (`"data": {"url":
+  "results.csv"}`), never the network. Arbitrary HTML was considered and
+  left out: it needs a separate origin and a network sandbox to be safe, and
+  it cannot link to the rest of the viewer.
+- **Links between views:** a table column or chart field that names an
+  output (`part: bracket-v3`) links to it, so clicking a BOM row or a point
+  on a Pareto chart selects that part in 3D.
+- **Inputs use the same views:** a supplier STEP opens in 3D, a datasheet
+  PDF as a page.
+- **Freshness is shown everywhere:** a stale output or a possibly stale agent
+  result says what changed ("based on an older bracket").
+- Later: 2D drawings (DXF), per-vertex results (stress), variants side by
+  side.
 
 ### Isolation and quotas
 
@@ -783,4 +868,5 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
+| Project layout and outputs | `inputs/`, `src/`, `lib/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; agent results live in `inputs/`, are flagged when stale and never re-run automatically; charts as Vega-Lite, not HTML (2026-11-02; see "Planned: project layout, builds and output types") |
 | Machines | per project, several at once (2026-11-01): each with its own autosaved copy, saving and merging through git (see "Several machines per project, saves in git"); one Tule cloud machine per project. Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's save. The projects list shows each machine under its project: an icon and where it runs (Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token). |
