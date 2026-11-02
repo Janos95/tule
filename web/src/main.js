@@ -804,16 +804,37 @@ async function show() {
     const progress = () => state.shown === key && todo.length > 3 && setStatus(`Loading ${done} / ${todo.length} files${mb >= 10 ? ` (${Math.round(mb)} MB)` : ""}…`);
     progress();
     for (const f of todo) request(f).then(() => (done++, progress()), () => {});
-    const loaded = await Promise.all(shownFiles.map(request));
-    if (state.shown !== key) return;
     const named = (m, f, i) => {
       const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
       const matrix = (kind === "assembly" || placed) && entry?.transform != null ? placement(entry.transform, f.file) : null;
       return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color, matrix };
     };
+    // a big assembly draws its parts as they come in (a few times a second), not after the last one
+    const got = new Array(shownFiles.length);
+    let drawn = false;
+    let timer = null;
+    const drawSoFar = () => {
+      timer = null;
+      if (state.shown !== key) return;
+      viewer?.setMeshes(got.flatMap((ps, i) => (ps ? ps.map((m) => named(m, shownFiles[i], i)) : [])), first && !drawn ? "fresh" : "auto", {});
+      drawn = true;
+    };
+    // an assembly shows the parts it could read and names the rest; a part or frame fails as a whole
+    const failed = [];
+    const loaded = await Promise.all(shownFiles.map((f, i) => request(f).then((ps) => {
+      got[i] = ps;
+      if (kind === "assembly" && todo.length > 8 && !timer) timer = setTimeout(drawSoFar, drawn ? 500 : 150);
+      return ps;
+    }, (e) => {
+      if (kind !== "assembly") throw e;
+      failed.push(`${f.file}: ${e.message}`);
+      return [];
+    })));
+    clearTimeout(timer);
+    if (state.shown !== key) return;
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
-    viewer?.setMeshes(all, first ? "fresh" : "auto", style, placed ? studyBox(o, shownFiles, loaded) : null);
+    viewer?.setMeshes(all, first && !drawn ? "fresh" : "auto", style, placed ? studyBox(o, shownFiles, loaded) : null);
     const field = (name) => {
       const f = o.fields.find((x) => x.file === name);
       return f ? readFile(f) : Promise.reject(new Error("not in the output"));
@@ -827,7 +848,7 @@ async function show() {
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles${grid}`;
-    setStatus("");
+    setStatus(failed.length ? `Could not show ${failed.length} of ${shownFiles.length} files: ${failed[0]}` : "");
   } catch (e) {
     if (state.shown === key) {
       state.shown = null;
