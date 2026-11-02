@@ -284,3 +284,15 @@ def test_assembly():
     assert approx(moved["a"].bounds[0].x, 10)
     with pytest.raises(TuleError):
         a["missing"]
+
+
+def test_distance_and_clashes():
+    a = box(10).named("a")
+    assert a.distance(box(10).at(15, 0, 0)) == pytest.approx(5)
+    assert a.distance(box(2).at(4, 4, 4)) == 0  # inside
+    pin = cylinder(1, 12).at(5, 5, -1).named("pin")
+    asm = Assembly(a, box(10).at(8, 0, 0).named("b"), box(10).at(10, 0, 0).named("c"), pin)
+    hits = asm.clashes()
+    assert [(x, y) for x, y, _ in hits] == [("b", "c"), ("a", "b"), ("a", "pin")]  # largest first; c only touches a
+    assert hits[1][2] == pytest.approx(200)
+    assert [(x, y) for x, y, _ in asm.clashes(ignore=[("pin", "a")])] == [("b", "c"), ("a", "b")]

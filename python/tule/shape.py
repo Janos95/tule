@@ -491,6 +491,16 @@ class Shape:
         static(BRepGProp, "SurfaceProperties")(self._s, p)
         return p.Mass()
 
+    def distance(self, other: "Shape") -> float:
+        """The smallest gap to ``other``; 0 when they touch or overlap."""
+        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+        d = BRepExtrema_DistShapeShape(self._s, other._s)
+        d.Perform()
+        if not d.IsDone():
+            raise TuleError("could not measure the distance", op="distance")
+        return 0.0 if d.InnerSolution() else max(0.0, d.Value())
+
     @property
     def center_of_mass(self) -> Vec:
         p = GProp_GProps()

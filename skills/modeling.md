@@ -29,7 +29,7 @@ outputs.part("bracket", part)
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)` for many.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
-- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`.
+- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (the gap; 0 if touching). `assembly.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`: run it on every frame of a motion study.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
 ## Selecting faces and edges
