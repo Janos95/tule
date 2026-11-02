@@ -112,6 +112,25 @@ def _folder(name: str) -> str:
     return d
 
 
+def picture(item: Union[Shape, Assembly], path: str, view: str = "iso", size: int = 1200,
+            caption: str = "", labels: bool = False) -> str:
+    """A PNG of a shape or assembly, drawn as ``tule screenshot`` draws it: for documents (an
+    assembly guide's steps, ``![](step-1.png)`` in a ``.md`` beside it). ``view``: iso, front,
+    back, left, right, top, bottom."""
+    try:
+        from tule_cli.machine import items_to_parts
+        from tule_cli.render import render
+    except ImportError:
+        raise TuleError("picture needs the tule CLI (it is on every Tule machine)", op="picture") from None
+    import io as _io
+
+    items = [(n.rsplit("/", 1)[-1], s) for n, s in item.parts()] if isinstance(item, Assembly) else [(item.name or "part", item)]
+    img, _ = render(items_to_parts(items), view, size, labels, None, caption)
+    buf = _io.BytesIO()
+    img.save(buf, "PNG")
+    return write_atomic(str(path), buf.getvalue())
+
+
 class Folder(str):
     """A folder path: a str that also takes ``/`` like a Path (``outputs.folder() / "bom.csv"``)."""
 

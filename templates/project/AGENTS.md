@@ -188,7 +188,7 @@ Read the message, change the input, rerun. See `tule docs occt` for what usually
 
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and any other files (tables, charts, documents, images: see below). `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it within a second.
+The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and other files (tables, charts, documents, images). `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it within a second.
 
 ```
 outputs/
@@ -223,7 +223,7 @@ outputs.overlay("plate-loads", part, title="Load case 1",
                 arrows=[{"at": (20, 10, 5), "dir": (0, 0, -1), "label": "200 N"}])
 ```
 
-Any tool may write the files directly into `outputs.folder()` instead (a solver's STL frames): temporary name, then `os.replace`; `output.json` last.
+Other tools may write into `outputs.folder()` directly: temporary name, `os.replace`, `output.json` last.
 
 ## `output.json`
 
@@ -249,7 +249,7 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place); PDF, text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF, text, images; anything else: a download.
 
 ```python
 import json
@@ -263,7 +263,7 @@ with open(f"{d}/mass.vl.json", "w") as f:
                             "y": {"field": "mass_g", "type": "quantitative"}}}, f)
 ```
 
-No HTML or network: chart data is a file beside it or inline `values`; no styling. A value naming an output (a BOM's `part` column) links to it.
+No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it.
 
 ## Looking at outputs yourself
 

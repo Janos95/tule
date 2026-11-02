@@ -143,12 +143,17 @@ def load_items(path: str) -> list[tuple[str, object]]:
 
 
 def to_parts(path: str, color: str | None = None, name: str | None = None):
+    return items_to_parts(load_items(path), color, name)
+
+
+def items_to_parts(items, color: str | None = None, name: str | None = None):
+    """Meshes to draw for [(name, Shape or STL triangles)]."""
     import numpy as np
 
     from .render import Part
 
     out = []
-    for nm, item in load_items(path):
+    for nm, item in items:
         if isinstance(item, np.ndarray):  # STL
             out.append(Part(name or nm, item.reshape(-1, 3), smooth_normals(item),
                             np.arange(3 * len(item)).reshape(-1, 3), np.zeros(len(item), np.int64),

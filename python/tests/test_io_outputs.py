@@ -186,3 +186,11 @@ def test_overlay_values_scale_and_info(outdir):
         outputs.part("x", part, info={"bad": [1, 2]})
     with pytest.raises(TuleError, match="scale is a dict"):
         outputs.overlay("y", part, faces={0: 1.0}, scale={"colour": "red"})
+
+
+def test_picture(tmp_path):
+    pytest.importorskip("tule_cli")
+    from PIL import Image
+
+    p = outputs.picture(Assembly(box(10).named("a", "#4a8"), box(5).at(12, 0, 0)), tmp_path / "s.png", view="top", size=400)
+    assert Image.open(p).width == 400
