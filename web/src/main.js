@@ -568,6 +568,7 @@ function entry(list, o, group = null) {
         r.setAttribute("aria-current", String(x.id === v?.id));
         r.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${x.type === "geometry" ? iconOf({ ...o, docs: [] }) : TYPE_ICONS[x.type] ?? TYPE_ICONS.file}</svg><span></span>`;
         r.children[1].textContent = x.label;
+        r.title = x.label; // a long file name is cut short in the row
         r.addEventListener("click", () => selectView(x.id));
         under.append(r);
         // an assembly's parts open under its 3D view (the tree hides itself for a single part)

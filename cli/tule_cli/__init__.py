@@ -279,15 +279,21 @@ def write_ssh_config(p: str):
             block.append(f"  {key} {val}")
         else:
             block.append(f"  IdentityFile {v}")
-    text = open(path).read() if os.path.exists(path) else ""
+    try:
+        text = open(path).read() if os.path.exists(path) else ""
+    except OSError as e:
+        raise CliError(f"cannot read {path} ({e.strerror}); without it, tule ssh -p {p} -- COMMAND works") from None
     start, end = f"# tule {p} begin\n", f"# tule {p} end\n"
     if start in text:
         a = text.index(start)
         b = text.index(end, a) + len(end)
         text = text[:a] + text[b:]
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(text.rstrip("\n") + ("\n\n" if text.strip() else "") + start + "\n".join(block) + "\n" + end)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text.rstrip("\n") + ("\n\n" if text.strip() else "") + start + "\n".join(block) + "\n" + end)
+    except OSError as e:
+        raise CliError(f"cannot write {path} ({e.strerror}); without it, tule ssh -p {p} -- COMMAND works") from None
     # ssh reads the real home's config, not $HOME's (an agent's sandbox may set HOME to its folder)
     real = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".ssh", "config") if pwd else path
     f = "" if os.path.realpath(path) == os.path.realpath(real) else f"-F {path} "
