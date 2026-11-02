@@ -141,9 +141,11 @@ export async function mcp(req: Request, env: Env, userId: string): Promise<Respo
   const meta = (params._meta ?? {}) as Record<string, unknown>;
   const modern = typeof meta[META_VERSION] === "string";
   const ok = (result: Record<string, unknown>) => json({ jsonrpc: "2.0", id, result: { resultType: "complete", ...result } });
+  // the pages stop showing "Connect your agent": on the first call any client makes (older
+  // clients start with initialize, newer ones with server/discover; tools/list either way)
+  if (["initialize", "server/discover", "tools/list"].includes(msg.method)) await accounts(env).agentConnected(userId);
   switch (msg.method) {
     case "initialize": {
-      await accounts(env).agentConnected(userId); // the pages stop showing "Connect your agent"
       const asked = params.protocolVersion;
       const version = typeof asked === "string" && LEGACY.includes(asked) ? asked : LEGACY[0];
       return ok({ protocolVersion: version, capabilities: { tools: { listChanged: false } }, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS });
