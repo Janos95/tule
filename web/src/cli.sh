@@ -40,7 +40,7 @@ if [ -n "$UV" ]; then
   TULE="$("$UV" tool dir --bin)/tule"
 fi
 [ -x "$TULE" ] || die "installed, but cannot find the tule command (looked for $TULE)"
-have tule || say "tule is at $TULE; add $(dirname "$TULE") to PATH"
+if [ "$(command -v tule 2>/dev/null)" = "$TULE" ]; then say "installed: $TULE"; else say "installed: $TULE (not on PATH: add $(dirname "$TULE") to it, or run it by this path)"; fi
 
 if [ -n "$CODE" ]; then
   exec "$TULE" login --url "$URL" --code "$CODE"

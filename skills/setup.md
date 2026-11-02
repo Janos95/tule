@@ -34,7 +34,7 @@ The project name comes from `-p`, else `$TULE_PROJECT`, else the last one used.
 tule ssh -p bracket                     # a shell (starts the machine if needed)
 tule ssh -p bracket -- tule build      # one command (or just: tule build -p bracket)
 tule ssh -p bracket --machine gpu-rtx4090   # one of several machines
-tule ssh -p bracket --config            # then plain `ssh tule-bracket.cloud`, `scp`, `rsync`, editors' remote SSH
+tule ssh -p bracket --config            # then plain `ssh tule-bracket` (`tule-bracket.<machine>` when several run), `scp`, `rsync`
 ```
 
 The CLI makes its own key (`~/.config/tule/id_ed25519`) and adds it to the project on first use; `tule keys add ~/.ssh/id_ed25519.pub -p bracket` adds another. The machine's host key is pinned in `~/.config/tule/known_hosts`. Everything goes through one HTTPS tunnel: no ports to open, and it works wherever the Tule host is reachable.

@@ -44,7 +44,10 @@ PORT = int(os.environ.get("TULE_QA_PORT", "8788"))
 URL = f"http://127.0.0.1:{PORT}"
 MACHINE_URL = f"http://host.docker.internal:{PORT}"
 IMAGE = os.environ.get("TULE_QA_IMAGE", "tule-runtime:dev")
-TURN_MINUTES = 25
+TURN_MINUTES = 40
+# the Codex CLI of the ChatGPT app is newer than Homebrew's and knows the newest models
+APP_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+CODEX = os.environ.get("TULE_QA_CODEX") or (APP_CODEX if os.path.exists(APP_CODEX) else "codex")
 CACHE = QA / ".cache"
 
 
@@ -76,22 +79,28 @@ def start_control(night: Path) -> subprocess.Popen:
 class Guest:
     """A fresh guest account, as a first visit makes one: a session cookie and the API."""
 
-    def __init__(self):
+    def __init__(self, ip: str | None = None, session: str | None = None):
         self.jar = CookieJar()
         self.http = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
         # each guest from its own "network", so the per-network guest limit does not stop the night
-        self.ip = f"10.{uuid.uuid4().int % 250}.{uuid.uuid4().int % 250}.{uuid.uuid4().int % 250}"
-        self.page("/")
-        if not any(c.name == "tule_session" for c in self.jar):
-            raise RuntimeError("no guest session (guest limit?)")
+        self.ip = ip or f"10.{uuid.uuid4().int % 250}.{uuid.uuid4().int % 250}.{uuid.uuid4().int % 250}"
+        self.session = session
+        if not session:
+            self.page("/")
+            self.session = next((c.value for c in self.jar if c.name == "tule_session"), None)
+            if not self.session:
+                raise RuntimeError("no guest session (guest limit?)")
+
+    def cookie(self) -> dict:
+        return {"Cookie": f"tule_session={self.session}"} if self.session else {}
 
     def page(self, path: str) -> str:
-        req = urllib.request.Request(URL + path, headers={"CF-Connecting-IP": self.ip})
+        req = urllib.request.Request(URL + path, headers={"CF-Connecting-IP": self.ip, **self.cookie()})
         return self.http.open(req, timeout=30).read().decode()
 
     def api(self, method: str, path: str, body: dict | None = None) -> dict:
         req = urllib.request.Request(URL + path, method=method, data=json.dumps(body or {}).encode() if body is not None else None,
-                                     headers={"Content-Type": "application/json", "Origin": URL, "CF-Connecting-IP": self.ip})
+                                     headers={"Content-Type": "application/json", "Origin": URL, "CF-Connecting-IP": self.ip, **self.cookie()})
         try:
             r = self.http.open(req, timeout=120).read()
         except urllib.error.HTTPError as e:
@@ -167,13 +176,14 @@ def agent_env(home: Path, key: str) -> dict:
 
 
 def codex_turn(home: Path, env: dict, msg: str, session: str | None, out: Path) -> tuple[str, str | None]:
-    opts = ["--json", "--skip-git-repo-check", "--ignore-user-config", "--disable", "apps",
+    opts = ["--json", "--skip-git-repo-check", "--ignore-user-config", "--disable", "apps", "-c", 'web_search="live"',
+            *(["-m", env["TULE_QA_MODEL"]] if env.get("TULE_QA_MODEL") else []),
             "-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true",
             "-c", f"sandbox_workspace_write.writable_roots=[{json.dumps(str(CACHE))}]",
             "-c", f'mcp_servers.tule.url="{URL}/mcp"', "-c", 'mcp_servers.tule.bearer_token_env_var="TULE_QA_KEY"',
             "-c", 'mcp_servers.tule.default_tools_approval_mode="approve"',  # a user would click Allow
             "-o", str(out.with_suffix(".last.txt"))]
-    cmd = ["codex", "exec", "resume", *opts, session, msg] if session else ["codex", "exec", *opts, msg]
+    cmd = [CODEX, "exec", "resume", *opts, session, msg] if session else [CODEX, "exec", *opts, msg]
     run_logged(cmd, home, env, out)
     for line in out.read_text().splitlines():
         try:
@@ -411,7 +421,239 @@ def report(night: Path):
         (night / "report.md").write_text("\n".join(lines) + "\n")
 
 
+# ---------------------------------------------------------------- turn by turn (someone plays the user)
+#
+#   run.py serve [--no-image]                    build the image, start the control plane; prints the night
+#   run.py start <night> <name> [--model M] [--scenario S | --file DEST=SRC ... --setup CMD ...]
+#   run.py say <run> "message"                   send the user's message; returns at once
+#   run.py wait <run> [--max 540]                the reply and what the agent did, once the turn is over
+#   run.py shell <run> "cmd"                     a command on the run's machine, in /workspace
+#   run.py shot <run> [/path]                    a screenshot of a page as the user sees it
+#   run.py finish <run>                          the project afterwards, the logs; removes the machine
+#   run.py stop <night>                          stops the control plane
+
+
+def state(run: Path) -> dict:
+    return json.loads((run / "state.json").read_text())
+
+
+def save_state(run: Path, st: dict):
+    (run / "state.json").write_text(json.dumps(st, indent=1))
+
+
+def cmd_serve(a):
+    night = Path(a.night) if a.night else QA / "runs" / time.strftime("%Y-%m-%d-%H%M")
+    night.mkdir(parents=True, exist_ok=True)
+    CACHE.mkdir(exist_ok=True)
+    if not (QA / "node_modules" / "playwright-core").exists():
+        sh("npm", "install", "--silent", cwd=QA)
+    if not a.no_image:
+        log(f"building {IMAGE}")
+        sh("docker", "build", "-q", "-f", "runtime/Dockerfile", "-t", IMAGE, ".", cwd=ROOT, timeout=1800)
+    try:
+        urllib.request.urlopen(URL + "/__dev/version", timeout=2)
+        log(f"a control plane is already on {URL}; using it")
+    except Exception:
+        p = start_control(night)
+        (night / "control.pid").write_text(str(p.pid))
+    print(night)
+
+
+def cmd_stop(a):
+    pid = Path(a.night, "control.pid")
+    if pid.exists():
+        try:
+            os.killpg(int(pid.read_text()), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        pid.unlink()
+
+
+def cmd_start(a):
+    night = Path(a.night)
+    run = night / a.name
+    (run / "shots").mkdir(parents=True)
+    (run / "home").mkdir()
+    sc = {"name": a.name, "files": {}, "setup": []}
+    if a.scenario:
+        sc = next(x for x in tomllib.loads((QA / "scenarios.toml").read_text())["scenario"] if x["name"] == a.scenario)
+    for f in a.file:
+        dest, src = f.split("=", 1)
+        sc.setdefault("files", {})[dest] = src
+    sc["setup"] = [*sc.get("setup", []), *a.setup]
+    project = re.sub(r"[^a-z0-9-]+", "-", a.name.lower()).strip("-")[:40]
+    machine = f"tule-qa-{night.name}-{project}"[:60]
+    log_from = (night / "control.log").stat().st_size if (night / "control.log").exists() else 0
+    g = Guest()
+    g.api("POST", "/api/projects", {"name": project})
+    start_machine(g, project, machine)
+    set_up(machine, sc, run)
+    key = g.api("POST", "/api/keys/api", {"name": "qa codex"})["key"]
+    save_state(run, {"project": project, "machine": machine, "key": key, "ip": g.ip, "session": g.session,
+                     "model": a.model, "codex_session": None, "turn": 0, "busy": False, "log_from": log_from,
+                     "started": time.time(), "night": str(night)})
+    print(f"run {run}\nproject {project} on machine {machine} (model {a.model or 'default'})\nviewer {URL}/p/{project}")
+    setup_log = (run / "setup.log").read_text()
+    if setup_log.strip():
+        print("setup:\n" + clip(setup_log, 3000))
+
+
+def cmd_say(a):
+    run = Path(a.run)
+    st = state(run)
+    if st["busy"]:
+        raise SystemExit("the agent is still on the last turn; `wait` first")
+    st["turn"] += 1
+    st["busy"] = True
+    msg = a.message if st["turn"] > 1 else f'I\'m working on my Tule project "{st["project"]}". {a.message}'
+    (run / f"turn-{st['turn']}.msg").write_text(msg)
+    save_state(run, st)
+    subprocess.Popen([sys.executable, __file__, "_turn", str(run)], stdin=subprocess.DEVNULL,
+                     stdout=open(run / f"turn-{st['turn']}.worker.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
+    print(f"turn {st['turn']} sent")
+
+
+def summarize(raw: Path) -> dict:
+    """What the agent did in a turn, counted (codex)."""
+    cmds, failed, tools = 0, [], []
+    for line in raw.read_text().splitlines() if raw.exists() else []:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        it = ev.get("item", {})
+        if ev.get("type") != "item.completed":
+            continue
+        if it.get("type") == "command_execution":
+            cmds += 1
+            if it.get("exit_code") not in (0, None):
+                failed.append(f"{clip(it.get('command', ''), 160)} → exit {it.get('exit_code')}: {clip(it.get('aggregated_output', '').strip()[-300:], 300)}")
+        elif it.get("type") == "mcp_tool_call":
+            res = it.get("result") or {}
+            err = bool(it.get("error")) or (isinstance(res, dict) and res.get("is_error"))
+            tools.append(it.get("tool", "?") + (" (error)" if err else ""))
+        elif it.get("type") == "web_search":
+            tools.append("web_search")
+    return {"commands": cmds, "failed_commands": failed, "tools": tools}
+
+
+def cmd_turn(a):
+    run = Path(a.run)
+    st = state(run)
+    n = st["turn"]
+    msg = (run / f"turn-{n}.msg").read_text()
+    env = agent_env(run / "home", st["key"])
+    if st.get("model"):
+        env["TULE_QA_MODEL"] = st["model"]
+    t = time.time()
+    raw = run / f"turn-{n}.jsonl"
+    try:
+        reply, session = codex_turn(run / "home", env, msg, st.get("codex_session"), raw)
+        (run / f"turn-{n}.md").write_text(readable("codex", raw))
+        with open(run / "conversation.md", "a") as f:
+            f.write(f"**User:** {msg}\n\n**Agent:** {reply or '(no reply)'}\n\n")
+        screenshot(run / "shots" / f"viewer-{n}.png", st["key"], f"/p/{st['project']}")
+        screenshot(run / "shots" / f"projects-{n}.png", st["key"], "/")
+        g = Guest(st["ip"], st["session"])
+        banner = "Connect your agent" in g.page("/")
+        timed_out = '"qa.timeout"' in raw.read_text()
+        summary = {"turn": n, "minutes": round((time.time() - t) / 60, 1), "reply": reply, "banner": banner,
+                   "timed_out": timed_out, **summarize(raw)}
+    except Exception as e:
+        session = st.get("codex_session")
+        summary = {"turn": n, "error": f"{type(e).__name__}: {e}"}
+    (run / f"turn-{n}.summary.json").write_text(json.dumps(summary, indent=1))
+    st = state(run)
+    st.update(busy=False, codex_session=session)
+    save_state(run, st)
+
+
+def cmd_wait(a):
+    run = Path(a.run)
+    end = time.time() + a.max
+    while state(run)["busy"] and time.time() < end:
+        time.sleep(5)
+    st = state(run)
+    if st["busy"]:
+        n = st["turn"]
+        raw = run / f"turn-{n}.jsonl"
+        s = summarize(raw)
+        print(f"still working on turn {n} ({round((time.time() - (raw.stat().st_ctime if raw.exists() else time.time())) / 60)} min so far, "
+              f"{s['commands']} commands, tools: {', '.join(s['tools']) or 'none'}); wait again")
+        return
+    n = st["turn"]
+    s = json.loads((run / f"turn-{n}.summary.json").read_text())
+    if s.get("error"):
+        print(f"turn {n} failed in the harness: {s['error']}")
+        return
+    shots = []
+    for k in ("viewer", "projects"):
+        png = run / "shots" / f"{k}-{n}.png"
+        meta = json.loads(png.with_suffix(".json").read_text()) if png.with_suffix(".json").exists() else {}
+        shots.append(f"{png}  (settled: {meta.get('settled')}, console errors: {len(meta.get('errors', []))}{' ' + clip(meta['errors'], 400) if meta.get('errors') else ''}{' ' + meta['error'][:300] if meta.get('error') else ''})")
+    print(f"# turn {n}: {s['minutes']} min{', TIMED OUT' if s['timed_out'] else ''}\n\n## agent's reply\n{s['reply'] or '(no reply)'}\n\n"
+          f"## what it did\n{s['commands']} shell commands, {len(s['failed_commands'])} failed\n"
+          f"Tule tools: {', '.join(s['tools']) or 'none'}\n"
+          + "".join(f"- failed: {x}\n" for x in s["failed_commands"][:12])
+          + f"\nfull log: {run / f'turn-{n}.md'}\n\n## screenshots (Read them)\n" + "\n".join(shots)
+          + f"\n\n\"Connect your agent\" banner still shown: {s['banner']}")
+
+
+def cmd_shell(a):
+    print(on_machine(state(Path(a.run))["machine"], a.command, timeout=a.timeout))
+
+
+def cmd_shot(a):
+    run = Path(a.run)
+    st = state(run)
+    path = a.path or f"/p/{st['project']}"
+    out = run / "shots" / f"extra-{int(time.time())}.png"
+    screenshot(out, st["key"], path)
+    print(out, out.with_suffix(".json").read_text())
+
+
+def cmd_finish(a):
+    run = Path(a.run)
+    st = state(run)
+    (run / "machine.md").write_text(on_machine(st["machine"], MACHINE_DUMP))
+    home = run / "home"
+    local = [f"{p.stat().st_size} {p.relative_to(home)}" for p in sorted(home.rglob("*"))
+             if p.is_file() and not any(x in p.parts for x in (".uv-tools", ".bin", ".tule"))]
+    (run / "local-files.md").write_text("Files the agent left in its folder on its own computer:\n\n" + "\n".join(local or ["(none)"]))
+    log_file = Path(st["night"]) / "control.log"
+    if log_file.exists():
+        with open(log_file, "rb") as f:
+            f.seek(st["log_from"])
+            (run / "control.log").write_bytes(f.read())
+    subprocess.run(["docker", "rm", "-f", st["machine"]], capture_output=True)
+    st["finished"] = time.time()
+    save_state(run, st)
+    print(f"kept: {run / 'machine.md'}, {run / 'local-files.md'}, {run / 'control.log'}; machine removed")
+    print(clip((run / "machine.md").read_text(), 6000))
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("serve", "stop", "start", "say", "_turn", "wait", "shell", "shot", "finish"):
+        ap = argparse.ArgumentParser()
+        sub = ap.add_subparsers(dest="cmd")
+        p = sub.add_parser("serve"); p.add_argument("--night"); p.add_argument("--no-image", action="store_true")
+        p = sub.add_parser("stop"); p.add_argument("night")
+        p = sub.add_parser("start"); p.add_argument("night"); p.add_argument("name"); p.add_argument("--model")
+        p.add_argument("--scenario"); p.add_argument("--file", action="append", default=[]); p.add_argument("--setup", action="append", default=[])
+        p = sub.add_parser("say"); p.add_argument("run"); p.add_argument("message")
+        p = sub.add_parser("_turn"); p.add_argument("run")
+        p = sub.add_parser("wait"); p.add_argument("run"); p.add_argument("--max", type=int, default=540)
+        p = sub.add_parser("shell"); p.add_argument("run"); p.add_argument("command"); p.add_argument("--timeout", type=int, default=600)
+        p = sub.add_parser("shot"); p.add_argument("run"); p.add_argument("path", nargs="?")
+        p = sub.add_parser("finish"); p.add_argument("run")
+        a = ap.parse_args()
+        {"serve": cmd_serve, "stop": cmd_stop, "start": cmd_start, "say": cmd_say, "_turn": cmd_turn, "wait": cmd_wait,
+         "shell": cmd_shell, "shot": cmd_shot, "finish": cmd_finish}[a.cmd](a)
+        return
+    auto()
+
+
+def auto():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--scenarios", default="", help="comma-separated names (default: all)")
     ap.add_argument("--agents", default="codex,claude")

@@ -28,6 +28,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+try:
+    import pwd
+except ImportError:  # Windows
+    pwd = None
 import shlex
 import subprocess
 import sys
@@ -259,7 +263,7 @@ def write_ssh_config(p: str):
     if s.get("hostKey"):
         ensure_access(p, s)
     path = os.path.expanduser("~/.ssh/config")
-    block = [f"Host {HOST_PREFIX}{p}", "  User root"]
+    block = [f"Host {HOST_PREFIX}{p} {HOST_PREFIX}{p}.*", "  User root"]  # .* names one of several machines
     opts = ssh_options(p)
     for k, v in zip(opts[::2], opts[1::2]):
         if k == "-o":
@@ -276,7 +280,11 @@ def write_ssh_config(p: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write(text.rstrip("\n") + ("\n\n" if text.strip() else "") + start + "\n".join(block) + "\n" + end)
-    print(f"tule: wrote {HOST_PREFIX}{p} to {path}; run: ssh {HOST_PREFIX}{p} (start the machine first: tule up -p {p})")
+    # ssh reads the real home's config, not $HOME's (an agent's sandbox may set HOME to its folder)
+    real = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".ssh", "config") if pwd else path
+    f = "" if os.path.realpath(path) == os.path.realpath(real) else f"-F {path} "
+    print(f"tule: wrote {HOST_PREFIX}{p} to {path}; run: ssh {f}{HOST_PREFIX}{p}, scp {f}FILE {HOST_PREFIX}{p}:/workspace/… "
+          f"(start the machine first: tule up -p {p})")
 
 
 def cmd_proxy(args):

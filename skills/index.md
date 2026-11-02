@@ -11,6 +11,7 @@ Typical session: find or create the project with the connector (or `tule up -p <
 
 ## On the machine
 
+- Work on the machine, not on your own computer: files written locally are not in the project and the user never sees them. Write a file with `tule ssh -p <name> -- 'cat > src/bracket.py' <<'EOF'` … `EOF`, or edit it on the machine.
 - `/workspace` is the project and the only thing that persists (a git repository; `tule save` saves it). Everything else is rebuilt from the image at every boot.
 - `src/<name>.py` makes `outputs/<name>/`; `tule build` runs the scripts whose inputs changed (nothing runs by itself). The viewer shows outputs as soon as they appear.
 - Look at your own work: `tule screenshot -o /tmp/view.png --labels`, then read the PNG. `tule inspect <file>` lists faces with ids, types, areas and tags.
