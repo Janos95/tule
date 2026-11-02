@@ -672,38 +672,10 @@ def _ping(agent: "Agent", args: dict) -> dict:
     return {"pong": True, "workspace": WORKSPACE}
 
 
-def _build(agent: "Agent", args: dict) -> dict:
-    """The viewer's Rebuild: `tule build <names>` in the background (its records and staging
-    folder tell the viewer how it goes; its output is in outputs/.build/viewer.log)."""
-    names = [str(n) for n in args.get("names") or []]
-    for n in names:
-        if not n or n.startswith(("-", ".")) or "/" in n:
-            raise ValueError(f"{n!r} is not an output name")
-    os.makedirs(os.path.join(OUTPUTS, ".build"), exist_ok=True)
-    with open(os.path.join(OUTPUTS, ".build", "viewer.log"), "ab") as out:
-        subprocess.Popen(["tule", "build", *names], cwd=WORKSPACE, stdin=subprocess.DEVNULL, stdout=out,
-                         stderr=subprocess.STDOUT, start_new_session=True)
-    return {"started": names}
-
-
-def _confirm(agent: "Agent", args: dict) -> dict:
-    """The viewer's "Still valid" on agent work in work/: records its sources as they are now."""
-    from tule_cli import build
-
-    path = str(args.get("path") or "")
-    try:
-        sources = build.based_on(WORKSPACE, path, None, agent.outputs.build_hashes)
-    except build.BuildError as e:
-        raise ValueError(str(e)) from None
-    agent.outputs.stamp = None  # send the index again
-    return {"sources": sorted(sources)}
-
-
 # viewer requests by op (see Agent.request): a handler returns a dict or bytes;
 # a dict's "broadcast" entry is an event for every viewer. files.py: read
-# (the viewer's Download and file views); annotations.py: annotate, annotations;
-# build (Rebuild) and confirm (agent work still holds).
-REQUESTS = {"ping": _ping, "build": _build, "confirm": _confirm, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
+# (the viewer's Download and file views); annotations.py: annotate, annotations.
+REQUESTS = {"ping": _ping, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
 
 
 def new_project(root: str):

@@ -460,13 +460,28 @@ rest:
   project is refused. While it runs, the viewer shows the staging folder once
   it has geometry, so a long study's frames still appear live;
 - the record (`outputs/.build/<name>.json`: what was read and its hashes) is
-  kept apart from the output, so the agent (`tule build --check`) and later
-  the viewer can tell an output is stale without running anything;
+  kept apart from the output, so the agent can tell an output is stale
+  without running anything: `tule build --check` lists what is out of date
+  or failed (with the reason and how long its last run took) and work to
+  check again, or says everything is up to date;
 - a failed script keeps its last output and records the error and the end
   of its output (the traceback from the script's own frames); one build
   runs at a time per project;
 - an output that reads an out-of-date output is out of date too ("outputs/
-  plate is out of date"), so the viewer shows everything a change affects.
+  plate is out of date"), so the check shows everything a change affects;
+- subsets: `tule build plate` (and what it reads), patterns (`'plate-*'`),
+  `--dependents` (also what reads them: the BOM after the plate), `--skip
+  study` (leave a long run as it is).
+
+**The agent keeps outputs current; nothing rebuilds by itself** (decided
+2026-11-02). Rebuilding on every change was considered (after a pause in
+edits, only for quick scripts): it would keep the viewer always current,
+but it runs half-finished edits, spends machine time and GPU money on runs
+nobody asked for, and is hard to predict. The agent builds what it changed
+before it shows the user anything and leaves long runs until they are
+needed. The viewer does not show staleness either (an earlier version had
+"out of date" marks with Rebuild and Still valid buttons): it says only when
+a build failed; a row's tooltip says when it is out of date.
 
 **Work done by hand is not re-run.** Finding suppliers, comparing bearings or
 reviewing a design is slow, costs money and takes judgment. Its result is
@@ -477,9 +492,9 @@ an output (no script can remake it); a first version kept it in `inputs/`,
 which mixed the two. `tule based-on work/suppliers/bracket.json
 outputs/bracket` records what it was based on (`work/.based-on.json`, in
 git: each source's fingerprint, a hash over a folder's files), so when the
-bracket changes the build and the viewer ask to check it again. The agent or the user then redoes the work or confirms
-it still holds (`tule based-on <result>` again, or Still valid in the
-viewer); confirming updates only the note. Nothing ever re-runs an agent by
+bracket changes `tule build` asks to check it again. The agent then redoes
+the work or confirms it still holds (`tule based-on <result>` again);
+confirming updates only the note. Nothing ever re-runs an agent by
 itself.
 
 **Output types.** Every output gets a structured view; the file type decides
@@ -497,16 +512,14 @@ which, and `output.json` only adds meaning (titles, units, colors):
 | anything else | any file | listed with a download, never hidden |
 
 **In the viewer** (built): the sidebar lists outputs, then work, then inputs,
-one row per folder; the row says "out of date", "failed" or (for work)
-"check again", and its tooltip why ("lib/params.py changed"). Over the
-view, next to Download, a button does something about it: Rebuild an
-output, or Still valid for work. Under the selected entry: its views
+one row per folder; a row says "failed" when its last build failed, and its
+tooltip says when it is out of date ("out of date: lib/params.py changed")
+or work needs checking again. Under the selected entry: its views
 when it has more than one: "3D" for its geometry (an assembly's parts under
 it), each other file, and a failed build's log. A view that is not 3D is a
 page over the stage. The machine's agent sends every file in the index with
 the build state of each output and the "based on" state of each piece of work
-(`runtime/tule_agent.py`, `Outputs`); Rebuild runs `tule build <name>` on
-the machine in the background. Files are read through the agent (cached by
+(`runtime/tule_agent.py`, `Outputs`). Files are read through the agent (cached by
 content hash); Vega-Lite and the Markdown renderer load only when a chart or
 document is shown. JSON lists of records are tables; Markdown documents
 embed charts, tables and images next to them (`![](cost.vl.json)`).
@@ -913,5 +926,5 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
-| Project layout and outputs | `inputs/`, `src/`, `lib/`, `work/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; work done by hand lives in `work/`, records what it was based on (`tule based-on`), is flagged to check again and never re-run automatically; every file in an output has a view (table, Vega-Lite chart, document, image, download), not HTML; the viewer marks out-of-date and failed outputs inline with Rebuild, and saves from its footer (2026-11-02; see "Project layout, builds and output types") |
+| Project layout and outputs | `inputs/`, `src/`, `lib/`, `work/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; work done by hand lives in `work/`, records what it was based on (`tule based-on`), is flagged to check again and never re-run automatically; every file in an output has a view (table, Vega-Lite chart, document, image, download), not HTML; the agent keeps outputs current (`tule build`, `--check`, subsets; nothing rebuilds by itself); the viewer shows failed builds, not staleness, and saves from its footer (2026-11-02; see "Project layout, builds and output types") |
 | Machines | per project, several at once (2026-11-01): each with its own autosaved copy, saving and merging through git (see "Several machines per project, saves in git"); one Tule cloud machine per project. Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's save. The projects list shows each machine under its project: an icon and where it runs (Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token). |

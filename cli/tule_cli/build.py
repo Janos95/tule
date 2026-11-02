@@ -168,13 +168,14 @@ def why_stale(root: str, name: str, hashes: Hashes, env: dict) -> str | None:
 
 
 class Build:
-    def __init__(self, root: str, force: bool = False):
+    def __init__(self, root: str, force: bool = False, skip: set[str] | None = None):
         self.root = root
         self.force = force
+        self.skip = skip or set()
         self.all = targets(root)
         self.env = env_stamp()
         self.hashes = Hashes(root)
-        self.done: dict[str, str] = {}  # name -> "built" | "up to date" | "failed"
+        self.done: dict[str, str] = {}  # name -> "built" | "up to date" | "failed" | "skipped"
         self.stack: list[str] = []
 
     def deps(self, name: str) -> list[str]:
@@ -187,8 +188,23 @@ class Build:
                 seen.append(o)
         return seen
 
+    def readers(self, names: list[str]) -> list[str]:
+        """The outputs that read these, and what reads those, from the last records."""
+        out: list[str] = []
+        todo = list(names)
+        while todo:
+            n = todo.pop()
+            for t in self.all:
+                if t not in out and t not in names and n in self.deps(t):
+                    out.append(t)
+                    todo.append(t)
+        return out
+
     def ensure(self, name: str):
         if name in self.done:
+            return
+        if name in self.skip:  # its last output stays, stale or not
+            self.done[name] = "skipped"
             return
         if name in self.stack:
             raise BuildError(f"{' → '.join(self.stack + [name])}: these outputs read each other")
@@ -290,7 +306,23 @@ class Build:
         log(f"{name}: failed ({error}); " + (f"outputs/{name} is unchanged" if kept else "no output"))
 
 
-def build(root: str, names: list[str] | None = None, force: bool = False) -> dict:
+def select(all_names: list[str], patterns: list[str]) -> list[str]:
+    """Script names matching names or patterns (plate-*); an error for one that matches nothing."""
+    import fnmatch
+
+    out: list[str] = []
+    for p in patterns:
+        hit = [n for n in all_names if fnmatch.fnmatchcase(n, p)]
+        if not hit:
+            raise BuildError(f"no src/{p}.py; scripts: {', '.join(all_names)}")
+        out += [n for n in hit if n not in out]
+    return out
+
+
+def build(root: str, names: list[str] | None = None, force: bool = False,
+          dependents: bool = False, skip: list[str] | None = None) -> dict:
+    """Builds the named outputs (patterns allowed; all when none) and what they read; with
+    dependents, also what reads them; never the ones in skip."""
     os.makedirs(os.path.join(root, "outputs", STATE), exist_ok=True)
     lock = open(os.path.join(root, "outputs", STATE, "lock"), "w")
     try:
@@ -302,10 +334,11 @@ def build(root: str, names: list[str] | None = None, force: bool = False) -> dic
         b = Build(root, force)
         if not b.all:
             raise BuildError("nothing to build: src/ has no scripts (src/<name>.py makes outputs/<name>/)")
-        for n in names or []:
-            if n not in b.all:
-                raise BuildError(f"no src/{n}.py; scripts: {', '.join(b.all)}")
-        for n in names or b.all:
+        b.skip = set(select(b.all, skip or []))
+        wanted = select(b.all, names) if names else list(b.all)
+        if dependents:
+            wanted += b.readers(wanted)
+        for n in wanted:
             b.ensure(n)
         b.hashes.save()
         return b.done
@@ -342,6 +375,8 @@ def status(root: str, hashes: Hashes | None = None) -> list[dict]:
                 row["log"] = rec["failed"]["log"]
         if rec.get("built"):
             row["built"] = rec["built"]
+        if rec.get("seconds") is not None:
+            row["seconds"] = rec["seconds"]
         out.append(row)
     return out
 

@@ -42,7 +42,7 @@ How to work on a Tule machine so that the user can follow along and nothing is l
 ## One iteration
 
 1. **Edit** a script in `src/` (start from `src/part.py`; keep parameters at the top).
-2. **Build**: `tule build` runs the scripts whose inputs changed (`tule build part` runs one). Fix `TuleError`s from their message and hint (`tule docs occt`).
+2. **Build**: `tule build` runs the scripts whose inputs changed (`tule build part` runs one). Fix `TuleError`s from their message and hint (`tule docs occt`). Nothing rebuilds by itself: keeping outputs current is your job.
 3. **Write** results with `tule.outputs`, named like the script (`src/part.py` → `outputs.part("part", …)`; other files into `outputs.folder()`); the viewer updates live.
 4. **Look**: `tule screenshot -o view.png --labels`, then read the PNG. Check other sides with `--view top|front|right|bottom`. Do not claim a feature is there until you have seen it.
 5. **Check numbers**: `tule inspect outputs/<name>/<file>.step` (size, volume, faces, tags), or print measurements in the script (`part.size`, `part.volume`, `part.is_valid`).
@@ -60,7 +60,9 @@ work/      done by hand from the design: supplier quotes, part comparisons, revi
 outputs/   made by tule build; never edit it by hand
 ```
 
-A script may read inputs and other outputs (`import_step("outputs/bracket/bracket.step")`): `tule build` records what each script read, builds what it reads first, and reruns a script only when something it read changed. A script may write only its own output. `tule build --check` lists what is stale; the viewer marks it too, with a Rebuild button.
+A script may read inputs and other outputs (`import_step("outputs/bracket/bracket.step")`): `tule build` records what each script read, builds what it reads first, and reruns a script only when something it read changed. A script may write only its own output.
+
+Before you show the user anything, `tule build --check`: it lists what is out of date or failed (with why and how long its last run took) and work to check again. Rebuild what you changed and what reads it: `tule build plate --dependents`, `tule build 'plate-*'`, or everything but a long run, `tule build --skip study`. Leave long runs until the design settles, and say so.
 
 ## Work done by hand
 
@@ -70,7 +72,7 @@ Work that is not a script (finding suppliers for the bracket, comparing bearings
 tule based-on work/suppliers/bracket.json outputs/bracket
 ```
 
-When `outputs/bracket` changes, `tule build` and the viewer ask to check it again. Redo the work, or if it still holds, run `tule based-on work/suppliers/bracket.json` again (the user can also click Still valid in the viewer). A choice it leads to (which bearing) goes in code, `lib/params.py`.
+When `outputs/bracket` changes, `tule build` asks to check it again. Redo the work, or if it still holds, run `tule based-on work/suppliers/bracket.json` again. A choice it leads to (which bearing) goes in code, `lib/params.py`.
 
 ## Saving
 

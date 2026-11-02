@@ -135,3 +135,31 @@ def test_agent_work_lives_in_work(project):
     build(project)
     with pytest.raises(b.BuildError, match="kept in work/"):
         b.based_on(str(project), "src/plate.py", ["outputs/plate"])
+
+
+def test_subsets_dependents_and_skip(project):
+    build(project)
+    (project / "lib" / "params.py").write_text("WALL = 9\n")
+    err = build(project, "pl*")[1]
+    assert "plate: building" in err and "bom:" not in err  # a pattern; not what reads it
+    (project / "lib" / "params.py").write_text("WALL = 10\n")
+    err = build(project, "plate", "--dependents")[1]
+    assert "plate: building" in err and "bom: building" in err
+    (project / "lib" / "params.py").write_text("WALL = 11\n")
+    err = build(project, "--skip", "bom")[1]
+    assert "plate: building" in err and "bom: building" not in err and "1 skipped" in err
+    code, err = build(project, "nope*")
+    assert code == 1 and "no src/nope*.py" in err
+
+
+def test_check_lists_what_needs_updating(project):
+    def check():
+        return subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=project,
+                              capture_output=True, text=True).stdout
+
+    build(project)
+    assert check().strip() == "everything is up to date"
+    (project / "lib" / "params.py").write_text("WALL = 7\n")
+    out = check()
+    assert "plate  out of date  lib/params.py changed  (last run" in out
+    assert "bom    out of date  outputs/plate is out of date" in out

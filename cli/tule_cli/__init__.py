@@ -443,25 +443,45 @@ def _maybe_stale(root: str):
                   f"redo it, or if it still holds: tule based-on {r['path']}", file=sys.stderr)
 
 
+def _check(root: str):
+    """What needs updating: outputs that are out of date or failed (with the reason and how long
+    the last run took), and work in work/ to check again. Prints a line when all is current."""
+    from . import build
+
+    lines = []
+    for r in build.status(root):
+        took = f"last run {r['seconds']:g} s" if r.get("seconds") is not None else ""
+        if r.get("failed"):
+            last = (r.get("log") or "").strip().splitlines()[-1:] or [r["failed"]]
+            lines.append((r["name"], "failed", last[0], took))
+        elif r.get("why"):
+            lines.append((r["name"], "out of date", r["why"], took))
+    for w in build.based_on_status(root):
+        if w["changed"]:
+            lines.append((w["path"], "check again", f"{', '.join(w['changed'])} changed", ""))
+    if not lines:
+        print("everything is up to date")
+        return
+    width = max(len(x[0]) for x in lines)
+    for name, state, why, took in lines:
+        print(f"{name:<{width}}  {state:<11}  {why}" + (f"  ({took})" if took else ""))
+
+
 def cmd_build(args):
     """Runs the scripts in src/ whose inputs changed: here when this is a project (a machine's /workspace), else on the machine over SSH."""
     from . import build
 
     root = None if args.project else build.find_root()
     if root is None:
-        return _over_ssh(args, ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else []))
+        return _over_ssh(args, ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else [])
+                         + (["--dependents"] if args.dependents else []) + [x for n in args.skip for x in ("--skip", n)])
     try:
         if args.check:
-            rows = build.status(root)
-            for r in rows:
-                note = f"failed: {r['failed']}" if r.get("failed") else r.get("why", "")
-                print(f"{r['name']:<24} {r['state']:<11} {note}".rstrip())
-            _maybe_stale(root)
-            return
-        done = build.build(root, args.names or None, force=args.force)
+            return _check(root)
+        done = build.build(root, args.names or None, force=args.force, dependents=args.dependents, skip=args.skip)
     except build.BuildError as e:
         raise CliError(str(e)) from None
-    counts = {k: sum(1 for v in done.values() if v == k) for k in ("built", "up to date", "failed")}
+    counts = {k: sum(1 for v in done.values() if v == k) for k in ("built", "up to date", "skipped", "failed")}
     print("tule: " + ", ".join(f"{n} {k}" for k, n in counts.items() if n), file=sys.stderr)
     _maybe_stale(root)
     if counts["failed"]:
@@ -600,9 +620,11 @@ def main(argv=None):
     sp = add("forget", cmd_forget, "drop a stopped machine's copy and its unsaved work")
     sp.add_argument("--machine", required=True)
     sp = add("build", cmd_build, "run the scripts in src/ whose inputs changed; each makes outputs/<name>/")
-    sp.add_argument("names", nargs="*", help="only these (and what they read)")
-    sp.add_argument("--check", action="store_true", help="say what is stale, run nothing")
+    sp.add_argument("names", nargs="*", help="only these (and what they read); patterns work: 'plate-*'")
+    sp.add_argument("--check", action="store_true", help="list what is out of date or failed (and work to check again); run nothing")
     sp.add_argument("--force", action="store_true", help="run them even if nothing changed")
+    sp.add_argument("--dependents", action="store_true", help="also rebuild what reads them (the BOM after the part)")
+    sp.add_argument("--skip", action="append", default=[], metavar="NAME", help="leave this one as it is (a long study); repeatable, patterns work")
     sp.add_argument("--machine", help="which machine (when several run)")
     sp = add("based-on", cmd_based_on, "record what agent work in work/ was made from, so it is flagged when that changes")
     sp.add_argument("result", help="the work, e.g. work/suppliers/bracket.json")

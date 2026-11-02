@@ -13,9 +13,10 @@
 //
 // The index has one entry per folder of outputs/, work/ and inputs/. An entry's geometry is
 // drawn in 3D; each other file is its own view (files.js: tables, charts, documents,
-// images). Under the selected entry the sidebar lists its views and says when it is out
-// of date (tule build's records) with a Rebuild, or for work done by hand in work/, that
-// what it was based on changed, with a Still valid (runtime/tule_agent.py, _build, _confirm).
+// images). Under the selected entry the sidebar lists its views. Keeping outputs current
+// is the agent's job (tule build): the page says only when a build failed; a row's
+// tooltip says when it is out of date (tule build's records) or, for work in work/, that
+// what it was based on changed.
 //
 // Geometry kinds (output.json "kind"): part, assembly, sequence, overlay
 // (overlay.js has its format).
@@ -349,8 +350,6 @@ const building = (o) => o.building || o.build?.state === "building";
 function fact(o) {
   if (o.error || o.build?.state === "failed") return ["failed", "error"];
   if (building(o)) return ["building", "live"];
-  if (o.build?.state === "stale") return ["out of date", "warning"];
-  if (changed(o).length) return ["check again", "warning"];
   if (!o.files.length) return ["", ""];
   const kind = kindOf(o);
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -371,56 +370,14 @@ function fact(o) {
 
 const lastLine = (log) => (log ?? "").trim().split("\n").pop()?.trim() || null;
 
-/** What can be done about an entry, for the button over the view: {label, why, act} or null.
- * Rebuild an output that is out of date or failed; confirm work whose sources changed. */
-function fixFor(o) {
+/** Why an entry may not match its sources, for its tooltip (the agent keeps them current). */
+function staleness(o) {
   const b = o.build;
-  const rebuild = async () => {
-    await req("build", { names: [o.name] });
-    o.build = { ...o.build, state: "building" }; // until the index says how it went
-    renderList();
-  };
-  if (b?.state === "failed") return { label: "Rebuild", why: lastLine(b.log) ?? b.error ?? "failed", act: rebuild };
-  if (b?.state === "stale") return { label: b.why === "never built" ? "Build" : "Rebuild", why: b.why === "never built" ? `${b.script} has not run yet` : b.why ?? "out of date", act: rebuild };
+  if (b?.state === "failed") return `build failed: ${lastLine(b.log) ?? b.error ?? ""}`;
+  if (b?.state === "stale") return b.why === "never built" ? `${b.script} has not run yet` : `out of date: ${b.why}`;
   const work = changed(o);
-  if (work.length)
-    return {
-      label: "Still valid",
-      why: work.map((f) => `${o.docs.length > 1 ? `${f.file}: ` : ""}${f.basedOn.changed.join(", ")} changed`).join("\n"),
-      act: async () => {
-        for (const f of work) await req("confirm", { path: f.path });
-        work.forEach((f) => (f.basedOn.changed = []));
-        renderList();
-      },
-    };
-  return null;
+  return work.length ? work.map((f) => `check again: ${o.docs.length > 1 ? `${f.file}: ` : ""}${f.basedOn.changed.join(", ")} changed`).join("\n") : null;
 }
-
-/** The button over the view: Rebuild or Still valid for the selected entry (its tooltip says why). */
-let fixing = null;
-function offerFix(o) {
-  const btn = $("fix-it");
-  fixing = o ? fixFor(o) : null;
-  btn.hidden = !fixing;
-  if (!fixing) return;
-  const can = state.machine === "running";
-  btn.disabled = !can;
-  btn.querySelector(".label").textContent = fixing.label;
-  btn.querySelector("path").setAttribute("d", fixing.label === "Still valid" ? "M3 8.5l3.25 3.25L13 5" : "M13 3v3.5H9.5M13 6.5A5.5 5.5 0 1 0 13.5 9.5");
-  btn.title = can ? fixing.why : `${fixing.why}\n(the machine is not running)`;
-}
-$("fix-it").addEventListener("click", async () => {
-  const f = fixing;
-  if (!f) return;
-  const btn = $("fix-it");
-  btn.disabled = true;
-  try {
-    await f.act();
-  } catch (err) {
-    btn.disabled = false;
-    flash(`${f.label}: ${err.message}`);
-  }
-});
 
 // the parts tree moves into the list under the selected output; the list is rebuilt often,
 // which detaches it, so keep the element itself (a lookup by id would find nothing then)
@@ -433,7 +390,6 @@ function renderList() {
   const all = state.outputs;
   state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (all.find((o) => o.root === "outputs")?.id ?? all[0]?.id ?? null);
   const outs = all.filter((o) => o.root === "outputs");
-  if (!all.some((o) => o.id === state.selected)) offerFix(null);
   $("outputs-empty").hidden = outs.length > 0;
   fill($("output-list"), outs);
   for (const root of ["work", "inputs"]) {
@@ -467,7 +423,7 @@ function fill(list, entries) {
       b.classList.toggle("open", open);
     }
     const kinds = [o.files.length ? kindOf(o) : null, ...o.docs.map((f) => f.file)].filter(Boolean);
-    b.title = [o.meta?.title, `${o.root}/${o.name}${kinds.length ? ` · ${kinds.join(", ")}` : ""}`, o.error, fixFor(o)?.why].filter(Boolean).join("\n");
+    b.title = [o.meta?.title, `${o.root}/${o.name}${kinds.length ? ` · ${kinds.join(", ")}` : ""}`, o.error, staleness(o)].filter(Boolean).join("\n");
     b.addEventListener("click", () => {
       // shown already: a click folds or unfolds its views and parts (it stays so when you come back)
       if (foldable && selected) {
@@ -481,15 +437,13 @@ function fill(list, entries) {
     if (!selected) continue;
     const under = document.createElement("div");
     under.className = "under";
-    offerFix(o);
     if (open) {
       for (const x of vs.length > 1 ? vs : []) {
         const r = document.createElement("button");
         r.type = "button";
         r.className = "view";
         r.setAttribute("aria-current", String(x.id === v?.id));
-        const dot = x.f?.basedOn?.changed?.length ? '<span class="view-dot" title="May be out of date"></span>' : "";
-        r.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${x.type === "geometry" ? iconOf({ ...o, docs: [] }) : TYPE_ICONS[x.type] ?? TYPE_ICONS.file}</svg><span></span>${dot}`;
+        r.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${x.type === "geometry" ? iconOf({ ...o, docs: [] }) : TYPE_ICONS[x.type] ?? TYPE_ICONS.file}</svg><span></span>`;
         r.children[1].textContent = x.label;
         r.addEventListener("click", () => selectView(x.id));
         under.append(r);
