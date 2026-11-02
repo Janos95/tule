@@ -304,7 +304,16 @@ separate kinds of saving:
   need nothing new.
 - **Large files via Git LFS.** STEP files, scans, meshes and results go
   through Git LFS; Tule serves its HTTP API from the same R2 store, so they
-  are never merged and never stored twice.
+  are never merged and never stored twice. Enforced, not left to the agent
+  (a large file in plain git history is only removed by rewriting it):
+  1. the project template's `.gitattributes` sends the usual binary types to
+     LFS (STEP, STL, 3MF, meshes, scans, simulation results, images);
+  2. a pre-commit hook in the image moves any other file over a size limit
+     (about 5 MB) to LFS and adds its pattern to `.gitattributes`;
+  3. Tule's remote refuses a push with a large non-LFS file, and the error
+     says what to run (for a commit made with the hook off or elsewhere).
+  The agent instructions need one line: big files go to LFS on their own; if
+  a push is refused, do what the error says.
 - **Generated outputs are not merged.** They come from code; each output
   records the commit it was made from, so the viewer can say "stress
   results are from abc, 2 saves behind" and the agent can regenerate.
