@@ -1714,7 +1714,8 @@ button.link:hover, a.link:hover { text-decoration-color: var(--link); }
 .chart { width: 100%; }
 .chart svg { display: block; max-width: 100%; }
 
-.page-doc { font-size: 14.5px; line-height: 1.6; color: var(--text); max-width: 720px; }
+.page-doc { font-size: 14.5px; line-height: 1.6; color: var(--text); }
+.page-doc > :not(table) { max-width: 720px; } /* text at a reading width; a wide table takes the page, and scrolls past it */
 .page-doc > :first-child { margin-top: 0; }
 .page-doc h1 { font-size: 22px; margin: 0 0 14px; }
 .page-doc h2 { font-size: 17px; margin: 26px 0 10px; }
@@ -1724,8 +1725,9 @@ button.link:hover, a.link:hover { text-decoration-color: var(--link); }
 .page-doc pre { background: var(--panel); padding: 10px 12px; border-radius: 6px; overflow: auto; }
 .page-doc pre code { background: none; padding: 0; }
 .page-doc img { max-width: 100%; height: auto; border-radius: 4px; }
-.page-doc table { border-collapse: collapse; font-size: 13px; }
-.page-doc th, .page-doc td { border-bottom: 1px solid var(--line); padding: 5px 10px; text-align: left; }
+.page-doc table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 13px; }
+.page-doc th, .page-doc td { border-bottom: 1px solid var(--line); padding: 5px 10px; text-align: left; vertical-align: top; }
+.page-doc td.prose { min-width: 16em; }
 .page-doc blockquote { margin: 0; padding-left: 14px; border-left: 3px solid var(--line); color: var(--muted); }
 .page-embed { margin: 14px 0; }
 

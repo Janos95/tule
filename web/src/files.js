@@ -486,6 +486,8 @@ async function markdown(into, src, c) {
   tpl.innerHTML = md.render(src);
   const pics = [...tpl.content.querySelectorAll("img")].map((img) => [img, img.getAttribute("src")]);
   pics.forEach(([img]) => img.removeAttribute("src"));
+  // a cell of running text keeps a readable width: the table scrolls sideways instead of crushing it
+  for (const td of tpl.content.querySelectorAll("td")) if (td.textContent.length > 40) td.classList.add("prose");
   const doc = el("article", "page-doc");
   doc.append(tpl.content);
   into.append(doc);
