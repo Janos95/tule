@@ -202,11 +202,14 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
 // ------------------------------------------------------------ pages
 
 async function projectRows(env: Env, user: User): Promise<ProjectRow[]> {
-  const ps = await accounts(env).projects(user.id);
+  const [ps, hosts] = await Promise.all([accounts(env).projects(user.id), user.guest ? [] : accounts(env).hosts(user.id)]);
+  // a computer's OS, for its icon ("Darwin 25.6", "Linux 6.8…-WSL2")
+  const os = new Map(hosts.map((h) => [h.name, String((h.specs as { os?: unknown } | null)?.os ?? "")]));
   return Promise.all(
     ps.map(async (p) => {
       const s = await ops.projectStub(env, p.id).status();
-      return { ...p, state: String(s.state), machine: (s.machine as string | null) ?? null };
+      const machine = (s.machine as string | null) ?? null;
+      return { ...p, state: String(s.state), machine, os: machine ? os.get(machine) : undefined };
     }),
   );
 }

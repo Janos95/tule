@@ -45,9 +45,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .card{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--panel)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--idle);margin-right:6px}.dot.running{background:var(--ok-fill)}.dot.starting{background:var(--warn-fill)}
 .plist{display:flex;flex-direction:column;border-top:1px solid var(--line)}
-.prow{display:grid;grid-template-columns:1fr auto 96px;align-items:center;gap:16px;padding:12px 8px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.prow{display:grid;grid-template-columns:minmax(0,1fr) 210px 84px 96px;align-items:center;gap:16px;padding:12px 8px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
 .prow:hover{background:var(--hover)}
-.pname{font-weight:500}.pstate{color:var(--muted);font-size:14px}.pdate{color:var(--muted);font-size:13px;text-align:right}
+.pname{font-weight:500}.pstate{color:var(--muted);font-size:14px;white-space:nowrap}.pmachine{color:var(--muted);font-size:14px;display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ic{flex:none;width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.85}.pdate{color:var(--muted);font-size:13px;text-align:right}
 .newp{border-bottom:1px solid var(--line)}
 .newp summary,.newp-go{all:unset;box-sizing:border-box;display:block;width:100%;cursor:pointer;padding:12px 8px;color:var(--muted)}
 .newp summary::-webkit-details-marker{display:none}
@@ -81,7 +82,7 @@ body:has(.guestbar) main{padding-bottom:64px}
 .notice{padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
 @media (max-width:600px){.item{grid-template-columns:1fr auto}.item-meta{grid-column:1/-1;grid-row:2}}
 .hero{padding:48px 0 24px}.hero h1{font-size:30px}.hero p{font-size:17px;color:var(--muted);max-width:620px}
-@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow{grid-template-columns:1fr auto}.pdate{display:none}}
+@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow{grid-template-columns:minmax(0,1fr) auto;row-gap:2px}.pmachine{grid-column:1;grid-row:2;font-size:13px}.pmachine:empty{display:none}.pstate{grid-column:2;grid-row:1}.pdate{display:none}}
 `;
 
 const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#8fc46a" stroke-width="32" stroke-linecap="round"/></svg>`;
@@ -128,9 +129,8 @@ export function landing(_origin: string, note = ""): Response {
   );
 }
 
-export type ProjectRow = ProjectRef & { state: string; machine: string | null };
+export type ProjectRow = ProjectRef & { state: string; machine: string | null; os?: string };
 
-/** How an agent connects: the MCP connector (the control plane) and the CLI (the work). */
 /** The last row of a list: "+ New …", which turns into a one-line field in place.
     Enter submits, Esc closes. */
 function addRow(label: string, actionUrl: string, field: Html, open = false, note: Html | string = "") {
@@ -141,11 +141,32 @@ function addRow(label: string, actionUrl: string, field: Html, open = false, not
 
 export type GuestLimits = { projects: number; minutesPerDay: number; days: number };
 
+// Outline icons from Tabler (MIT), 24×24, drawn in currentColor.
+const ICONS: Record<string, string> = {
+  cloud: '<path d="M6.657 18c-2.572 0 -4.657 -2.007 -4.657 -4.483c0 -2.475 2.085 -4.482 4.657 -4.482c.393 -1.762 1.794 -3.2 3.675 -3.773c1.88 -.572 3.956 -.193 5.444 1c1.488 1.19 2.162 3.007 1.77 4.769h.99c1.913 0 3.464 1.56 3.464 3.486c0 1.927 -1.551 3.487 -3.465 3.487h-11.878"/>',
+  apple: '<path d="M8.286 7.008c-3.216 0 -4.286 3.23 -4.286 5.92c0 3.229 2.143 8.072 4.286 8.072c1.165 -.05 1.799 -.538 3.214 -.538c1.406 0 1.607 .538 3.214 .538s4.286 -3.229 4.286 -5.381c-.03 -.011 -2.649 -.434 -2.679 -3.23c-.02 -2.335 2.589 -3.179 2.679 -3.228c-1.096 -1.606 -3.162 -2.113 -3.75 -2.153c-1.535 -.12 -3.032 1.077 -3.75 1.077c-.729 0 -2.036 -1.077 -3.214 -1.077z"/><path d="M12 4a2 2 0 0 0 2 -2a2 2 0 0 0 -2 2"/>',
+  windows: '<path d="M17.8 20l-12 -1.5c-1 -.1 -1.8 -.9 -1.8 -1.9v-9.2c0 -1 .8 -1.8 1.8 -1.9l12 -1.5c1.2 -.1 2.2 .8 2.2 1.9v12.1c0 1.2 -1.1 2.1 -2.2 1.9z"/><path d="M12 5l0 14"/><path d="M4 12l16 0"/>',
+  server: '<path d="M3 7a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v2a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3z"/><path d="M3 15a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v2a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3z"/><path d="M7 8v.01"/><path d="M7 16v.01"/>',
+  desktop: '<path d="M3 5a1 1 0 0 1 1 -1h16a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-10z"/><path d="M7 20h10"/><path d="M9 16v4"/><path d="M15 16v4"/>',
+  gpu: '<path d="M5 6a1 1 0 0 1 1 -1h12a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1z"/><path d="M9 9h6v6h-6z"/><path d="M3 10h2"/><path d="M3 14h2"/><path d="M10 3v2"/><path d="M14 3v2"/><path d="M21 10h-2"/><path d="M21 14h-2"/><path d="M14 21v-2"/><path d="M10 21v-2"/>',
+  plug: '<path d="M7 12l5 5l-1.5 1.5a3.536 3.536 0 1 1 -5 -5l1.5 -1.5z"/><path d="M17 12l-5 -5l1.5 -1.5a3.536 3.536 0 1 1 5 5l-1.5 1.5z"/><path d="M3 21l2.5 -2.5"/><path d="M18.5 5.5l2.5 -2.5"/><path d="M10 11l-2 2"/><path d="M13 14l-2 2"/>',
+};
+const icon = (name: string) => new Html(`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
+
+/** Where a project runs, as an icon and a name: cpu-* are Tule's, gpu-* RunPod pods,
+    "external" a machine that joined with a token, anything else one of your computers. */
+function machineLabel(p: ProjectRow): Html | string {
+  const m = p.machine;
+  if (!m) return "";
+  if (m.startsWith("cpu-")) return html`${icon("cloud")}Tule cloud`;
+  if (m.startsWith("gpu-")) return html`${icon("gpu")}RunPod ${(GPUS[m.slice(4)] ?? m.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}`;
+  if (m === "external") return html`${icon("plug")}other machine`;
+  const os = (p.os ?? "").toLowerCase();
+  const kind = os.startsWith("darwin") ? "apple" : /microsoft|wsl/.test(os) ? "windows" : os.startsWith("linux") ? "server" : "desktop";
+  return html`${icon(kind)}${m}`;
+}
+
 export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, limits?: GuestLimits): Response {
-  // where it runs, in words: cpu-* are Tule's, gpu-* are RunPod pods, "external" joined with a token, anything else is a computer's name
-  const where = (m: string | null) =>
-    !m ? "" : m.startsWith("cpu-") ? "Tule cloud" : m.startsWith("gpu-") ? `RunPod ${(GPUS[m.slice(4)] ?? m.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}` : m === "external" ? "other machine" : m;
-  const state = (p: ProjectRow) => (p.state === "stopped" ? "stopped" : [where(p.machine), p.state].filter(Boolean).join(" · "));
   const create = addRow(
     "New project",
     "/projects/new",
@@ -157,7 +178,8 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
         ${rows.map(
           (p) => html`<a class="prow" href="/p/${p.name}">
             <span class="pname">${p.name}</span>
-            <span class="pstate"><span class="dot ${p.state}"></span>${state(p)}</span>
+            <span class="pmachine">${p.state === "stopped" ? "" : machineLabel(p)}</span>
+            <span class="pstate"><span class="dot ${p.state}"></span>${p.state}</span>
             <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>`,
         )}
         ${create}
