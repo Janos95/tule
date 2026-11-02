@@ -18,6 +18,7 @@ outputs.overlay("bracket-loads", part,                # colored faces and arrows
 outputs.overlay("bracket-walls", part,                # numbers on faces, colored on a scale
                 faces={12: 1.8, 13: 0.9}, scale={"label": "wall thickness", "unit": "mm", "min": 0, "max": 3})
 outputs.part("bracket", part, info={"material": "aluminium 6061", "mass": "20.8 g"})  # facts, any kind
+outputs.drawing("bracket-drawing", part, info={"material": "6061"}, dxf="top")  # PDF + SVG (+ DXF)
 ```
 
 Nothing here is required: any tool may write the files and JSON directly.
@@ -421,4 +422,30 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     if info:
         meta["info"] = info
     _write_json(folder, meta)
+    return folder
+
+
+# ---------------------------------------------------------------- drawings
+
+def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front", "top", "right", "iso"), dims=(),
+            title: str | None = None, info: dict | None = None, sheet: str = "A4", scale=None,
+            hidden: bool = True, projection: str = "first", dxf: str | None = None) -> str:
+    """Write a dimensioned 2D drawing: ``outputs/<name>/<name>.pdf`` and ``.svg``. Returns the folder.
+
+    Views (``front top right left bottom back iso``) are projected with hidden lines
+    (dashed; ``hidden=False`` drops them) and placed by ``projection`` (``"first"``
+    angle, ISO, or ``"third"``). Overall sizes and hole diameters (``4× ⌀5.5``) are
+    dimensioned automatically; ``dims`` adds yours: ``("front", p1, p2)`` measures two
+    3D points in that view (``{"along": "h" | "v" | "aligned", "text": ..., "offset": mm}``
+    as a fourth item), ``("top", part.edges.circles(r=3))`` a diameter. ``info`` rows go
+    in the title block (``{"material": "S235"}``). ``scale``: ``"1:2"`` (default: the
+    largest standard scale that fits ``sheet``, A4 to A0). ``dxf="top"`` also writes
+    that view at 1:1 as ``<name>.dxf`` for laser or waterjet cutting.
+    """
+    from .drawing import write as write_drawing
+
+    info = _info(info)
+    folder = _folder(name)
+    write_drawing(folder, _slug(name), item, views=views, dims=dims, title=title, info=info, sheet=sheet,
+                  scale=scale, hidden=hidden, projection=projection, dxf_view=dxf)
     return folder

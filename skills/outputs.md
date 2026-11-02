@@ -54,14 +54,14 @@ Optional; without it, one file is a part, numbered files are a sequence, several
  "info": {"material": "aluminium 6061", "mass": "20.8 g"}}
 ```
 
-- **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. Unmentioned faces are drawn gray. An arrow points along `dir` and ends at `at`.
-- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Use it for anything per face: wall thickness, draft angle, a score.
+- **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
+- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. For thickness, draft, a score.
 - **Info** (any kind): a flat object of facts (units in text: `"20.8 g"`), shown under the view.
 - **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end; `values` are plotted. A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF, text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `outputs.drawing`, see `tule docs modeling`), text, images; anything else: a download.
 
 ```python
 import json

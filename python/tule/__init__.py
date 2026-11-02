@@ -11,7 +11,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 ```
 """
 
-from . import outputs, topopt
+from . import drawing, outputs, topopt
 from .assembly import Assembly
 from .errors import TuleError
 from .geom import ORIGIN, Vec, X, Y, Z
@@ -26,7 +26,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Assembly", "Edges", "Faces", "Mesh", "ORIGIN", "Profile", "Selection", "Shape", "TuleError",
-    "Vec", "Vertices", "X", "Y", "Z", "box", "circle", "cone", "cube", "cylinder", "difference",
+    "Vec", "Vertices", "X", "Y", "Z", "box", "circle", "cone", "cube", "cylinder", "difference", "drawing",
     "ellipse", "export_gltf", "export_step", "export_stl", "extrude", "import_step", "intersection",
     "loft", "outputs", "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "slot", "text",
     "sphere", "tessellate", "topopt", "torus", "union", "wedge",

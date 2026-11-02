@@ -110,7 +110,7 @@ The machine stops after 30 minutes without SSH sessions or traffic; a job runnin
 
 # Modeling with `tule`
 
-`tule` is a thin, opinionated Python layer over OpenCascade: immutable values, operators, selection queries, and tags that survive every operation.
+`tule` is a thin Python layer over OpenCascade: immutable values, operators, selection queries, and tags that survive every operation.
 
 ```python
 from tule import *
@@ -164,8 +164,22 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 
 ## Roles and tags
 
-- **Roles**: primitives and features name their faces: `box(...).faces["top"]` (`top bottom left right front back`), `cylinder(...).faces["side"]`, extrusions `top/bottom/side`, `fillet`, `chamfer`, shell `inner`. A role resolves through later operations when you select on the feature itself: `part.fillet(boss.edges["bottom"], 2)`. After a Boolean, `part.faces["top"]` is not defined (it would be ambiguous).
-- **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation, are written into STEP files, show in the viewer (`f12 · load`) and are what analysis (`tule.topopt`) reads. Tag what matters: loads, fixed faces, mating faces, cosmetic faces.
+- **Roles**: primitives and features name their faces: `box(...).faces["top"]` (`top bottom left right front back`), `cylinder(...).faces["side"]`, extrusions `top/bottom/side`, `fillet`, `chamfer`, shell `inner`. A role resolves through later operations when you select on the feature itself: `part.fillet(boss.edges["bottom"], 2)`. After a Boolean, `part.faces["top"]` is not defined.
+- **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation, are written into STEP files, show in the viewer (`f12 · load`) and are what analysis (`tule.topopt`) reads. Tag loads, fixed and mating faces.
+
+## Drawings
+
+One call gives a dimensioned shop drawing: views with hidden lines, overall sizes, hole callouts, title block, fitting scale. Add what only you know:
+
+```python
+from tule import *
+
+plate = box(80, 40, 3) - cylinder(2.75, 10, center=True).at(10, 10, 0)
+outputs.drawing("plate-drawing", plate.named("plate"), info={"material": "S235, 3 mm"}, dxf="top",
+                dims=[("top", (0, 0, 0), (10, 10, 0), {"along": "h"}), ("top", plate.edges.circles(r=2.75))])
+```
+
+It writes `.pdf` and `.svg`; `dxf=` adds that view at 1:1 for laser cutting. See `help(outputs.drawing)`.
 
 ## Errors
 
@@ -242,14 +256,14 @@ Optional; without it, one file is a part, numbered files are a sequence, several
  "info": {"material": "aluminium 6061", "mass": "20.8 g"}}
 ```
 
-- **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. Unmentioned faces are drawn gray. An arrow points along `dir` and ends at `at`.
-- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Use it for anything per face: wall thickness, draft angle, a score.
+- **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
+- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. For thickness, draft, a score.
 - **Info** (any kind): a flat object of facts (units in text: `"20.8 g"`), shown under the view.
 - **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end; `values` are plotted. A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF, text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `outputs.drawing`, see `tule docs modeling`), text, images; anything else: a download.
 
 ```python
 import json
