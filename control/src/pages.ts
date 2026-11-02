@@ -1,6 +1,7 @@
 // The site's own pages, rendered here (the viewer, /p/<project>, is the
 // static app in web/): the landing page, the projects list, Settings (RunPod,
 // API keys, SSH keys, usage), and the pages auth.ts shows.
+import { GPUS } from "./runpod";
 import type { ProjectRef, User } from "./accounts";
 import PALETTE from "../../web/src/palette.css"; // Tule's colors, shared with the viewer
 
@@ -141,7 +142,10 @@ function addRow(label: string, actionUrl: string, field: Html, open = false, not
 export type GuestLimits = { projects: number; minutesPerDay: number; days: number };
 
 export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, limits?: GuestLimits): Response {
-  const state = (p: ProjectRow) => (p.state === "stopped" ? "stopped" : `${p.machine ?? ""} · ${p.state}`);
+  // where it runs, in words: cpu-* are Tule's, gpu-* are RunPod pods, "external" joined with a token, anything else is a computer's name
+  const where = (m: string | null) =>
+    !m ? "" : m.startsWith("cpu-") ? "Tule cloud" : m.startsWith("gpu-") ? `RunPod ${(GPUS[m.slice(4)] ?? m.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}` : m === "external" ? "other machine" : m;
+  const state = (p: ProjectRow) => (p.state === "stopped" ? "stopped" : [where(p.machine), p.state].filter(Boolean).join(" · "));
   const create = addRow(
     "New project",
     "/projects/new",
