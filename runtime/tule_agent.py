@@ -324,7 +324,25 @@ BIG_META = 256 << 10  # an output.json larger than this keeps its frames out of 
 
 def mesh_apart(path: str) -> bytes:
     """encode_mesh in worker processes: a file that crashes OpenCascade (or never finishes)
-    fails that one request instead of taking the machine's agent down with it."""
+    fails that one request instead of taking the machine's agent down with it. A crash is
+    tried once more: the pool is shared (another file's crash fails this one too), and a file
+    read while it was still being written can crash the reader."""
+    try:
+        return _mesh_apart(path)
+    except _Crashed:
+        time.sleep(1)
+        try:
+            return _mesh_apart(path)
+        except _Crashed:
+            raise RuntimeError(f"reading {os.path.basename(path)} crashed OpenCascade twice (the machine is fine); "
+                               "check it with tule inspect") from None
+
+
+class _Crashed(Exception):
+    pass
+
+
+def _mesh_apart(path: str) -> bytes:
     global _pool
     import concurrent.futures as cf
     import multiprocessing as mp
@@ -351,7 +369,7 @@ def mesh_apart(path: str) -> bytes:
             mem = memory_limit()
             raise RuntimeError(f"showing {name} ran out of memory{f' ({mem})' if mem else ''}; the machine is fine. Make it lighter "
                                "(simplified purchased parts, fewer faces, or STL for display), or use a bigger machine") from None
-        raise RuntimeError(f"reading {name} crashed OpenCascade (the machine is fine); check it with tule inspect, or write it again") from None
+        raise _Crashed() from None
 
 
 def encode_mesh(path: str) -> bytes:

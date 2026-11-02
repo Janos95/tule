@@ -567,6 +567,12 @@ class Shape:
         return from_pnt(p.CentreOfMass())
 
     @property
+    def center(self) -> Vec:
+        """The middle of the bounds (``center_of_mass`` is the centroid)."""
+        lo, hi = self.bounds
+        return (lo + hi) * 0.5
+
+    @property
     def bounds(self) -> tuple[Vec, Vec]:
         """Tight axis-aligned bounds ``(lo, hi)``."""
         b = Bnd_Box()

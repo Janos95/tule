@@ -608,7 +608,17 @@ def cmd_save(args):
 
 
 def cmd_status(args):
-    p = project_of(args, load())
+    cfg = load()
+    from . import build, machine
+
+    root = None if args.project or (cfg.get("url") and cfg.get("token")) else build.find_root()
+    if root and machine.on_machine():  # on the machine itself: its outputs, and what is not saved
+        _check(root)
+        r = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True)
+        n = len([x for x in r.stdout.splitlines() if x.strip()]) if r.returncode == 0 else 0
+        print(f"{n} changed file{'s' if n != 1 else ''} not saved (tule save)" if n else "everything is saved")
+        return
+    p = project_of(args, cfg)
     print(json.dumps(status(p), indent=2))
 
 
