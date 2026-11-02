@@ -70,8 +70,13 @@ Tule does not run or bill for an agent. Users bring their own.
    advance (works once, for an hour). The user never opens a terminal, copies
    a key or approves a code. Until the account's agent first uses the
    connector (MCP `initialize` sets `users.agent_seen`), the projects page
-   shows a strip under the header: "Connect your agent" and the connector
-   address as a click-to-copy field. After that it is only in Settings.
+   shows a strip under the header: "Connect your agent", **Add to Claude**
+   (Claude's own link that opens "Add custom connector" with Tule's name and
+   address filled in; connectors live on the Claude account, so it also
+   reaches the desktop and mobile apps and Claude Code), **Add to ChatGPT**
+   (ChatGPT has no such link: it copies the address, opens chatgpt.com/plugins
+   and says to click + → Add custom MCP server), and the address as a
+   click-to-copy field. After that it is only in Settings.
 4. **Connect RunPod (optional)** in Tule's settings: paste a RunPod API key;
    Tule validates it and shows the balance. RunPod's own limits (prepaid
    balance, account spend limit) are the budget; Tule adds no cap of its own.

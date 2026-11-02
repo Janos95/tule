@@ -70,6 +70,8 @@ body:has(.guestbar) main{padding-bottom:64px}
 .agentbar{background:var(--panel);border-bottom:1px solid var(--line)}
 .agentbar>div{max-width:860px;margin:0 auto;padding:8px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
 .agentbar b{font-weight:600;font-size:14px;white-space:nowrap}
+.agenthint{order:9;flex-basis:100%;margin:0;font-size:13px;color:var(--muted)}.agenthint b{font-weight:600;color:var(--text)}
+.agentbtns{display:inline-flex;gap:6px;white-space:nowrap}.item-action .agenthint{text-align:right;margin-top:6px}
 .copyfield{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:5px 10px;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--text);font:13px var(--mono);cursor:pointer}
 .copyfield:hover{border-color:var(--faint)}.copyfield:focus-visible{box-shadow:0 0 0 3px var(--focus)}
 .copyfield span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -97,7 +99,8 @@ export function layout(title: string, body: Html | string, user?: User | null, s
 }
 
 /** Copy buttons; "+ New …" rows: opening focuses the field, Esc closes it again. */
-const NEWP_JS = `document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);if(b.classList.contains("copyfield")){b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)}else{b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)}});
+const NEWP_JS = `document.addEventListener("click",(e)=>{const g=e.target.closest?.("[data-chatgpt]");if(g){navigator.clipboard.writeText(g.dataset.chatgpt);const h=g.closest(".agentbar,.item")?.querySelector(".agenthint");if(h)h.hidden=false}});
+document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);if(b.classList.contains("copyfield")){b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)}else{b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)}});
 document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
 document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
 
@@ -193,7 +196,21 @@ const copyField = (text: string) =>
   html`<button type="button" class="copyfield" data-copy="${text}" title="Copy"><span>${text}</span><svg class="cp" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg><svg class="ck" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg></button>`;
 
 /** Until the account's agent has used the connector: a strip under the header with its address. */
-const agentStrip = (origin: string) => html`<div class="agentbar"><div><b>Connect your agent</b>${copyField(`${origin}/mcp`)}</div></div>`;
+/** Claude's own link that opens "Add custom connector" with Tule's name and address filled in
+    (claude.com/docs/connectors/custom/add-unlisted). Connectors live on the Claude account, so this covers
+    claude.ai, the desktop and mobile apps, and Claude Code signed in with that account. */
+const addToClaude = (origin: string) =>
+  html`<a class="button small" target="_blank" rel="noopener" href="https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tule&connectorUrl=${encodeURIComponent(`${origin}/mcp`)}">Add to Claude</a>`;
+
+/** ChatGPT has no such link: the button copies the address, opens ChatGPT's plugins page and says what to click. */
+const addToChatGPT = (origin: string) =>
+  html`<a class="button small" target="_blank" rel="noopener" href="https://chatgpt.com/plugins" data-chatgpt="${origin}/mcp">Add to ChatGPT</a>`;
+
+const agentButtons = (origin: string) => html`<span class="agentbtns">${addToClaude(origin)}${addToChatGPT(origin)}</span>`;
+const agentHint = html`<p class="agenthint" hidden>Address copied. In ChatGPT, click <b>+</b> → <b>Add custom MCP server</b> and paste it.</p>`;
+
+const agentStrip = (origin: string) =>
+  html`<div class="agentbar"><div><b>Connect your agent</b>${agentButtons(origin)}${copyField(`${origin}/mcp`)}${agentHint}</div></div>`;
 
 /** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (connect_info).
     Settings also shows the CLI command, for working on a machine by hand. */
@@ -202,7 +219,7 @@ function agentSection(origin: string, cli = false): Html {
   return section(
     "Connect your agent",
     "Add the connector to your agent; it sets up the rest.",
-    html`${item("Connector", copyField(`${origin}/mcp`))}
+    html`${item("Connector", copyField(`${origin}/mcp`), html`${agentButtons(origin)}${agentHint}`)}
       ${cli ? html`<div class="item item-block"><span class="item-label">CLI, by hand</span><span class="item-action">${copyButton(cmd)}</span><pre>${cmd}</pre></div>` : ""}`,
   );
 }
