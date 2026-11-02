@@ -247,7 +247,8 @@ def test_sequence_writes_a_part_made_again_each_frame_once(outdir):
 
 
 def test_an_empty_part_is_refused_by_name(tmp_path, monkeypatch):
-    monkeypatch.setenv("TULE_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
     empty = (box(1, 1, 1) & box(1, 1, 1).at(5, 0, 0)).named("sheath")
     with pytest.raises(TuleError, match="sheath is empty"):
         outputs.assembly("hand", Assembly(box(2, 2, 2).named("palm"), empty))
+    assert not (tmp_path / "outputs" / "hand").exists()  # refused before anything is written

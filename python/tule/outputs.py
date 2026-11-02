@@ -266,6 +266,10 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
     """Write an assembly: one file per part plus ``output.json`` listing names and colors."""
     info = _info(info)
     asm = item if isinstance(item, Assembly) else Assembly(*item, name=name)
+    for path, shp in asm.parts():
+        if not shp.faces:
+            raise TuleError(f"{path} is empty (no faces)", op="outputs",
+                            hint="the operation that made it left nothing: check len(part.faces) after each step")
     folder = _folder(name)
     parts = []
     used = set()
