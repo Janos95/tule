@@ -497,10 +497,10 @@ which, and `output.json` only adds meaning (titles, units, colors):
 | anything else | any file | listed with a download, never hidden |
 
 **In the viewer** (built): the sidebar lists outputs, then work, then inputs,
-one row per folder. Under the selected one: what is wrong with it, inline with what
-to do ("lib/params.py changed · Rebuild", the last line of a failed build's
-error · Rebuild, for work "check again": "outputs/plate changed · Still
-valid"), then its views
+one row per folder; the row says "out of date", "failed" or (for work)
+"check again", and its tooltip why ("lib/params.py changed"). Over the
+view, next to Download, a button does something about it: Rebuild an
+output, or Still valid for work. Under the selected entry: its views
 when it has more than one: "3D" for its geometry (an assembly's parts under
 it), each other file, and a failed build's log. A view that is not 3D is a
 page over the stage. The machine's agent sends every file in the index with

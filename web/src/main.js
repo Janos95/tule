@@ -371,54 +371,56 @@ function fact(o) {
 
 const lastLine = (log) => (log ?? "").trim().split("\n").pop()?.trim() || null;
 
-/** Under the selected entry: why it is out of date or failed, with what to do about it. */
-function freshness(o) {
-  const lines = [];
-  const can = state.machine === "running";
-  const line = (tone, text, label, act) => {
-    const d = document.createElement("div");
-    d.className = `fresh ${tone}`;
-    d.innerHTML = "<span></span>";
-    d.firstChild.textContent = text;
-    if (label) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = label;
-      b.disabled = !can;
-      b.title = can ? "" : "The machine is not running";
-      b.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        b.disabled = true;
-        try {
-          await act();
-        } catch (err) {
-          b.disabled = false;
-          flash(`${label}: ${err.message}`);
-        }
-      });
-      d.append(b);
-    }
-    lines.push(d);
-  };
+/** What can be done about an entry, for the button over the view: {label, why, act} or null.
+ * Rebuild an output that is out of date or failed; confirm work whose sources changed. */
+function fixFor(o) {
+  const b = o.build;
   const rebuild = async () => {
     await req("build", { names: [o.name] });
     o.build = { ...o.build, state: "building" }; // until the index says how it went
     renderList();
   };
-  const b = o.build;
-  if (o.error) line("error", o.error);
-  if (b?.state === "failed") line("error", lastLine(b.log) ?? b.error ?? "failed", "Rebuild", rebuild);
-  else if (b?.state === "stale") line("warn", b.why === "never built" ? `${b.script} has not run yet` : b.why ?? "out of date", b.why === "never built" ? "Build" : "Rebuild", rebuild);
-  for (const f of changed(o)) {
-    const what = `${f.basedOn.changed.join(", ")} changed`;
-    line("warn", o.docs.length > 1 ? `${f.file}: ${what}` : what, "Still valid", async () => {
-      await req("confirm", { path: f.path });
-      f.basedOn.changed = [];
-      renderList();
-    });
-  }
-  return lines;
+  if (b?.state === "failed") return { label: "Rebuild", why: lastLine(b.log) ?? b.error ?? "failed", act: rebuild };
+  if (b?.state === "stale") return { label: b.why === "never built" ? "Build" : "Rebuild", why: b.why === "never built" ? `${b.script} has not run yet` : b.why ?? "out of date", act: rebuild };
+  const work = changed(o);
+  if (work.length)
+    return {
+      label: "Still valid",
+      why: work.map((f) => `${o.docs.length > 1 ? `${f.file}: ` : ""}${f.basedOn.changed.join(", ")} changed`).join("\n"),
+      act: async () => {
+        for (const f of work) await req("confirm", { path: f.path });
+        work.forEach((f) => (f.basedOn.changed = []));
+        renderList();
+      },
+    };
+  return null;
 }
+
+/** The button over the view: Rebuild or Still valid for the selected entry (its tooltip says why). */
+let fixing = null;
+function offerFix(o) {
+  const btn = $("fix-it");
+  fixing = o ? fixFor(o) : null;
+  btn.hidden = !fixing;
+  if (!fixing) return;
+  const can = state.machine === "running";
+  btn.disabled = !can;
+  btn.querySelector(".label").textContent = fixing.label;
+  btn.querySelector("path").setAttribute("d", fixing.label === "Still valid" ? "M3 8.5l3.25 3.25L13 5" : "M13 3v3.5H9.5M13 6.5A5.5 5.5 0 1 0 13.5 9.5");
+  btn.title = can ? fixing.why : `${fixing.why}\n(the machine is not running)`;
+}
+$("fix-it").addEventListener("click", async () => {
+  const f = fixing;
+  if (!f) return;
+  const btn = $("fix-it");
+  btn.disabled = true;
+  try {
+    await f.act();
+  } catch (err) {
+    btn.disabled = false;
+    flash(`${f.label}: ${err.message}`);
+  }
+});
 
 // the parts tree moves into the list under the selected output; the list is rebuilt often,
 // which detaches it, so keep the element itself (a lookup by id would find nothing then)
@@ -431,6 +433,7 @@ function renderList() {
   const all = state.outputs;
   state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (all.find((o) => o.root === "outputs")?.id ?? all[0]?.id ?? null);
   const outs = all.filter((o) => o.root === "outputs");
+  if (!all.some((o) => o.id === state.selected)) offerFix(null);
   $("outputs-empty").hidden = outs.length > 0;
   fill($("output-list"), outs);
   for (const root of ["work", "inputs"]) {
@@ -464,7 +467,7 @@ function fill(list, entries) {
       b.classList.toggle("open", open);
     }
     const kinds = [o.files.length ? kindOf(o) : null, ...o.docs.map((f) => f.file)].filter(Boolean);
-    b.title = [o.meta?.title, `${o.root}/${o.name}${kinds.length ? ` · ${kinds.join(", ")}` : ""}`, o.error].filter(Boolean).join("\n");
+    b.title = [o.meta?.title, `${o.root}/${o.name}${kinds.length ? ` · ${kinds.join(", ")}` : ""}`, o.error, fixFor(o)?.why].filter(Boolean).join("\n");
     b.addEventListener("click", () => {
       // shown already: a click folds or unfolds its views and parts (it stays so when you come back)
       if (foldable && selected) {
@@ -478,7 +481,7 @@ function fill(list, entries) {
     if (!selected) continue;
     const under = document.createElement("div");
     under.className = "under";
-    under.append(...freshness(o));
+    offerFix(o);
     if (open) {
       for (const x of vs.length > 1 ? vs : []) {
         const r = document.createElement("button");

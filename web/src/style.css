@@ -1640,13 +1640,8 @@ main {
 
 .under { margin: 2px 0 8px 15px; padding-left: 6px; border-left: 2px solid var(--line); }
 .under #parts { margin: 0 0 2px 14px; padding: 0; border-left: 0; }
-.fresh { padding: 3px 4px 5px 6px; font-size: 12px; line-height: 1.4; overflow-wrap: break-word; }
-.fresh.warn { color: var(--warn); }
-.fresh.error { color: var(--danger); }
-/* what to do about it: a link after the text */
-.fresh button { all: unset; margin-left: 6px; color: var(--link); font-weight: 500; cursor: pointer; white-space: nowrap; }
-.fresh button:hover { text-decoration: underline; }
-.fresh button:disabled { color: var(--faint); cursor: default; text-decoration: none; }
+#fix-it { color: var(--warn); }
+#fix-it:disabled { color: var(--faint); }
 .view { display: flex; align-items: center; gap: 7px; width: 100%; height: 26px; padding: 0 6px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 12.5px; text-align: left; }
 .view span:not(.view-dot) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .view .output-icon { width: 13px; height: 13px; }
@@ -1718,3 +1713,4 @@ button.link:hover { text-decoration-color: var(--link); }
 .foot-save:hover { text-decoration: underline; }
 .foot-save:disabled { color: var(--faint); cursor: default; text-decoration: none; }
 .foot-save[hidden] { display: none; }
+@media (max-width: 640px) { #hud #fix-it .label { display: inline; } }
