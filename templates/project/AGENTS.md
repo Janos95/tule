@@ -138,6 +138,7 @@ outputs.part("bracket", part)
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
 - Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`.
+- Gears: `spur_gear(module, teeth, width, bore=, backlash=, profile_shift=)`, `internal_gear(...)` (faces `flanks tips roots`); `pair = gear_pair(module, z1, z2, internal=)` raises on interference or contact ratio < 1.2, then `pair.place(gear2, angle=)` puts gear 2 at `pair.distance`, turned to mesh.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
 ## Selecting faces and edges
