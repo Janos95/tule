@@ -251,10 +251,11 @@ QUALITY = ["Mesh.Algorithm3D = 10;", "Mesh.Optimize = 1;"]
 
 
 def mesh(part, size: float, face_sizes: dict | None = None, smallest: float | None = None,
-         curvature: int = 16, threads: int = 0, timeout: float = 1800, keep: str | None = None) -> TetMesh:
+         curvature: int = 16, threads: int = 0, timeout: float = 1800, keep: str | None = None,
+         balls=()) -> TetMesh:
     """Quadratic tetrahedra for ``part``: elements up to ``size`` mm, ``face_sizes`` ``{face id:
-    size}`` on chosen faces (thin walls), ``curvature`` elements per full turn on curved faces,
-    none smaller than ``smallest``."""
+    size}`` on chosen faces (thin walls), ``balls`` ``[(center, radius, size)]`` (load patches),
+    ``curvature`` elements per full turn on curved faces, none smaller than ``smallest``."""
     gmsh = find_gmsh()
     if not gmsh:
         raise TuleError("tetrahedral meshing needs gmsh", op="fea",
@@ -296,23 +297,37 @@ def mesh(part, size: float, face_sizes: dict | None = None, smallest: float | No
         for f, h in face_sizes.items():
             if 0 <= f < nf:
                 by_size.setdefault(round(h, 4), []).append(f + 1)
-        if by_size:
-            fids = []
-            for n, (h, surfs) in enumerate(sorted(by_size.items()), start=1):
-                lines += [f"Field[{n}] = Constant;", f"Field[{n}].VIn = {h:.6g};", f"Field[{n}].VOut = {1e22:g};",
-                          f"Field[{n}].SurfacesList = {{{', '.join(map(str, surfs))}}};", f"Field[{n}].IncludeBoundary = 1;"]
-                fids.append(n)
+        fids = []
+        for n, (h, surfs) in enumerate(sorted(by_size.items()), start=1):
+            lines += [f"Field[{n}] = Constant;", f"Field[{n}].VIn = {h:.6g};", f"Field[{n}].VOut = {1e22:g};",
+                      f"Field[{n}].SurfacesList = {{{', '.join(map(str, surfs))}}};", f"Field[{n}].IncludeBoundary = 1;"]
+            fids.append(n)
+        for (cx, cy, cz), r, h in balls:  # elements of h in the ball, growing to size over another radius
+            n = len(fids) + 1
+            lines += [f"Field[{n}] = Ball;", f"Field[{n}].Radius = {r:.6g};", f"Field[{n}].Thickness = {r:.6g};",
+                      f"Field[{n}].VIn = {max(h, smallest):.6g};", f"Field[{n}].VOut = {size:.6g};",
+                      f"Field[{n}].XCenter = {cx:.9g};", f"Field[{n}].YCenter = {cy:.9g};", f"Field[{n}].ZCenter = {cz:.9g};"]
+            fids.append(n)
+        if fids:
             m = len(fids) + 1
             lines += [f"Field[{m}] = Min;", f"Field[{m}].FieldsList = {{{', '.join(map(str, fids))}}};", f"Background Field = {m};"]
         lines += ["Mesh 3;", 'Save "part.msh";']
         with open(os.path.join(work, "part.geo"), "w") as fh:
             fh.write("\n".join(lines) + "\n")
-        try:
-            r = subprocess.run([gmsh, "-nopopup", "-0", "part.geo"], cwd=work, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise TuleError(f"gmsh took over {timeout:.0f} s", op="fea", hint="a coarser size=, or fewer dofs") from None
-        out = r.stdout + r.stderr
-        if r.returncode != 0 or not os.path.exists(os.path.join(work, "part.msh")):
+        msh = os.path.join(work, "part.msh")
+        for attempt in range(2):  # gmsh now and then aborts (a signal: "double free"); a second run meshes
+            if os.path.exists(msh):
+                os.remove(msh)
+            try:
+                r = subprocess.run([gmsh, "-nopopup", "-0", "part.geo"], cwd=work, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                raise TuleError(f"gmsh took over {timeout:.0f} s", op="fea", hint="a coarser size=, or fewer dofs") from None
+            out = r.stdout + r.stderr
+            # a mesh it finished writing before crashing on exit is good
+            written = "Done writing 'part.msh'" in out and os.path.exists(msh)
+            if r.returncode >= 0 or written:
+                break
+        if (r.returncode != 0 and not written) or not os.path.exists(msh):
             errs = [ln for ln in out.splitlines() if "Error" in ln][-3:]
             raise TuleError("gmsh could not mesh the part: " + ("; ".join(errs) or out[-400:]), op="fea",
                             hint="check the part is one valid solid (part.check()); a different size= sometimes helps; "

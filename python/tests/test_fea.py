@@ -165,3 +165,146 @@ def test_overlay_fields_are_checked(tmp_path, monkeypatch):
         outputs.overlay("bad", part, {}, fields=[{"label": "t", "values": np.zeros((4, 4)), "origin": (0, 0, 0), "step": 1}])
     with pytest.raises(TuleError, match="only a vector field"):
         outputs.overlay("bad", part, {}, fields=[{"label": "t", "values": grid, "origin": (0, 0, 0), "step": 1, "deform": 2}])
+
+
+# ---------------------------------------------------------------- bearing, patches, free parts, warnings
+
+
+def lug(L=80.0, W=30.0, t=5.0, d=10.0, x=60.0):
+    """A plate held at its left end with a hole for a pin at `x`."""
+    b = box(L, W, t)
+    p = b.tag("root", b.faces["left"]) - cylinder(d / 2, 3 * t).at(x, W / 2, -t)
+    return p.tag("bore", p.faces.cylindrical(r=d / 2))
+
+
+def test_bearing_is_a_cosine_on_the_loaded_half():
+    p, F, R, t = lug(), 1000.0, 5.0, 5.0
+    pts, w, nrm, _ = fea._surface(p.tessellate(0.05, 0.2), 0.3, p.faces["bore"].ids)
+    v, area, projected = fea._load_vectors(fea.bearing("bore", (F, 0, 0)), pts, w, nrm)
+    assert np.allclose(v.sum(0), (F, 0, 0), atol=1e-9 * F)  # exactly the force
+    far = pts[:, 0] < 60 - 1e-6
+    assert np.abs(v[far]).sum() < 2e-3 * F  # the far half carries nothing (bar facets at ±90°)
+    theta = np.arctan2(pts[:, 1] - 15, pts[:, 0] - 60)
+    mid = np.abs(theta) < 1.4
+    p0 = 2 * F / (math.pi * R * t)  # p0 cos θ over the half: ∫ p0 cos² θ R t dθ = F
+    assert np.abs(np.linalg.norm(v[mid], axis=1) / w[mid] - p0 * np.cos(theta[mid])).max() < 0.06 * p0
+    assert projected == pytest.approx(2 * R * t, rel=1e-3) and area == pytest.approx(math.pi * R * t, rel=0.02)
+    with pytest.raises(TuleError, match="along the bore's axis") as e:
+        fea._load_vectors(fea.bearing("bore", (F, 0, 50)), pts, w, nrm)
+    assert "shoulder" in e.value.hint
+    top = fea._surface(p.tessellate(0.05, 0.2), 1.0, p.faces.nearest((40, 15, 5)).ids)
+    with pytest.raises(TuleError, match="bore or a pin"):
+        fea._load_vectors(fea.bearing("x", (F, 0, 0)), top[0], top[1], top[2])
+    half = pts[:, 0] < 60
+    with pytest.raises(TuleError, match="no part of these faces"):
+        fea._load_vectors(fea.bearing("x", (F, 0, 0)), pts[half], w[half], nrm[half])
+
+
+def test_bearing_on_a_lug_against_a_uniform_half():
+    p, F = lug(), 1000.0
+    kw = dict(fixed="root", voxel=0.6, verbose=False)
+    br = fea.static(p, STEEL, loads=[fea.bearing("bore", (F, 0, 0))], **kw)
+    # reference: the same force spread evenly over (about) the loaded half: a patch around the bore's +x side
+    half = fea.static(p, STEEL, loads=[fea.force("bore", (F, 0, 0), at=(65, 15, 2.5), r=5 * math.sqrt(2))], **kw)
+    whole = fea.static(p, STEEL, loads=[fea.force("bore", (F, 0, 0))], **kw)  # wrong: pulls the far side too
+    assert np.allclose(br.applied, (F, 0, 0)) and br.imbalance < 1e-6 and br.warnings == ()
+    assert br.stress_p995 == pytest.approx(half.stress_p995, rel=0.12)
+    assert br.max_displacement == pytest.approx(half.max_displacement, rel=0.1)
+    net = F / (2 * 10 * 5)  # net-section stress beside the hole; a pin-loaded lug's Kt there is about 2.5 to 3.5
+    assert 2.2 < br.stress_p995 / net < 3.6
+    far, near = br.stress_at([(54.8, 15, 2.5), (65.2, 15, 2.5)])
+    assert far < 0.35 * near  # the pin does not touch the far side
+    assert whole.stress_p995 < 0.6 * br.stress_p995  # a force on the whole bore understates it
+
+
+def test_force_on_a_patch():
+    L, B, H, F, a = 100.0, 10.0, 10.0, 100.0, 60.0
+    b = beam(L, B, H)
+    b = b.tag("top", b.faces["top"])
+    r = fea.static(b, STEEL, fixed="root", loads=[fea.force("top", (0, 0, -F), at=(a, B / 2, H), r=3)], voxel=2.0, verbose=False)
+    assert np.allclose(r.applied, (0, 0, -F), atol=1e-9 * F)
+    tip = F * a ** 2 * (3 * L - a) / (6 * STEEL.E * B * H ** 3 / 12)  # a point load at a: the tip still rotates
+    assert -r.displacement_at([(L, B / 2, H / 2)])[0, 2] == pytest.approx(tip, rel=0.02)
+    assert r.warnings == () and "within 3 mm of (60, 5, 10) mm" in r.loads[0][0].label()
+    with pytest.raises(TuleError, match="catches none of the loaded faces") as e:
+        fea.static(b, STEEL, fixed="root", loads=[fea.force("top", (0, 0, -F), at=(50, 5, 30), r=3)], voxel=2.0, verbose=False)
+    assert "20 mm away" in str(e.value)
+    with pytest.raises(TuleError, match="both at= and r="):
+        fea.force("top", (0, 0, -F), at=(50, 5, 10))
+    with pytest.raises(TuleError, match="positive"):
+        fea.force("top", (0, 0, -F), at=(50, 5, 10), r=0)
+    tiny = fea.static(b, STEEL, fixed="root", loads=[fea.force("top", (0, 0, -F), at=(a, B / 2, H), r=0.4)], voxel=2.0, verbose=False)
+    assert len(tiny.warnings) == 1 and "under 2 voxels across: a point load" in tiny.warnings[0]
+
+
+def test_balanced_free_parts():
+    L, A, F = 60.0, 100.0, 2000.0
+    r = fea.static(beam(L), STEEL, loads=[fea.force("tip", (F, 0, 0)), fea.force("root", (-F, 0, 0))], balanced=True,
+                   voxel=2.0, verbose=False)
+    stretch = r.displacement_at([(L, 5, 5)])[0, 0] - r.displacement_at([(0, 5, 5)])[0, 0]
+    assert stretch == pytest.approx(F * L / (STEEL.E * A), rel=1e-3)
+    assert r.stress_at([(L / 2, 5, 5)])[0] == pytest.approx(F / A, rel=1e-3) and r.stress_p995 == pytest.approx(F / A, rel=0.01)
+    assert np.linalg.norm(r.reaction) < 1e-5 * F and r.warnings == ()
+    assert np.abs(r.displacement_at([(L / 2, 5, 5)])).max() < 1e-6  # relative to its mean position: the middle stays
+    assert "free part (balanced=True)" in str(r)
+    # a shaft twisted by opposite couples at its ends
+    R, Ln, T = 5.0, 40.0, 1000.0
+    s = cylinder(R, Ln)
+    s = s.tag("base", s.faces["bottom"]).tag("end", s.faces["top"])
+    r = fea.static(s, STEEL, loads=[fea.moment("end", (0, 0, T)), fea.moment("base", (0, 0, -T))], balanced=True,
+                   voxel=0.8, verbose=False)
+    twist = (r.displacement_at([(R, 0, Ln)])[0][1] - r.displacement_at([(R, 0, 0)])[0][1]) / R
+    assert twist == pytest.approx(T * Ln / (STEEL.E / 2.6 * math.pi * R ** 4 / 2), rel=0.05)
+    # the loads must balance
+    with pytest.raises(TuleError, match=r"do not balance: net force \(2000, 0, 0\) N") as e:
+        fea.static(beam(L), STEEL, loads=[fea.force("tip", (F, 0, 0))], balanced=True, voxel=2.0, verbose=False)
+    assert "accel=(-4.246e+07, 0, 0)" in e.value.hint
+    with pytest.raises(TuleError, match=r"net moment \(0, -1.2e\+05, 0\)"):
+        fea.static(beam(L), STEEL, loads=[fea.force("tip", (0, 0, F)), fea.force("root", (0, 0, -F))], balanced=True,
+                   voxel=2.0, verbose=False)
+    with pytest.raises(TuleError, match="leave out fixed"):
+        fea.static(beam(L), STEEL, fixed="root", loads=[fea.force("tip", (F, 0, 0))], balanced=True, verbose=False)
+    with pytest.raises(TuleError, match="nothing holds the part") as e:
+        fea.static(beam(L), STEEL, loads=[fea.force("tip", (F, 0, 0))], verbose=False)
+    assert "balanced=True" in e.value.hint
+
+
+def test_link_pulled_by_two_pins():
+    lk = box(100, 20, 5) - cylinder(4, 20).at(10, 10, -5) - cylinder(4, 20).at(90, 10, -5)
+    bores = lk.faces.cylindrical(r=4)
+    lk = lk.tag("a", bores.nearest((10, 10, 2))).tag("b", bores.nearest((90, 10, 2)))
+    r = fea.static(lk, STEEL, loads=[fea.bearing("a", (-1000, 0, 0)), fea.bearing("b", (1000, 0, 0))], balanced=True,
+                   voxel=0.7, verbose=False)
+    assert r.stress_at([(50, 10, 2.5)])[0] == pytest.approx(1000 / (20 * 5), rel=0.02)  # the shank: F / A
+    assert min(abs(r.max_stress_at.x - 10), abs(r.max_stress_at.x - 90)) < 6  # at a hole
+
+
+def test_warnings(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path))
+    b = beam()
+    r = fea.static(b, STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -100))], voxel=0.8)  # a fine grid: the clamp's corner
+    (w,) = r.warnings
+    assert "× the 99.5th percentile, at the edge of a fixed face" in w and r.max_stress > 2 * r.stress_p995
+    assert capsys.readouterr().out.count("fea: warning:") == 1  # printed once, when solved
+    assert "WARNING: the peak" in str(r)
+    meta = json.load(open(os.path.join(r.show("beam-warn"), "output.json")))
+    assert list(meta["info"])[0] == "warning" and meta["info"]["warning"] == w
+    hard = fea.static(b, STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1e5), at=(100, 5, 5), r=1)], voxel=2.5, verbose=False)
+    assert any("past yield" in x for x in hard.warnings) and any("point load" in x for x in hard.warnings)
+    assert "residual of 1.0e-03" in fea._common_warnings(1e-3, 1e-6, 0.0, 0.0)[0]
+    assert fea._common_warnings(1e-8, 1e-6, 1e-7, 0.0) == []
+    assert "0.5 %" in fea._common_warnings(0.0, 1e-6, 5e-3, 0.0)[0]
+
+
+def test_converge_reports_the_spread(capsys):
+    c = fea.converge(beam(), STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -100))], dofs=40_000, verbose=False)
+    assert len(c.results) == 3 and c.results[0].dofs < c.results[1].dofs < c.result.dofs
+    assert c.converged and c.spread("max_displacement") < 0.05
+    assert "converged (within 5 %)" in str(c)
+    # a block on a small foot: it tilts on the voxelized clamp, differently at each size
+    p = box(40, 20, 10).at(0, 0, 2) | box(3, 3, 2.5).at(18.5, 8.5, 0)
+    p = p.tag("foot", p.faces.nearest((20, 10, 0))).tag("top", p.faces.nearest((20, 10, 12)))
+    c = fea.converge(p, STEEL, fixed="foot", loads=[fea.force("top", (0, 0, -100))], dofs=60_000, mesh="voxel", verbose=False)
+    assert not c.converged and "NOT converged" in str(c)
+    with pytest.raises(TuleError, match="sets the mesh"):
+        fea.converge(beam(), STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1))], voxel=1.0)

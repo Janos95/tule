@@ -252,3 +252,42 @@ def test_loose_pieces_are_refused():
     two = two.tag("fixed", two.faces.nearest((0, 5, 5))).tag("load", two.faces.nearest((30, 5, 5)))
     with pytest.raises(TuleError, match="touch no fixed face"):
         fea.static(two, STEEL, fixed="fixed", loads=[fea.force("load", (1, 0, 0))], mesh="tet", dofs=5_000, verbose=False)
+
+
+@needs_gmsh
+def test_bearing_patch_and_free_parts_on_tetrahedra():
+    # a lug: a pin's bearing against the same force spread evenly over (about) the loaded half of the bore
+    b = box(80, 30, 5)
+    lug = b.tag("root", b.faces["left"]) - cylinder(5, 15).at(60, 15, -5)
+    lug = lug.tag("bore", lug.faces.cylindrical(r=5))
+    kw = dict(fixed="root", mesh="tet", dofs=40_000, verbose=False)
+    br = fea.static(lug, STEEL, loads=[fea.bearing("bore", (1000, 0, 0))], **kw)
+    half = fea.static(lug, STEEL, loads=[fea.force("bore", (1000, 0, 0), at=(65, 15, 2.5), r=5 * math.sqrt(2))], **kw)
+    assert np.allclose(br.applied, (1000, 0, 0), atol=1e-9) and br.warnings == ()
+    assert br.stress_p995 == pytest.approx(half.stress_p995, rel=0.12) and 2.2 < br.stress_p995 / 10 < 3.6
+    far, near = br.stress_at([(54.8, 15, 2.5), (65.2, 15, 2.5)])
+    assert far < 0.35 * near
+    # a force on a patch of the top of a cantilever: a point load at 60 mm (the mesh is refined there)
+    bm = beam()
+    bm = bm.tag("top", bm.faces["top"])
+    r = fea.static(bm, STEEL, fixed="root", loads=[fea.force("top", (0, 0, -100), at=(60, 5, 10), r=3)], mesh="tet",
+                   dofs=25_000, verbose=False)
+    assert np.allclose(r.applied, (0, 0, -100), atol=1e-9)
+    assert -r.displacement_at([(100, 5, 5)])[0, 2] == pytest.approx(100 * 60 ** 2 * 240 / (6 * STEEL.E * 1e4 / 12), rel=0.01)
+    assert r.warnings == ()
+    hard = fea.static(bm, STEEL, fixed="root", loads=[fea.force("top", (0, 0, -1000), at=(60, 5, 10), r=0.5)], mesh="tet",
+                      dofs=25_000, verbose=False)
+    assert any("past yield" in w for w in hard.warnings)  # about 1000 MPa under the patch
+    # a bar pulled at both ends, held by nothing
+    r = fea.static(beam(), STEEL, loads=[fea.force("tip", (2000, 0, 0)), fea.force("root", (-2000, 0, 0))], balanced=True,
+                   mesh="tet", dofs=20_000, verbose=False)
+    stretch = r.displacement_at([(100, 5, 5)])[0, 0] - r.displacement_at([(0, 5, 5)])[0, 0]
+    assert stretch == pytest.approx(2000 * 100 / (STEEL.E * 100), rel=1e-4)
+    assert r.stress_p995 == pytest.approx(20, rel=1e-4) and np.linalg.norm(r.reaction) < 1e-4 and r.warnings == ()
+    with pytest.raises(TuleError, match="do not balance"):
+        fea.static(beam(), STEEL, loads=[fea.force("tip", (2000, 0, 0))], balanced=True, mesh="tet", dofs=20_000, verbose=False)
+    two = box(10, 10, 10) | box(10, 10, 10).at(20, 0, 0)
+    two = two.tag("a", two.faces.nearest((0, 5, 5))).tag("b", two.faces.nearest((30, 5, 5)))
+    with pytest.raises(TuleError, match="one piece"):
+        fea.static(two, STEEL, loads=[fea.force("a", (-1, 0, 0)), fea.force("b", (1, 0, 0))], balanced=True, mesh="tet",
+                   dofs=5_000, verbose=False)
