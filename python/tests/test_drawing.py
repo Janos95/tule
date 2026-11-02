@@ -2,6 +2,7 @@ import functools
 import math
 import re
 
+import numpy as np
 import pytest
 
 from tule import *
@@ -470,3 +471,91 @@ def test_concave_radius_callout():
     assert any(s.startswith("4× R3 ↧") for s in t)
     t = texts(item=blk, views=("front", "top", "right"), dims=[("front", r3, {"text": "SIDE POCKETS: R3, DEPTH 14"})])
     assert "SIDE POCKETS: R3, DEPTH 14" in t
+
+
+def _gap(x0, y0, x1, y1, box):
+    """How far a text's box is from a dimension line (0 when it touches it)."""
+    cx, cy, cs, sn, hw, hh = box
+    a, b = np.array([x0, y0]), np.array([x1, y1])
+
+    def local(p):  # in the box's frame
+        d = p - (cx, cy)
+        return np.array([d @ (cs, sn), d @ (-sn, cs)])
+
+    def to_seg(p):
+        d = b - a
+        t = 0.0 if d @ d == 0 else np.clip((p - a) @ d / (d @ d), 0, 1)
+        return float(np.linalg.norm(p - a - t * d))
+
+    if any(abs(q[0]) <= hw and abs(q[1]) <= hh for q in (local(a), local(b))):
+        return 0.0
+    corners = [np.array([cx, cy]) + u * np.array([cs, sn]) + v * np.array([-sn, cs])
+               for u in (-hw, hw) for v in (-hh, hh)]
+    return min(to_seg(q) for q in corners)
+
+
+def test_dimension_text_stays_by_its_line():
+    p = box(60, 30, 8)
+    for x in (6, 11, 16, 21, 26):
+        p -= cylinder(1.25, 20, center=True).at(x, 8, 0)
+    p -= slot(10, 3).extrude(20).at(40, 8, -5)
+    for x in (36, 50):
+        p -= cylinder(1.7, 20, center=True).at(x, 22, 0) + cylinder(3, 3.5).at(x, 22, 4.5)
+    xs = (0, 6, 11, 16, 21, 26)
+    dims = [("top", (a, 8, 8), (b, 8, 8), {"side": "bottom"}) for a, b in zip(xs, xs[1:])]
+    dims += [("top", (0, 0, 8), (6, 8, 8)), ("top", (6, 8, 8), (36, 22, 8)), ("top", (11, 8, 8), (36, 22, 8)),
+             ("top", (36, 22, 8), (50, 22, 8)), ("top", (35, 8, 8), (45, 8, 8), {"side": "top"}),
+             ("top", (0, 0, 8), (0, 8, 8)), ("top", (0, 8, 8), (0, 22, 8)), ("top", (0, 0, 8), (0, 22, 8)),
+             ("front", (0, 0, 0), (0, 0, 4.5)), ("front", (0, 0, 4.5), (0, 0, 8))]
+    page, _, _ = drawing.render(p.named("crowded"), views=("front", "top"), dims=dims)
+    placed = page.dimtexts
+    assert len(placed) >= len(dims)
+    for x0, y0, x1, y1, b in placed:  # on its line, or just beyond an arrow
+        assert _gap(x0, y0, x1, y1, b) <= 10.5, (x0, y0, x1, y1)
+    boxes = [b for *_, b in placed]
+    for i, b in enumerate(boxes):
+        assert not any(drawing._box_hit(b, o) for o in boxes[:i])
+    assert drawing.collisions(page) == []
+
+
+def test_dimension_label_follows_the_value():
+    p = box(40, 20, 5) - cylinder(2, 20, center=True).at(10, 10, 0) - cylinder(2, 20, center=True).at(30, 10, 0)
+    t = texts(item=p, views=("top",), dims=[("top", (0, 0, 5), (2.857, 0, 5), {"label": "ROOT"}),
+                                           ("top", (0, 20, 5), (40, 20, 5), {"label": "REF", "tol": "±0.1"}),
+                                           ("top", (0, 0, 5), (0, 20, 5), {"text": "W", "label": "MAX"}),
+                                           (p.faces.cylindrical(r=2), {"label": "REAM"})])
+    assert {"2.86 ROOT", "40 ±0.1 REF", "W MAX", "2× ⌀4 THRU REAM"} <= set(t)
+    with pytest.raises(TuleError, match="text, label, along"):
+        texts(item=p, dims=[("top", (0, 0, 5), (1, 0, 5), {"suffix": "X"})])
+
+
+def test_several_parts_and_a_table_sheet(outdir):
+    def bracket(L):
+        p = box(L, 20, 4)
+        for x in (6, L - 6):
+            p -= cylinder(1.7, 20, center=True).at(x, 10, 0)
+        return p
+
+    parts = {f"B-{L}": bracket(L) for L in (40, 60)}
+    rows = [{"Part": k, "L": v.bounds[1][0]} for k, v in parts.items()]
+    outputs.drawing("family", parts, views=("front", "top"), title="Bracket family", dxf="top",
+                    dims={"B-60": [("top", (0, 10, 4), (6, 10, 4), {"label": "TYP"})]},
+                    info={"B-40": {"number": "B-40-01"}, "B-60": {"number": "B-60-01"}},
+                    notes=["Print flat"], table=rows)
+    d = outdir / "family"
+    assert sorted(x.name for x in d.iterdir()) == ["family-2.svg", "family-3.svg", "family-B-40.dxf",
+                                                   "family-B-60.dxf", "family.pdf", "family.svg"]
+    pdf = (d / "family.pdf").read_bytes()
+    assert b"/Count 3" in pdf and b"/Title (Bracket family)" in pdf
+    s1, s2, s3 = (svg_texts(d / f) for f in ("family.svg", "family-2.svg", "family-3.svg"))
+    assert "B-40" in s1 and "B-40-01" in s1 and "A4  1/3" in s1 and "NOTES" not in s1
+    assert "B-60" in s2 and "6 TYP" in s2 and "B-60-01" in s2
+    assert {"Part", "L", "B-40", "60", "NOTES", "Print flat", "Bracket family", "A4  3/3"} <= set(s3)
+    # one part with a table: two sheets, the notes on the second
+    _, _, f = drawing.render(plate(), notes=["Deburr"], table=[["Size", "Qty"], ["M5", 4]])
+    assert len(f["pages"]) == 2 and "Deburr" in [t for t, _ in f["pages"][1][0].labels]
+    assert "Deburr" not in [t for t, _ in f["pages"][0][0].labels]
+    with pytest.raises(TuleError, match="'B-99' is no part"):
+        drawing.render(parts, dims={"B-99": []})
+    with pytest.raises(TuleError, match="table is a list"):
+        drawing.render(plate(), table="M5")

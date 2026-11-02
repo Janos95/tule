@@ -17,7 +17,8 @@ drawn first, then each text goes on the first spot touching no line and no
 other text (:func:`collisions` checks a page); leaders cross no leader and no
 dimension line. GD&T (datum feature symbols, feature control frames, basic
 sizes) hangs on model faces through ``datums`` and ``dims``. ``sheets`` spreads
-the views over pages of one PDF, each feature called out once. The scale is
+the views over pages of one PDF, each feature called out once; ``{name: part}``
+draws parts one after another, and ``table`` adds a sheet. The scale is
 1:1 when it fits, else the largest ISO 5455 one. Output is deterministic (no
 dates), so a rebuild that changes nothing writes the same bytes.
 """
@@ -973,6 +974,7 @@ class _Canvas:
         self.dimsegs: list = []  # dimension lines (x0, y0, x1, y1): no leader may cross one
         self.extsegs: list = []  # extension lines: a leader crosses one only where nothing else is free
         self.frames: list = []   # feature control frames and datums, as text (facts)
+        self.dimtexts: list = []  # (x0, y0, x1, y1, box): a dimension line and its text's box
 
     def path(self, style, cmds, phase=0.0):
         if cmds:
@@ -1038,6 +1040,8 @@ class _Canvas:
         self.dimsegs += [(x0 + dx, y0 + dy, x1 + dx, y1 + dy) for x0, y0, x1, y1 in other.dimsegs]
         self.extsegs += [(x0 + dx, y0 + dy, x1 + dx, y1 + dy) for x0, y0, x1, y1 in other.extsegs]
         self.frames += other.frames
+        self.dimtexts += [(x0 + dx, y0 + dy, x1 + dx, y1 + dy, (b[0] + dx, b[1] + dy, *b[2:]))
+                          for x0, y0, x1, y1, b in other.dimtexts]
 
     def bbox(self):
         return _bbox(self.ops)
@@ -1241,7 +1245,7 @@ def _prim_cmds(p, s, dx=0.0, dy=0.0):
 class _Dim:
     """A linear dimension between two view points (model mm), measured along ``u`` (view coordinates)."""
 
-    def __init__(self, a, b, along, text=None, offset=None, side=None, tol=None):
+    def __init__(self, a, b, along, text=None, offset=None, side=None, tol=None, label=None):
         self.a, self.b = np.asarray(a, float), np.asarray(b, float)
         if along == "h":
             self.u = np.array([1.0, 0.0])
@@ -1259,6 +1263,7 @@ class _Dim:
         self.offset = offset
         self.side = side  # "top", "bottom", "left", "right"; None: aligned, placed by offset
         self.tol = tol
+        self.label = label  # after the value: "2.86 ROOT"
         self.pad = 0.0    # model mm added to ``offset`` (paper mm), along n
 
     @property
@@ -1271,7 +1276,7 @@ class _Dim:
 
     @property
     def pieces(self):
-        return [self.text, self.tol]
+        return [self.text, self.tol] + ([f" {self.label}"] if self.label else [])
 
 
 def _box_of(x, y, runs, anchor="start", angle=0.0):
@@ -1283,13 +1288,14 @@ def _box_of(x, y, runs, anchor="start", angle=0.0):
     return (x + u * cs - v * sn, y + u * sn + v * cs, cs, sn, w / 2, (y1 - y0) / 2)
 
 
-def _dim_lines(c: _Canvas, dim: _Dim, s: float, L: float, clines=()):
+def _dim_lines(c: _Canvas, dim: _Dim, s: float, L: float, clines=(), far=False):
     """Draw ``dim``'s lines (scale ``s``, dimension line where ``point · n == L``, paper mm).
 
     Extension lines start a gap off the feature; from a center (``clines``: the center lines drawn, sheet
     mm), a gap past the end of the center line they would run along.
     Returns its text runs, the text angle, the spots for the text, best first
-    (``(baseline point, anchor, extra line or None)``), its name, bold and boxed (a basic size).
+    (``(baseline point, anchor, extra line or None)``), its name, bold and boxed (a basic size); and the
+    line's ends. The spots are on the line or just beyond an arrow; ``far``: further along it too.
     """
     u, n = dim.u, dim.n
     a, b = dim.a * s, dim.b * s
@@ -1335,38 +1341,39 @@ def _dim_lines(c: _Canvas, dim: _Dim, s: float, L: float, clines=()):
     spots = []
     if inside:
         m = (A + B) / 2
-        spots.append((m + lift, "middle", None, True))
+        spots.append((m + lift, "middle", None))
         room = (span - w) / 2 - ARROW[0] - 1.0
         k = 2.0
         while k <= room:
-            spots += [(m + k * t + lift, "middle", None, True), (m - k * t + lift, "middle", None, True)]
+            spots += [(m + k * t + lift, "middle", None), (m - k * t + lift, "middle", None)]
             k += 2.0
     hi, lo = (B, A) if (B - A) @ t >= 0 else (A, B)
-    for g in np.arange(6.0, 170.0, 4.0):  # beyond either end, on the dimension line drawn longer
+    # beyond either arrow, on the dimension line drawn longer: just past it, or (far) anywhere along it
+    for g in [6.0, 8.0, 10.0] + (list(np.arange(14.0, 170.0, 4.0)) if far else []):
         bare = g == 6.0 and not inside
         p = hi + g * t
-        spots.append((p + lift, "start", None if bare else (hi, p + (w + 0.5) * t), g <= 10))
+        spots.append((p + lift, "start", None if bare else (hi, p + (w + 0.5) * t)))
         p = lo - g * t
-        spots.append((p + lift, "end", None if bare else (lo, p - (w + 0.5) * t), g <= 10))
+        spots.append((p + lift, "end", None if bare else (lo, p - (w + 0.5) * t)))
     if dim.basic:
         name = f"[{dim.text}]"
     else:
-        name = dim.text if dim.tol is None else _runs_name(dim.pieces)
+        name = dim.text if dim.tol is None and not dim.label else _runs_name(dim.pieces)
     if dim.basic:  # the box's side clear of the dimension line's end
         spots = [(p + BOX * (t if anchor == "start" else -t if anchor == "end" else 0), anchor, x, *rest)
                  for p, anchor, x, *rest in spots]
-    return runs, angle, spots, name, False, dim.basic
+    return (runs, angle, spots, name, False, dim.basic), (A, B)
 
 
 BOX = 0.8  # a basic size's box, off its text
 
 
-def _place_text(c: _Canvas, occ: "_Occ", runs, angle, spots, name, bold=False, boxed=False) -> bool:
-    """Put a text on the first free spot (the first spot when none is); whether that spot is a near one.
+def _place_text(c: _Canvas, occ: "_Occ", runs, angle, spots, name, bold=False, boxed=False):
+    """Put a text on the first free spot (the first spot when none is); whether a free spot took it, and its box.
 
-    ``spots``: ``(baseline point, anchor, extra line or None[, near])``. ``boxed``: framed (a basic size).
+    ``spots``: ``(baseline point, anchor, extra line or None)``. ``boxed``: framed (a basic size).
     """
-    pick = spots[0]
+    pick, free = spots[0], False
     grow = BOX if boxed else 0.0
     for spot in spots:
         p, anchor, extra = spot[:3]
@@ -1374,7 +1381,7 @@ def _place_text(c: _Canvas, occ: "_Occ", runs, angle, spots, name, bold=False, b
         box = _box_of(p[0], p[1], runs, anchor, angle)
         box = (*box[:4], box[4] * (1.06 if bold else 1.0) + grow, box[5] + grow)
         if occ.free([box], segs):
-            pick = spot
+            pick, free = spot, True
             break
     p, anchor, extra = pick[:3]
     segs = []
@@ -1390,7 +1397,7 @@ def _place_text(c: _Canvas, occ: "_Occ", runs, angle, spots, name, bold=False, b
         c.path("thin", [("M", *pts[0])] + [("L", *q) for q in pts[1:]] + [("Z",)])
         box = (cx, cy, cs, sn, hw, hh)
     occ.add([box], segs)
-    return pick[3] if len(pick) > 3 else True
+    return free, box
 
 
 def _dim_interval(dim: _Dim, s: float):
@@ -1444,36 +1451,58 @@ def _annotate(view: _View, s: float, plan: dict) -> _Canvas:
     """Geometry, center lines, dimensions, datums and callouts of one view at scale ``s`` (view-local sheet mm).
 
     Lines go first; then every text takes the first spot that touches no line and no other text. A
-    dimension whose text found no spot near its line moves out a tier, and the view is drawn again.
+    dimension whose text finds no free spot on or beside its own line moves out a tier (stacks) and the
+    dimensions are drawn again; the last try also lets a text slide further along its line.
     """
+    dims, callouts, nb = plan["dims"], plan["callouts"], plan["nb"]
+    base = _Canvas()
+    for p in view.hid:
+        base.path("hid", _prim_cmds(p, s))
+    for p in view.vis:
+        base.path("vis", _prim_cmds(p, s))
+    for p, q in _hatch([[(x * s, y * s) for x, y in L] for L in view.cut]):
+        base.line("thin", p, q)
+    for p, q, _ in view.bends:
+        base.line("bend", (p[0] * s, p[1] * s), (q[0] * s, q[1] * s), 4.0)
+    geo = _segments(base.ops)  # the part's own lines: leaders should cross as few as possible
+    marks = [(np.asarray(p) * s, np.asarray(q) * s) for p, q in _centers(plan, s)]  # extension lines go past them
+    for p, q in marks:
+        base.center_line(p, q)
+    bb = view.bbox()
+    G = (bb[0] * s, bb[1] * s, bb[2] * s, bb[3] * s)
     bump: dict = {}
-    for _ in range(4):
-        c, far = _annotate_once(view, s, plan, bump)
-        if not far:
+    for i in range(BUMPS + 1):
+        c = _Canvas()
+        c.add(base)
+        reach, occ, stuck = _dims_drawn(c, view, s, dims, G, marks, bump, last=i == BUMPS)
+        if not stuck:
             break
-        for d in far:
+        for d in stuck:
             bump[id(d)] = bump.get(id(d), 0) + 1
+    for p, q, label in view.bends:
+        _bend_label(c, occ, np.asarray(p) * s, np.asarray(q) * s, label)
+    leaders: list = []
+    if plan.get("datums"):
+        _draw_datum_planes(c, occ, plan["datums"], s, geo, leaders)
+    if callouts:
+        _draw_callouts(c, occ, G, callouts, s, reach, nb, geo, {d.side for d in dims}, leaders)
+    if view.section:
+        title = f"{view.section}-{view.section}"
+        runs = _runs([title], 5.0)
+        x = (G[0] + G[2]) / 2
+        top = max(G[3] + reach["top"], c.bbox()[3] if c.ops else G[3])
+        _place_text(c, occ, runs, 0.0, [(np.array([x, top + 4 + 2 * k]), "middle", None) for k in range(40)],
+                    title, bold=True)
     return c
 
 
-def _annotate_once(view, s, plan, bump):
-    dims, callouts, nb = plan["dims"], plan["callouts"], plan["nb"]
-    c = _Canvas()
-    for p in view.hid:
-        c.path("hid", _prim_cmds(p, s))
-    for p in view.vis:
-        c.path("vis", _prim_cmds(p, s))
-    for p, q in _hatch([[(x * s, y * s) for x, y in L] for L in view.cut]):
-        c.line("thin", p, q)
-    for p, q, _ in view.bends:
-        c.line("bend", (p[0] * s, p[1] * s), (q[0] * s, q[1] * s), 4.0)
-    geo = _segments(c.ops)  # the part's own lines: leaders should cross as few as possible
-    marks = [(np.asarray(p) * s, np.asarray(q) * s) for p, q in _centers(plan, s)]  # extension lines go past them
-    for p, q in marks:
-        c.center_line(p, q)
-    bb = view.bbox()
-    G = (bb[0] * s, bb[1] * s, bb[2] * s, bb[3] * s)
-    # dimensions: stacked outward per side, shorter ones closer
+BUMPS = 6  # how often a crowded dimension may move out a tier
+
+
+def _dims_drawn(c: _Canvas, view, s, dims, G, marks, bump, last=False):
+    """Dimensions (stacked outward per side, shorter ones closer; ``bump``: tiers further out) and section
+    cut lines on ``c``. Returns each side's reach, what is occupied, and the dimensions whose text found no
+    free spot."""
     reach = {k: 0.0 for k in SIDES}
     texts = []
     for side, (out, _) in SIDES.items():
@@ -1489,14 +1518,15 @@ def _annotate_once(view, s, plan, bump):
             tiers[t].append(iv)
             dist = _side_edge(G, side) + FIRST + STEP * t  # along `out`
             L = dist * float(out @ d.n)  # the line's coordinate along the dimension's own normal
-            texts.append((t, d, _dim_lines(c, d, s, L, marks)))
+            texts.append((t, d, *_dim_lines(c, d, s, L, marks, last)))
         if tiers:
             reach[side] = FIRST + STEP * (len(tiers) - 1) + TEXT + 1.5
     for d in dims:
-        if d.side is None:
-            texts.append((0, None, _dim_lines(c, d, s, float(d.a * s @ d.n) + d.offset + d.pad * s, marks)))
+        if d.side is None:  # placed by its offset: out by a tier per bump
+            off = d.offset + math.copysign(STEP * bump.get(id(d), 0), d.offset) if d.offset else 0.0
+            texts.append((0, d, *_dim_lines(c, d, s, float(d.a * s @ d.n) + off + d.pad * s, marks, last)))
     # section cutting planes seen edge-on here: a chain line, thick ends, arrows looking along the cut
-    marks_ = []
+    letters = []
     for letter, p, w, sight in view.cutlines:
         p, w, sight = np.asarray(p) * s, np.asarray(w), np.asarray(sight)
         ts = [(np.array(q) - p) @ w for q in ((G[0], G[1]), (G[2], G[1]), (G[0], G[3]), (G[2], G[3]))]
@@ -1509,29 +1539,17 @@ def _annotate_once(view, s, plan, bump):
             T = E - 8 * sight
             spots = [(T - 1.5 * sight + k * inward * -1 + np.array([0, -TEXT * 0.36]), "middle", None)
                      for k in (0, 3, 6, 9, 12)]
-            marks_.append((_runs([letter], 5.0), spots, letter))
+            letters.append((_runs([letter], 5.0), spots, letter))
     occ = _Occ(_segments(c.ops))
-    far = []
-    for t, d, tx in sorted(texts, key=lambda it: it[0]):  # inner tiers first
-        if not _place_text(c, occ, *tx) and d is not None:
-            far.append(d)
-    for p, q, label in view.bends:
-        _bend_label(c, occ, np.asarray(p) * s, np.asarray(q) * s, label)
-    for runs, spots, letter in marks_:
+    stuck = []
+    for t, d, tx, (A, B) in sorted(texts, key=lambda it: it[0]):  # inner tiers first
+        free, box = _place_text(c, occ, *tx)
+        c.dimtexts.append((*A, *B, box))
+        if not free and (d.side or d.offset):
+            stuck.append(d)
+    for runs, spots, letter in letters:
         _place_text(c, occ, runs, 0.0, spots, letter, bold=True)
-    leaders: list = []
-    if plan.get("datums"):
-        _draw_datum_planes(c, occ, plan["datums"], s, geo, leaders)
-    if callouts:
-        _draw_callouts(c, occ, G, callouts, s, reach, nb, geo, {d.side for d in dims}, leaders)
-    if view.section:
-        title = f"{view.section}-{view.section}"
-        runs = _runs([title], 5.0)
-        x = (G[0] + G[2]) / 2
-        top = max(G[3] + reach["top"], c.bbox()[3] if c.ops else G[3])
-        _place_text(c, occ, runs, 0.0, [(np.array([x, top + 4 + 2 * k]), "middle", None) for k in range(40)],
-                    title, bold=True)
-    return c, far
+    return reach, occ, stuck
 
 
 BEND_TEXT = 2.5
@@ -1922,7 +1940,7 @@ def _is_point(p) -> bool:
         return False
 
 
-PICK_OPTS = {"text", "tol", "side", "frame", "width", "length"}
+PICK_OPTS = {"text", "label", "tol", "side", "frame", "width", "length"}
 
 
 def _circles_of(sel: Selection, v: "_View | None", vname):
@@ -1990,7 +2008,7 @@ def _plane_of(sel: Selection, tol: float):
 
 def _parse_dims(dims, views: dict, alias: dict, tol: float):
     """Agent dimensions ``(view, p1, p2[, text or {text, along, offset, tol}])``, features picked by
-    selection ``([view, ]faces or circular edges[, text or {text, tol, side, frame, width, length}])``
+    selection ``([view, ]faces or circular edges[, text or {text, label, tol, side, frame, width, length}])``
     and planar faces picked for a frame ``([view, ]faces, {"frame": ..., "side": ...})``."""
     linear: dict = {k: [] for k in views}
     picks: list = []   # {"view", "geo", "opts", "used"}
@@ -2043,8 +2061,8 @@ def _parse_dims(dims, views: dict, alias: dict, tol: float):
         opts = spec[3] if len(spec) > 3 else {}
         if isinstance(opts, str):
             opts = {"text": opts}
-        if not isinstance(opts, dict) or set(opts) - {"text", "along", "offset", "tol", "side"}:
-            raise TuleError(f"dimension options are text, along, side, offset and tol, got {opts!r}", op="drawing",
+        if not isinstance(opts, dict) or set(opts) - {"text", "label", "along", "offset", "tol", "side"}:
+            raise TuleError(f"dimension options are text, label, along, side, offset and tol, got {opts!r}", op="drawing",
                             hint='("top", p1, p2, {"along": "h", "side": "top", "tol": "±0.05", "text": "40"})')
         a, b = v.p(_point(spec[1])), v.p(_point(spec[2]))
         along = opts.get("along")
@@ -2058,7 +2076,7 @@ def _parse_dims(dims, views: dict, alias: dict, tol: float):
             raise TuleError(f"side {side!r} does not suit a dimension along {along!r}", op="drawing",
                             hint="along h: top or bottom; along v: left or right; aligned: offset")
         t = _tol(opts["tol"]) if "tol" in opts else False
-        linear[vname].append((a, b, along, opts.get("text"), opts.get("offset"), t, side))
+        linear[vname].append((a, b, along, opts.get("text"), opts.get("offset"), t, side, opts.get("label")))
     return linear, picks, planes
 
 
@@ -2268,7 +2286,7 @@ def _plan(views: dict, feats, linear: dict, picks: list, planes: list, nb: dict,
         v = views[k]
         bb = v.bbox()
         mid = np.array([(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2])
-        for a, b, along, text, offset, t, side in linear[k]:
+        for a, b, along, text, offset, t, side, label in linear[k]:
             m = (np.asarray(a) + np.asarray(b)) / 2
             if side is not None:
                 pass
@@ -2278,7 +2296,7 @@ def _plan(views: dict, feats, linear: dict, picks: list, planes: list, nb: dict,
                 side = "right" if m[0] > mid[0] else "left"
             else:
                 side = None
-            d = _Dim(a, b, along, text, side=side if offset is None else None)
+            d = _Dim(a, b, along, text, side=side if offset is None else None, label=label)
             d.tol = t if t is not False else tols.get(_fmt(d.value))
             if offset is not None:
                 d.offset = float(offset)
@@ -2363,6 +2381,8 @@ def _plan(views: dict, feats, linear: dict, picks: list, planes: list, nb: dict,
             t = _tol(opts["tol"]) if "tol" in opts else None
             lines = [[ln] for ln in str(opts["text"]).split("\n")]
             lines[0].append(t)
+        if opts.get("label"):
+            lines[0].append(f" {opts['label']}")
         for ln in lines:
             if any(isinstance(p, tuple) and p[0] == "basic" for p in ln):
                 raise TuleError(f"'basic' is for dimensions; {_runs_name(ln)!r} is a callout", op="drawing",
@@ -2416,6 +2436,8 @@ def _plan(views: dict, feats, linear: dict, picks: list, planes: list, nb: dict,
             else:
                 lines = [[(f"{n}× " if n > 1 else "") + size, t]
                          + (_depth_pieces(False, depth, tols, owner) if depth else [])]
+            if opts.get("label"):
+                lines[0].append(f" {opts['label']}")
             plans[k]["callouts"].append([lines + opts.get("frame", []), sorted(cs.values()),
                                          opts.get("side") or sides.get(k)])
     # planar faces: datum symbols and frames, in the first view (sheet order) that sees the face edge-on
@@ -2689,7 +2711,7 @@ def _title_block(c: _Canvas, W, title, rows, rev, scale_txt, sheet, projection):
         c.text(cx0 + 1.5, y0 + ROW - 2.6, label, size=2.0)
         if value is not None:
             c.text(cx0 + 1.5, y0 + 1.8, value, size=TEXT)
-        else:
+        elif projection:
             _projection_symbol(c, cx0 + cw / 2 + 2.5, y0 + ROW / 2 - 1.2, projection)
     y = y0 + ROW
     for pair in reversed(lines):
@@ -2839,6 +2861,86 @@ def _notes_block(c: _Canvas, x0, y0, w, notes):
         y -= NOTE_LH
 
 
+TABLE_LH = 6.0  # table row height
+
+
+def _table(table):
+    """``table`` as a header and rows of text: a list of dicts (keys head the columns) or of lists (the first
+    is the header); None for none."""
+    if table is None:
+        return None
+    err = TuleError("table is a list of dicts, or of lists with the header first", op="drawing",
+                    hint='table=[{"Part": "B-20", "L": 20}, {"Part": "B-30", "L": 30}]')
+    if not isinstance(table, (list, tuple)) or not table:
+        raise err
+    if all(isinstance(r, dict) for r in table):
+        head = list(dict.fromkeys(k for r in table for k in r))
+        body = [[r.get(k, "") for k in head] for r in table]
+    elif all(isinstance(r, (list, tuple)) for r in table):
+        head, body = list(table[0]), [list(r) for r in table[1:]]
+        if any(len(r) > len(head) for r in body):
+            raise TuleError("a table row is longer than its header", op="drawing", hint="the first row names every column")
+        body = [r + [""] * (len(head) - len(r)) for r in body]
+    else:
+        raise err
+    return [str(h) for h in head], [[_value(v) if v is not None else "" for v in r] for r in body]
+
+
+def _table_size(rows):
+    head, body = rows
+    ws = [max(text_width(r[i], NOTE, bold=r is head) for r in [head] + body) + 4.0 for i in range(len(head))]
+    return ws, TABLE_LH * (1 + len(body))
+
+
+def _table_block(c: _Canvas, x0, y1, rows):
+    """The table, its top left at (x0, y1): a bold header, ruled rows, numbers right-aligned."""
+    head, body = rows
+    ws, h = _table_size(rows)
+    xs = [x0]
+    for w in ws:
+        xs.append(xs[-1] + w)
+    c.rect("thin", x0, y1 - h, xs[-1], y1)
+    for x in xs[1:-1]:
+        c.line("thin", (x, y1 - h), (x, y1))
+    num = [all(re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)", r[i]) or not r[i] for r in body) for i in range(len(head))]
+    for j, r in enumerate([head] + body):
+        y = y1 - TABLE_LH * (j + 1)
+        if j:
+            c.line("thin", (x0, y + TABLE_LH), (xs[-1], y + TABLE_LH))
+        for i, v in enumerate(r):
+            right = num[i] and j > 0
+            c.text(xs[i + 1] - 2 if right else xs[i] + 2, y + 1.8, v, size=NOTE, anchor="end" if right else "start",
+                   bold=j == 0)
+    c.line("frame" if body else "thin", (x0, y1 - TABLE_LH), (xs[-1], y1 - TABLE_LH))
+
+
+def _table_sheet(title, info, rev, notes, rows, sheet, number):
+    """A sheet of the table and the notes, with the title block: the smallest of A4, A3, A2 that takes them."""
+    tb_rows, _ = _fields(info, title)
+    tb_h = _tb_height(tb_rows)
+    tw, th = _table_size(rows) if rows else ([0.0], 0.0)
+    for size in [sheet] if sheet else AUTO_SHEETS:
+        W, H = SHEETS[size]
+        room = W - 2 * MARGIN - 16
+        nw = min(room, max(sum(tw), TB_W + 20))
+        h = th + (8.0 if rows and notes else 0.0) + _notes_height(notes, nw)
+        if sum(tw) <= room and h <= H - 2 * MARGIN - tb_h - 22:
+            break
+    else:
+        raise TuleError(f"the table and notes do not fit {sheet or AUTO_SHEETS[-1]}: {sum(tw):.0f} × {h:.0f} mm",
+                        op="drawing", hint="fewer columns or rows, shorter notes" + ("" if sheet else ", or sheet=\"A1\""))
+    c = _Canvas()
+    c.rect("frame", MARGIN, MARGIN, W - MARGIN, H - MARGIN)
+    x0, y = MARGIN + 8, H - MARGIN - 8
+    if rows:
+        _table_block(c, x0, y, rows)
+        y -= th + 8.0
+    if notes:
+        _notes_block(c, x0, y - _notes_height(notes, nw), nw, notes)
+    _title_block(c, W, title, tb_rows, rev, "–", f"{size}  {number[0]}/{number[1]}" if number[1] > 1 else size, None)
+    return c, size
+
+
 def _fit(s: str, w: float, size: float, bold=False) -> str:
     if text_width(s, size, bold) <= w:
         return s
@@ -2970,9 +3072,71 @@ def _callout_sides(specs, callouts, V, alias):
 
 def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=None, hidden=True,
            projection="first", name=None, notes=None, tol=None, revisions=None, callouts=None, sheets=None,
-           datums=None):
+           datums=None, table=None):
     """Lay out a drawing; returns the first sheet's ``(canvas, (width, height), facts)``; ``facts["pages"]``
-    holds every sheet's ``(canvas, size)``. See ``outputs.drawing``."""
+    holds every sheet's ``(canvas, size)``, ``facts["parts"]`` each part's ``(name, shape, bends)``. ``item``: a
+    part, or ``{name: part}`` for one part after another. See ``outputs.drawing``."""
+    parts = _parts(item)
+    names = [k for k, _ in parts]
+    if isinstance(dims, dict) and (set(dims) - set(names) or names == [None]):
+        raise TuleError(f"dims keyed by part name: {', '.join(map(repr, sorted(set(dims) - set(names))))} is no "
+                        "part", op="drawing", hint="parts: " + ", ".join(map(repr, names)))
+    rows = _table(table)
+    last = (len(parts) > 1 and bool(_notes(notes))) or rows is not None  # notes (and the table) on a sheet of their own
+    per = len(_sheet_specs(views, sheet, scale, callouts, sheets))
+    total = per * len(parts) + last
+
+    def each(a):  # given per part: {part name: value}
+        return isinstance(a, dict) and bool(a) and names != [None] and set(a) <= set(names)
+
+    pages, facts = [], None
+    for i, (k, it) in enumerate(parts):
+        def arg(a):
+            return a.get(k) if each(a) else a
+        try:
+            _, _, f = _render_part(it, views, arg(dims) or (), title if k is None else k, arg(info), sheet, scale,
+                                   hidden, projection, name if k is None else k, None if last else notes, arg(tol),
+                                   revisions, callouts, sheets, arg(datums), first=i * per, total=total, lead=i == 0)
+        except TuleError as e:
+            if k is not None:
+                e.message = f"{k}: {e.message}"
+            raise
+        pages += f["pages"]
+        f["parts"] = [(k, f.pop("shape"), f["bends"])]
+        if facts is None:
+            facts = f
+        else:
+            facts["parts"] += f["parts"]
+            facts["texts"] += f["texts"]
+            facts["frames"] += f["frames"]
+            facts["sheets"] += f["sheets"]
+    if last:
+        doc = title or (facts["title"] if len(parts) == 1 else name) or "Drawing"
+        page, size = _table_sheet(doc, None if each(info) else info, facts["rev"], _notes(notes), rows, sheet,
+                                  (total, total))
+        pages.append((page, SHEETS[size]))
+        facts["sheets"].append({"sheet": size, "scale": None})
+        facts["texts"] += [t for t, _ in page.labels]
+    if len(parts) > 1:
+        facts["title"] = title or name or "Drawing"
+    facts["pages"] = pages
+    return pages[0][0], pages[0][1], facts
+
+
+def _parts(item):
+    """``[(name, item)]``: one part (name None), or ``{name: part}``."""
+    if not isinstance(item, dict):
+        return [(None, item)]
+    if not item or not all(isinstance(k, str) and k.strip() for k in item):
+        raise TuleError("several parts are {name: part}, each name a text", op="drawing",
+                        hint='outputs.drawing("family", {"B-20": b20, "B-30": b30})')
+    return list(item.items())
+
+
+def _render_part(item, views=None, dims=(), title=None, info=None, sheet=None, scale=None, hidden=True,
+                 projection="first", name=None, notes=None, tol=None, revisions=None, callouts=None, sheets=None,
+                 datums=None, first=0, total=None, lead=True):
+    """One part's sheets, numbered from ``first`` + 1 of ``total``; the revision table when it ``lead``s."""
     shape, part_name = _as_shape(item)
     if projection not in GRID:
         raise TuleError(f"projection is 'first' or 'third', got {projection!r}", op="drawing")
@@ -3061,15 +3225,15 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
     tb_h = _tb_height(rows)
     pages, chosen = [], []
     for si, sp in enumerate(specs):
-        first = si == 0
+        top = si == 0
         s, size, page = _sheet(V, plans, grids[si], si, sp, extent, title, rows, rev, projection,
-                               notes if first else [], revs if first else [], tb_h, (si + 1, len(specs)),
-                               bends if first else ())
+                               notes if top else [], revs if top and lead else [], tb_h,
+                               (first + si + 1, total or len(specs)), bends if top else ())
         pages.append((page, SHEETS[size]))
         chosen.append({"sheet": size, "scale": _scale_text(s)})
     facts = {"scale": chosen[0]["scale"], "sheet": chosen[0]["sheet"], "sheets": chosen, "title": title, "rev": rev,
              "texts": [t for p, _ in pages for t, _ in p.labels], "frames": [f for p, _ in pages for f in p.frames],
-             "pages": pages, "bends": bends}
+             "pages": pages, "bends": bends, "shape": shape}
     return pages[0][0], pages[0][1], facts
 
 
@@ -3479,28 +3643,37 @@ def dxf(item, path: str, view: str = "top") -> str:
     return write_atomic(path, to_dxf(v))
 
 
-def write(folder: str, base: str, item: Union[Shape, Assembly], views=None, dims=(),
+def write(folder: str, base: str, item, views=None, dims=(),
           title=None, info=None, sheet=None, scale=None, hidden=True, projection="first", dxf_view=None,
-          notes=None, tol=None, revisions=None, callouts=None, sheets=None, datums=None) -> dict:
+          notes=None, tol=None, revisions=None, callouts=None, sheets=None, datums=None, table=None) -> dict:
     """Write ``<base>.pdf`` (every sheet a page) and ``<base>.svg`` (``<base>-2.svg``, ... for further sheets),
-    and ``<base>.dxf``, into ``folder``; returns facts (scale, texts)."""
-    shape, _ = _as_shape(item)
-    if dxf_view and shape.sheet_metal is not None:  # a cut file needs the flat: fail first, once, naming the part
-        from .sheetmetal import _flat
+    and ``<base>.dxf`` (``<base>-<part>.dxf`` per part of several), into ``folder``; returns facts (scale, texts)."""
+    parts = _parts(item)
 
-        _flat(shape, "drawing", base)
+    def stem(k):
+        from .outputs import _slug
+
+        return base if len(parts) == 1 else f"{base}-{_slug(k)}"
+
+    for k, it in parts:
+        shape, _ = _as_shape(it)
+        if dxf_view and shape.sheet_metal is not None:  # a cut file needs the flat: fail first, once, naming the part
+            from .sheetmetal import _flat
+
+            _flat(shape, "drawing", k or base)
     _, _, facts = render(item, views, dims, title, info, sheet, scale, hidden, projection, base, notes=notes, tol=tol,
-                         revisions=revisions, callouts=callouts, sheets=sheets, datums=datums)
+                         revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table)
     pages = facts["pages"]
     write_atomic(os.path.join(folder, base + ".pdf"), to_pdf(pages, title=facts["title"]))
     for i, (page, size) in enumerate(pages):
         n = len(pages)
         write_atomic(os.path.join(folder, base + (f"-{i + 1}" if i else "") + ".svg"),
                      to_svg(page, size, facts["title"] + (f" ({i + 1}/{n})" if n > 1 else "")))
-    if dxf_view:
-        dxf(shape, os.path.join(folder, base + ".dxf"), dxf_view)
-    if facts["bends"]:  # found by render (a part that does not unfold has said so there, once)
-        from .sheetmetal import bend_csv
+    for k, shape, bends in facts["parts"]:
+        if dxf_view:
+            dxf(shape, os.path.join(folder, stem(k) + ".dxf"), dxf_view)
+        if bends:  # found by render (a part that does not unfold has said so there, once)
+            from .sheetmetal import bend_csv
 
-        write_atomic(os.path.join(folder, base + "-bends.csv"), bend_csv(shape))
+            write_atomic(os.path.join(folder, stem(k) + "-bends.csv"), bend_csv(shape))
     return facts
