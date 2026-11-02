@@ -195,3 +195,14 @@ def test_motion_frames_and_assembly_placements(tmp_path, monkeypatch):
     assert "frame 2 of 2 (done), 90 deg" in cap and "frame 1 of 2" in cap0
     parts, _, _ = scene(str(tmp_path / "pair"))
     assert hi(parts)[0] == pytest.approx(32, abs=1e-3)
+
+
+def test_the_default_view_shows_a_wall_plate_from_its_arms_side():
+    from tule import box
+    from tule_cli.machine import items_to_parts
+    from tule_cli.render import best_iso
+    b = lambda x, y, z: box(x, y, z, center=True)
+    plate = b(100, 5, 100).at(0, 0, 50) - b(20, 10, 20).at(0, 0, 30)  # a wall plate with a window
+    arms = b(10, 40, 10).at(-30, 22, 60) + b(10, 40, 10).at(30, 22, 60)  # reaching out to +y
+    for item, side in ((plate + arms, 1), (plate + arms.mirror(0, 1, 0), -1)):
+        assert best_iso(items_to_parts([("holder", item)]))[1] * side > 0

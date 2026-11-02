@@ -159,6 +159,17 @@ button.line svg,
   color: var(--muted);
 }
 
+/* one line per file however many there are: long names end in … (the full name on hover) */
+#download-menu {
+  width: max-content;
+  max-width: min(380px, calc(100vw - 32px));
+  max-height: 60vh;
+  overflow-y: auto;
+}
+#download-menu button { flex: none; min-width: 0; }
+#download-menu button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#download-menu button small { flex: none; }
+
 /* the file tabs above the editor: + adds a file, ··· has the file and
    project actions */
 .filebar {

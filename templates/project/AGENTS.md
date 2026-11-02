@@ -17,7 +17,8 @@ Typical session: find or create the project with the connector (or `tule up -p <
 - `/workspace` is the project and the only thing that persists (a git repository; `tule save` saves it). Everything else is rebuilt from the image at every boot.
 - `src/<name>.py` makes `outputs/<name>/`; `tule build` runs the scripts whose inputs changed (nothing runs by itself). The viewer shows outputs as soon as they appear.
 - Look at your own work: `tule screenshot -o /tmp/view.png --labels`, then read the PNG (on your own computer: `tule screenshot -p <name> --labels -o /tmp/view.png`). `tule inspect <file>` lists faces with ids, types, areas and tags.
-- Dimensions of a purchased part (servo, bearing, motor) come from its datasheet or the vendor's CAD: note the source next to the number, and check the interface (hole pattern, edge distance) in a screenshot before you say it fits.
+- Dimensions of a purchased part (servo, bearing, motor, a drill to hold) come from its datasheet or the vendor's CAD (search for it; a community model, or a printed fit gauge, if there is none): note the source next to the number, in `lib/` when several scripts use it, read what the number measures (screw shank or head), and check the interface (hole pattern, edge distance) in a screenshot before you say it fits.
+- Write for the user you have: to someone new to it, print and assembly steps in plain words (what to pick in their slicer, which screw to buy), each term explained or left out.
 - Say only what the user can see: before you reply, `tule build --check` and the viewer link for each result you mention; a job still running is "running", not a result.
 - You are root: `pip install`, background jobs and any tool are fine. Extra packages for every boot go in `tule.toml`.
 

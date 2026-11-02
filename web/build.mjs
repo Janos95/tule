@@ -57,10 +57,14 @@ async function installer() {
     execFileSync("uv", ["build", "--wheel", "--quiet", "--out-dir", tmp, path.join(web, "../cli")], { stdio: "inherit" });
     wheel = path.join(tmp, (await fs.readdir(tmp)).find((f) => f.endsWith(".whl")));
   }
-  await fs.copyFile(wheel, path.join(dir, path.basename(wheel)));
+  // under its content's hash: the version stays 0.1.0, and uv reuses what it fetched from a URL before
+  const hash = crypto.createHash("sha256").update(await fs.readFile(wheel)).digest("hex").slice(0, 12);
+  const served = `${hash}/${path.basename(wheel)}`;
+  await fs.mkdir(path.join(dir, hash), { recursive: true });
+  await fs.copyFile(wheel, path.join(dir, served));
   for (const name of ["install.sh", "cli.sh"]) {
     const sh = await fs.readFile(path.join(web, "src", name), "utf8");
-    await fs.writeFile(path.join(dir, name), sh.replaceAll("__WHEEL__", path.basename(wheel)));
+    await fs.writeFile(path.join(dir, name), sh.replaceAll("__WHEEL__", served));
   }
 }
 

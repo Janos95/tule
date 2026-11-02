@@ -182,7 +182,13 @@ export class Viewer {
    * fit: true, false or "auto" (fit when the bounds are new or far from the
    * last fit). extent: {min, max} the camera frames as well (every frame of a
    * motion study, so it holds still while the study plays), or null. */
+  /** fit: true (frame it, same direction), "auto" (only when it moved far), "fresh" (a new
+   * 3/4 view picked for it: another output) or false. */
   setMeshes(meshes, fit = false, style = this.style, extent = null) {
+    if (fit === "fresh") {
+      this.fitted = null;
+      fit = true;
+    }
     this.extent = extent ? new THREE.Box3(new THREE.Vector3(...extent.min), new THREE.Vector3(...extent.max)) : null;
     for (const part of this.group.children) {
       part.userData.geometry.dispose();
@@ -514,13 +520,14 @@ export class Viewer {
     cam.updateProjectionMatrix();
   }
 
-  // the 3/4 view (from above, one of four corners) that sees the most faces: a
-  // part's features rather than its flat back; the usual corner unless another
-  // clearly sees more (as tule screenshot picks it, cli/tule_cli/render.py)
+  // the 3/4 view (from above, one of four corners) that sees the most surface
+  // besides the biggest face: a part's features (arms, ribs, pockets) rather
+  // than its flat back; the usual corner unless another clearly sees more (as
+  // tule screenshot picks it, cli/tule_cli/render.py)
   iso() {
     const [x, y, z] = VIEWS.iso;
     const corners = [[x, y, z], [-x, y, z], [x, -y, z], [-x, -y, z]].map((c) => new THREE.Vector3(...c).normalize());
-    const seen = [0, 0, 0, 0];
+    const all = []; // [unit normal, area] of each face that points one way
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
     for (const part of this.group.children) {
       const { mesh: m } = part.userData;
@@ -540,12 +547,13 @@ export class Viewer {
       for (const f of faces.values()) {
         const n = new THREE.Vector3(f[0], f[1], f[2]).applyMatrix3(rot);
         if (n.length() <= 0.5 * f[3]) continue; // curved all round (a hole's wall)
-        n.normalize();
-        corners.forEach((d, k) => (seen[k] += n.dot(d) > 0.2));
+        all.push([n.normalize(), f[3]]);
       }
     }
+    const big = all.reduce((m, f) => Math.max(m, f[1]), 0);
+    const seen = corners.map((d) => all.reduce((s, [n, area]) => s + (area < big ? area * Math.max(0, n.dot(d)) : 0), 0));
     const best = seen.indexOf(Math.max(...seen));
-    return corners[seen[best] >= Math.max(seen[0] + 2, 1.2 * seen[0]) ? best : 0];
+    return corners[seen[best] > 1.2 * seen[0] ? best : 0];
   }
 
   view(name) {

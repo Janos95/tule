@@ -62,8 +62,9 @@ def _unit(v) -> np.ndarray:
 
 
 def best_iso(parts: list[Part]) -> tuple:
-    """The 3/4 view (from above, one of four corners) that sees the most faces: a part's
-    features rather than its flat back. The usual corner unless another clearly sees more."""
+    """The 3/4 view (from above, one of four corners) that sees the most surface besides the
+    biggest face: a part's features (arms, ribs, pockets) rather than its flat back. The usual
+    corner unless another clearly sees more."""
     x, y, z = VIEWS["iso"]
     corners = [(x, y, z), (-x, y, z), (x, -y, z), (-x, -y, z)]
     sums: dict = {}
@@ -79,9 +80,10 @@ def best_iso(parts: list[Part]) -> tuple:
     size = np.linalg.norm(acc[:, :3], axis=1)
     acc = acc[size > 0.5 * acc[:, 3]]  # faces that point one way (not a hole's wall)
     mean = acc[:, :3] / np.linalg.norm(acc[:, :3], axis=1, keepdims=True)
-    seen = [int((mean @ _unit(c) > 0.2).sum()) for c in corners]
+    area = np.where(acc[:, 3] < acc[:, 3].max(initial=0), acc[:, 3], 0)  # all but the biggest face
+    seen = [float((area * np.clip(mean @ _unit(c), 0, None)).sum()) for c in corners]
     best = max(range(4), key=lambda k: seen[k])
-    return corners[best] if seen[best] >= max(seen[0] + 2, 1.2 * seen[0]) else corners[0]
+    return corners[best] if seen[best] > 1.2 * seen[0] else corners[0]
 
 
 def camera(view, direction=None) -> np.ndarray:

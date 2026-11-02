@@ -761,7 +761,7 @@ async function show() {
     };
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
-    viewer?.setMeshes(all, first ? true : "auto", style, placed ? studyBox(o, shownFiles, loaded) : null);
+    viewer?.setMeshes(all, first ? "fresh" : "auto", style, placed ? studyBox(o, shownFiles, loaded) : null);
     const field = (name) => {
       const f = o.fields.find((x) => x.file === name);
       return f ? readFile(f) : Promise.reject(new Error("not in the output"));
@@ -862,8 +862,10 @@ let downloads = [];
 /** An output's files with no view of their own (.3mf, .zip): offered in Download from every view. */
 const extras = (o) => o.docs.filter((f) => f.type === "file");
 
+// a file to print (3MF, STL) first: it is what most people come for
+const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.stl$/i.test(f.file) ? 1 : 2);
 function offerDownload(list) {
-  downloads = list;
+  downloads = [...list].sort((a, b) => printable(a) - printable(b));
   $("download").hidden = !list.length;
   $("download-menu").hidden = true;
 }
@@ -886,6 +888,7 @@ $("download").addEventListener("click", (e) => {
     b.setAttribute("role", "menuitem");
     b.innerHTML = "<span></span><small></small>";
     b.firstChild.textContent = f.file;
+    b.title = f.file;
     b.lastChild.textContent = size(f.size);
     b.addEventListener("click", () => download(f));
     menu.append(b);
