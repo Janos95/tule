@@ -465,7 +465,13 @@ function renderList() {
   const newest = recent.find((o) => o.files.length) ?? recent[0];
   if (state.wanted == null && newest) state.wanted = newest.id; // once: the view doesn't jump while the agent works
   // a link may name work/ or inputs/ entries without their folder (?o=shopping for work/shopping)
-  const wanted = [state.wanted, `work/${state.wanted}`, `inputs/${state.wanted}`].find((id) => all.some((o) => o.id === id));
+  let wanted = [state.wanted, `work/${state.wanted}`, `inputs/${state.wanted}`].find((id) => all.some((o) => o.id === id));
+  // a link to a file in an output (?o=motion/height.vl.json): that output, on that file
+  const cut = state.wanted?.lastIndexOf("/") ?? -1;
+  if (!wanted && cut > 0 && all.some((o) => o.id === state.wanted.slice(0, cut))) {
+    [wanted, state.view] = [state.wanted.slice(0, cut), state.wanted.slice(cut + 1)];
+    state.wanted = wanted;
+  }
   state.selected = wanted ?? newest?.id ?? all[0]?.id ?? null;
   const outs = all.filter((o) => o.root === "outputs");
   partsTree.remove(); // shown only under the entry that has parts (below)

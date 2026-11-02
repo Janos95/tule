@@ -268,6 +268,20 @@ class Build:
             o = output_of(rel, self.root)
             if o and o != name and o in self.all and o not in seen:
                 seen.append(o)
+        if not rec:  # never built: the outputs its source names ("outputs/fit/…"), so it runs once, not once per find
+            try:
+                text = open(os.path.join(self.root, "src", name + ".py"), encoding="utf-8", errors="replace").read()
+            except OSError:
+                text = ""
+            named = []
+            for m in re.findall(r"outputs/([\w.\-/]+)", text):
+                parts = m.split("/")
+                named.append(next(("/".join(parts[:k]) for k in range(len(parts), 0, -1) if "/".join(parts[:k]) in self.all), None))
+            if "outputs" in text:  # and names in quotes, for paths it puts together (f"outputs/{n}/…" for n in ("fit", "print"))
+                named += [m for m in re.findall(r"[\"']([\w.\-/]+)[\"']", text) if m in self.all]
+            for o in named:
+                if o and o != name and o not in seen:
+                    seen.append(o)
         return seen
 
     def readers(self, names: list[str]) -> list[str]:

@@ -273,6 +273,11 @@ def polygon(points: Sequence[Sequence[float]], holes: Iterable[Sequence[Sequence
     ``holes`` are further point lists cut out of the outline.
     """
     pts = [tuple(p) for p in points]
+    if len(pts) > 200:  # a sampled curve: every point an edge, heavy STEP files and slow motion studies
+        import sys
+
+        print(f"tule: polygon with {len(pts)} points: a sampled curve (a cam, an airfoil) is lighter and smooth "
+              "as spline(points, tol=0.01)", file=sys.stderr, flush=True)
     face = _polygon_face([p[:2] for p in pts])
     prof = Profile(face)
     for h in holes:

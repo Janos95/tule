@@ -27,7 +27,8 @@ export function initPlot(el, onPick) {
   let hover = null;
   let dragging = false;
   let solo = null; // the one key shown alone (a legend click), or null
-  const shown = () => (solo && keys.includes(solo) ? [solo] : keys);
+  let inputs = new Set(); // what drives the motion (a crank angle rising evenly): read out, not drawn
+  const shown = () => (solo && keys.includes(solo) ? [solo] : keys.filter((k) => !inputs.has(k)));
 
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("class", "plot-svg");
@@ -124,11 +125,19 @@ export function initPlot(el, onPick) {
     head.className = "plot-frame";
     head.textContent = f?.label ?? `frame ${i + 1}`;
     legend.append(head);
-    keys.forEach((k, j) => {
+    for (const k of inputs) {
+      const item = document.createElement("span");
+      item.className = "plot-frame";
+      item.textContent = `${k} ${fmt(f?.values?.[k], range(k))}`;
+      legend.append(item);
+    }
+    keys.filter((k) => !inputs.has(k)).forEach((k) => {
+      const j = keys.indexOf(k);
       const r = range(k);
       const item = document.createElement("span");
-      item.className = "plot-key" + (keys.length > 1 && solo ? (solo === k ? " solo" : " off") : "");
-      if (keys.length > 1) {
+      const many = keys.length - inputs.size > 1;
+      item.className = "plot-key" + (many && solo ? (solo === k ? " solo" : " off") : "");
+      if (many) {
         item.title = solo === k ? "Show all" : `Show ${k} alone, with its axis`;
         item.addEventListener("click", () => {
           solo = solo === k ? null : k;
@@ -180,6 +189,15 @@ export function initPlot(el, onPick) {
       // nor does one that never changes (it is in the legend of no frame worth comparing)
       const constant = (k) => new Set(list.map((f) => f.values?.[k])).size === 1 && list.length > 1;
       keys = keys.filter((k) => !counts(k) && !constant(k));
+      // a value rising evenly with the frames is the input (crank_deg 0, 5, 10 …): beside other values it is
+      // the slider's axis, a diagonal line that says nothing; shown in the legend only
+      const even = (k) => {
+        const v = list.map((f) => f.values?.[k]);
+        const step = (v[v.length - 1] - v[0]) / (v.length - 1);
+        return v.length > 2 && step !== 0 && v.every((x, i) => Math.abs(x - v[0] - i * step) <= 1e-6 * Math.abs(step) * v.length);
+      };
+      inputs = new Set(keys.filter(even));
+      if (inputs.size === keys.length) inputs = new Set();
       el.hidden = !keys.length;
       group();
       if (keys.length) render();
