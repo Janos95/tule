@@ -8,6 +8,7 @@ outputs/
   gripper/         output.json base.step finger.step  an assembly: names, colors
   bracket-topopt/  output.json frame_0000.stl …       a sequence: frames with values, a slider and a plot
   bracket-loads/   output.json bracket.step           an overlay: colored faces, labels, arrows
+  print/           output.json lid.step print.3mf     a print plate: parts on the bed, a 3MF to slice
 ```
 
 Geometry: STEP (faces, names, colors and tags travel inside; prefer it) or STL (meshes).
@@ -21,14 +22,15 @@ from tule import *
 
 part = box(40, 20, 5).named("plate", "#4a8")
 part = part.tag("load", part.faces["top"]).tag("fixed", part.faces["left"])
-outputs.part("plate", part)                                    # outputs/plate/plate.step
+outputs.part("plate", part)                              # outputs/plate/plate.step
 outputs.assembly("stack", [part, box(10).at(0, 0, 5).named("block", "#d33")])
-with outputs.sequence("grow", "Growing a block") as seq:       # status "running" until the block ends
+with outputs.sequence("grow", "Growing a block") as seq: # status "running" until the block ends
     for i in range(1, 4):
         seq.add(box(10, 10, i * 5), label=f"step {i}", height=i * 5)
-with outputs.sequence("tilt") as seq:     # motion: make parts once, move them per frame (.at, .rotate):
-    for a in range(0, 91, 10):            # a frame then stores placements only
+with outputs.sequence("tilt") as seq:  # motion: make parts once, move them per frame (.at, .rotate):
+    for a in range(0, 91, 10):         # a frame then stores placements only
         seq.add([part, part.rotate(y=-a).at(40, 0, 5)], label=f"{a} deg", angle=a)
+outputs.plate("print", [part, box(10)], settings={"layer_height": 0.2, "walls": 3})  # print.3mf
 outputs.overlay("plate-loads", part, title="Load case 1",
                 faces={part.faces["load"]: {"role": "load", "label": "200 N"},
                        part.faces["fixed"]: {"role": "fixed", "label": "clamped"}},
@@ -80,10 +82,8 @@ No HTML or network: chart data is a file beside it or inline `values`. A value n
 ## Looking at outputs yourself
 
 ```sh
-tule screenshot -o /tmp/view.png                             # the most recently changed output
-tule screenshot -o /tmp/view.png --output bracket --labels   # f12 · load on every visible face
+tule screenshot -o /tmp/v.png --output bracket --labels      # f12 · load on every visible face
 tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
-tule inspect outputs/bracket/bracket.step                # faces, ids, types, areas, tags
 ```
 
 Read the PNG. It also lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3`: the third).

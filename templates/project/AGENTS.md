@@ -19,6 +19,7 @@ Typical session: find or create the project with the connector (or `tule up -p <
 - Look at your own work: `tule screenshot -o /tmp/view.png --labels`, then read the PNG (on your own computer: `tule screenshot -p <name> --labels -o /tmp/view.png`). `tule screenshot drawing.pdf` shows a drawing's page. `tule inspect <file>` lists faces with ids, types, areas and tags.
 - Dimensions of a purchased part (servo, bearing, motor, a drill to hold) come from its datasheet or the vendor's CAD (search for it; a community model, or a printed fit gauge, if there is none): note the source next to the number, in `lib/` when several scripts use it, read what the number measures (screw shank or head), and check the interface (hole pattern, edge distance) in a screenshot before you say it fits.
 - Write for the user you have: to someone new to it, print and assembly steps in plain words (what to pick in their slicer, which screw to buy), each term explained or left out.
+- Parts to 3D print go on a plate: `outputs.plate(name, parts, settings={"layer_height": 0.2, "walls": 3, "infill": 15, "supports": False, "brim": 5})` lays them out, each as you oriented it (flat face down), in one 3MF that Bambu Studio, OrcaSlicer and PrusaSlicer open with every part named and these settings on it: the user picks printer and filament and slices. `bed=(256, 256)` is the default: pass their printer's.
 - Say only what the user can see: before you reply, `tule build --check` and the viewer link for each result you mention; a job still running is "running", not a result.
 - Never copy the user's Tule login (`~/.config/tule`, its token) onto a machine or into a script. To see what the viewer shows, `tule screenshot` (`--frame N` for a sequence).
 - You are root: `pip install`, background jobs and any tool are fine. Extra packages for every boot go in `tule.toml`.
@@ -202,6 +203,7 @@ outputs/
   gripper/         output.json base.step finger.step  an assembly: names, colors
   bracket-topopt/  output.json frame_0000.stl …       a sequence: frames with values, a slider and a plot
   bracket-loads/   output.json bracket.step           an overlay: colored faces, labels, arrows
+  print/           output.json lid.step print.3mf     a print plate: parts on the bed, a 3MF to slice
 ```
 
 Geometry: STEP (faces, names, colors and tags travel inside; prefer it) or STL (meshes).
@@ -215,14 +217,15 @@ from tule import *
 
 part = box(40, 20, 5).named("plate", "#4a8")
 part = part.tag("load", part.faces["top"]).tag("fixed", part.faces["left"])
-outputs.part("plate", part)                                    # outputs/plate/plate.step
+outputs.part("plate", part)                              # outputs/plate/plate.step
 outputs.assembly("stack", [part, box(10).at(0, 0, 5).named("block", "#d33")])
-with outputs.sequence("grow", "Growing a block") as seq:       # status "running" until the block ends
+with outputs.sequence("grow", "Growing a block") as seq: # status "running" until the block ends
     for i in range(1, 4):
         seq.add(box(10, 10, i * 5), label=f"step {i}", height=i * 5)
-with outputs.sequence("tilt") as seq:     # motion: make parts once, move them per frame (.at, .rotate):
-    for a in range(0, 91, 10):            # a frame then stores placements only
+with outputs.sequence("tilt") as seq:  # motion: make parts once, move them per frame (.at, .rotate):
+    for a in range(0, 91, 10):         # a frame then stores placements only
         seq.add([part, part.rotate(y=-a).at(40, 0, 5)], label=f"{a} deg", angle=a)
+outputs.plate("print", [part, box(10)], settings={"layer_height": 0.2, "walls": 3})  # print.3mf
 outputs.overlay("plate-loads", part, title="Load case 1",
                 faces={part.faces["load"]: {"role": "load", "label": "200 N"},
                        part.faces["fixed"]: {"role": "fixed", "label": "clamped"}},
@@ -274,10 +277,8 @@ No HTML or network: chart data is a file beside it or inline `values`. A value n
 ## Looking at outputs yourself
 
 ```sh
-tule screenshot -o /tmp/view.png                             # the most recently changed output
-tule screenshot -o /tmp/view.png --output bracket --labels   # f12 · load on every visible face
+tule screenshot -o /tmp/v.png --output bracket --labels      # f12 · load on every visible face
 tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
-tule inspect outputs/bracket/bracket.step                # faces, ids, types, areas, tags
 ```
 
 Read the PNG. It also lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3`: the third).

@@ -1,4 +1,4 @@
-"""Import and export: STEP (with names, colors and tags), STL, glTF, tessellation.
+"""Import and export: STEP (with names, colors and tags), STL, glTF, 3MF print plates, tessellation.
 
 Tags travel inside STEP files as named sub-shapes (``tag:load``), so a part
 written by tule and read back, or rendered by the viewer, keeps them.
@@ -503,3 +503,334 @@ def export_gltf(item: Union["Shape", "Assembly"], path: str, tolerance: float = 
         + struct.pack("<II", len(bin_data), 0x004E4942) + bin_data
     )
     return write_atomic(path, out)
+
+
+# ---------------------------------------------------------------- 3MF print plates
+#
+# What the slicers read (checked against their source: BambuStudio and OrcaSlicer
+# src/libslic3r/Format/bbs_3mf.cpp, PrusaSlicer 2.9 src/libslic3r/Format/3mf.cpp):
+# - 3D/3dmodel.model (3MF core): one object per part with its mesh in mm, its name, and a
+#   build item that places it. Colors as core <basematerials> (shown by 3MF viewers; the
+#   slicers print every part with the filament the user picks and ask nothing).
+# - Metadata/model_settings.config (Bambu Studio, OrcaSlicer): per-object settings, applied
+#   over the process preset the user picks. No project_settings.config: a partial one
+#   would be taken for a whole printer and process profile.
+# - Metadata/Slic3r_PE_model.config (PrusaSlicer): the same per-object settings, its names.
+
+PRINT_SETTINGS = {
+    "layer_height": "layer height in mm (0.2)",
+    "walls": "wall loops / perimeters (3)",
+    "infill": "sparse infill in percent (15)",
+    "supports": "True or False",
+    "brim": "brim width in mm, True (5 mm) or False",
+}
+
+
+def _print_settings(settings, who: str = "settings") -> dict:
+    """Checks print settings: the keys of ``PRINT_SETTINGS``, values in sensible ranges."""
+    if settings is None:
+        return {}
+    if not isinstance(settings, dict):
+        raise TuleError(f"{who} must be a dict", op="export_3mf", hint='{"layer_height": 0.2, "walls": 3, "infill": 15, "supports": False}')
+    out = {}
+    for k, v in settings.items():
+        if k not in PRINT_SETTINGS:
+            raise TuleError(f"unknown print setting {k!r}", op="export_3mf",
+                            hint="known: " + "; ".join(f"{n}: {d}" for n, d in PRINT_SETTINGS.items()))
+        if v is None:
+            continue
+        if hasattr(v, "item"):
+            v = v.item()
+        if k == "supports":
+            if not isinstance(v, bool):
+                raise TuleError(f"supports must be True or False, got {v!r}", op="export_3mf")
+        elif k == "brim":
+            v = 5.0 if v is True else 0.0 if v is False else v
+            if not isinstance(v, (int, float)) or not 0 <= v <= 50:
+                raise TuleError(f"brim must be a width in mm (0 to 50), True or False, got {v!r}", op="export_3mf")
+            v = float(v)
+        elif k == "walls":
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v) or not 1 <= v <= 30:
+                raise TuleError(f"walls must be a whole number from 1 to 30, got {v!r}", op="export_3mf")
+            v = int(v)
+        elif k == "infill":
+            if isinstance(v, str) and v.strip().endswith("%"):
+                v = v.strip()[:-1]
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                v = -1.0
+            if not 0 <= v <= 100:
+                raise TuleError(f"infill is a percentage from 0 to 100, got {settings[k]!r}", op="export_3mf", hint='"infill": 15')
+        elif k == "layer_height":
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.04 <= v <= 1.0:
+                raise TuleError(f"layer_height must be in mm, 0.04 to 1.0, got {v!r}", op="export_3mf", hint='"layer_height": 0.2')
+            v = float(v)
+        out[k] = v
+    return out
+
+
+def _num(v: float) -> str:
+    return f"{v:.6g}"
+
+
+def _slicer_keys(s: dict) -> tuple[list, list]:
+    """Per-object config keys for Bambu Studio / OrcaSlicer and for PrusaSlicer."""
+    bambu, prusa = [], []
+    if "layer_height" in s:
+        bambu.append(("layer_height", _num(s["layer_height"])))
+        prusa.append(("layer_height", _num(s["layer_height"])))
+    if "walls" in s:
+        bambu.append(("wall_loops", str(s["walls"])))
+        prusa.append(("perimeters", str(s["walls"])))
+    if "infill" in s:
+        bambu.append(("sparse_infill_density", _num(s["infill"]) + "%"))
+        prusa.append(("fill_density", _num(s["infill"]) + "%"))
+    if "supports" in s:
+        on = "1" if s["supports"] else "0"
+        bambu.append(("enable_support", on))
+        prusa.append(("support_material", on))
+        if s["supports"]:
+            prusa.append(("support_material_auto", "1"))
+    if "brim" in s:
+        w = s["brim"]
+        kind = "outer_only" if w > 0 else "no_brim"
+        bambu += [("brim_type", kind)] + ([("brim_width", _num(w))] if w > 0 else [])
+        prusa += [("brim_type", kind), ("brim_width", _num(w))]
+    return bambu, prusa
+
+
+def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float) -> tuple[np.ndarray, np.ndarray]:
+    """A watertight triangle mesh of a solid: the faces' triangulations welded along their edges."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    m = tessellate(shape, tolerance, angular)
+    if not m.triangles:
+        raise TuleError(f"part {name!r} has no surface to print", op="export_3mf", hint="pass solids")
+    P = m.positions.astype(np.float64)
+    pairs = cKDTree(P).query_pairs(1e-3, output_type="ndarray")  # the same B-rep edge point, once per face
+    n = len(P)
+    g = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    _, label = connected_components(g, directed=False)
+    F = label[m.indices.astype(np.int64)]
+    F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])]
+    used, F = np.unique(F, return_inverse=True)
+    F = F.reshape(-1, 3)
+    V = np.zeros((label.max() + 1, 3))
+    V[label] = P  # the points of one weld lie within a micron of each other: any one will do
+    V = V[used]
+    # closed: every edge in exactly two triangles, once in each direction
+    e = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
+    key = e[:, 0] * len(V) + e[:, 1]
+    rev = e[:, 1] * len(V) + e[:, 0]
+    if len(np.unique(key)) != len(key) or not np.isin(key, rev).all():
+        open_ = int((~np.isin(key, rev)).sum())
+        raise TuleError(f"part {name!r} does not make a closed mesh ({open_} open edges)", op="export_3mf",
+                        hint="pass a closed solid (not a face or an open shell); if it is one, try tolerance=0.01")
+    tri = V[F]
+    vol = np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])).sum() / 6
+    if vol < 0:
+        F = F[:, ::-1]
+    return V, F
+
+
+def _plate_items(items) -> list[tuple[str, "Shape", dict]]:
+    """``items`` as (name, shape, settings): Shapes, (name, shape[, settings]) pairs, Assemblies, or a list of them."""
+    from .assembly import Assembly
+    from .shape import Shape
+
+    if isinstance(items, (Shape, Assembly)) or (isinstance(items, tuple) and items and isinstance(items[0], str)):
+        items = [items]
+    out = []
+
+    def add(name, shape, settings=None):
+        if not isinstance(shape, Shape):
+            raise TuleError(f"cannot print a {type(shape).__name__}", op="export_3mf",
+                            hint="pass Shapes, (name, shape) pairs, (name, shape, settings) or an Assembly")
+        out.append((name or shape.name or f"part{len(out) + 1}", shape, _print_settings(settings, f"settings of {name!r}")))
+
+    for it in items:
+        if isinstance(it, Assembly):
+            for path, p in it.parts():
+                add(path.rsplit("/", 1)[-1], p)
+        elif isinstance(it, Shape):
+            add(None, it)
+        elif isinstance(it, (tuple, list)) and 2 <= len(it) <= 3 and isinstance(it[0], str):
+            add(*it)
+        else:
+            raise TuleError(f"cannot print {it!r}", op="export_3mf",
+                            hint="pass Shapes, (name, shape) pairs, (name, shape, settings) or an Assembly")
+    if not out:
+        raise TuleError("nothing to print", op="export_3mf")
+    seen: dict[str, int] = {}
+    named = []
+    for name, shape, s in out:  # one name per object: the slicer's list and the viewer's files
+        k = seen[name] = seen.get(name, 0) + 1
+        named.append((name if k == 1 else f"{name}-{k}", shape, s))
+    return named
+
+
+def _shelves(sizes, width: float, gap: float):
+    """Rows left to right, deepest parts first: [(x, y)] lower-left corners, and the layout's size."""
+    order = sorted(range(len(sizes)), key=lambda i: (-sizes[i][1], -sizes[i][0], i))
+    rows: list[list] = []  # [y, depth, x cursor, [items]]
+    for i in order:
+        w, d = sizes[i]
+        for r in rows:
+            if r[2] + w <= width + 1e-9:
+                break
+        else:
+            r = [0.0, d, 0.0, []]
+            rows.append(r)
+        r[3].append((i, r[2]))
+        r[2] += w + gap
+    pos = [None] * len(sizes)
+    y = 0.0
+    total_w = max(r[2] - gap for r in rows)
+    for r in rows:
+        shift = (total_w - (r[2] - gap)) / 2  # each row centered
+        for i, x in r[3]:
+            pos[i] = (x + shift, y + (r[1] - sizes[i][1]) / 2)
+        y += r[1] + gap
+    return pos, (total_w, y - gap)
+
+
+def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -> list[tuple[str, "Shape", dict]]:
+    """Parts laid out on the bed (origin at its front left corner), each dropped to z = 0."""
+    parts = _plate_items(items)
+    bed = tuple(float(b) for b in bed)
+    if len(bed) not in (2, 3) or min(bed) <= 0:
+        raise TuleError(f"bed is (width, depth) or (width, depth, height) in mm, got {bed}", op="export_3mf", hint="bed=(256, 256)")
+    W, D = bed[:2]
+    boxes = [s.bounds for _, s, _ in parts]
+    sizes = [(hi.x - lo.x, hi.y - lo.y) for lo, hi in boxes]
+    for (name, _, _), (lo, hi), (w, d) in zip(parts, boxes, sizes):
+        h = hi.z - lo.z
+        if w > W + 1e-6 or d > D + 1e-6 or (len(bed) == 3 and h > bed[2] + 1e-6):
+            turn = d <= W and w <= D and (len(bed) == 2 or h <= bed[2])
+            raise TuleError(f"part {name!r} ({w:.1f} × {d:.1f} × {h:.1f} mm) does not fit the bed ({' × '.join(f'{b:g}' for b in bed)} mm)",
+                            op="export_3mf", hint="turn it: part.rotate(z=90)" if turn else
+                            "lay it on another face, split it, or give the printer's bed=(width, depth, height)")
+    if arrange:
+        best = None
+        widths = sorted({W} | {min(W, sum(w for w, _ in sizes[:k]) + gap * (k - 1)) for k in range(1, len(sizes) + 1)})
+        for cw in widths:  # the most compact layout that fits: near-square, parts close to the bed's middle
+            if cw < max(w for w, _ in sizes) - 1e-9:
+                continue
+            pos, (lw, ld) = _shelves(sizes, cw, gap)
+            if lw <= W + 1e-6 and ld <= D + 1e-6:
+                score = (max(lw, ld), lw * ld)
+                if best is None or score < best[0]:
+                    best = (score, pos, (lw, ld))
+        if best is None:
+            pos, (lw, ld) = _shelves(sizes, W, gap)
+            area = sum(w * d for w, d in sizes)
+            raise TuleError(f"{len(parts)} parts do not fit on one {W:g} × {D:g} mm bed with {gap:g} mm between them "
+                            f"(they need about {lw:.0f} × {ld:.0f} mm)", op="export_3mf",
+                            hint=f"print them on two plates (two calls), a smaller gap=, or the printer's real bed= "
+                                 f"(footprints alone cover {100 * area / (W * D):.0f} % of the bed)")
+        _, pos, (lw, ld) = best
+        x0, y0 = (W - lw) / 2, (D - ld) / 2
+        targets = [(x0 + x, y0 + y) for x, y in pos]
+    else:  # the caller's layout, moved as a whole to the middle of the bed
+        lo_x = min(lo.x for lo, _ in boxes)
+        lo_y = min(lo.y for lo, _ in boxes)
+        lw = max(hi.x for _, hi in boxes) - lo_x
+        ld = max(hi.y for _, hi in boxes) - lo_y
+        if lw > W + 1e-6 or ld > D + 1e-6:
+            raise TuleError(f"the parts as placed span {lw:.0f} × {ld:.0f} mm, more than the {W:g} × {D:g} mm bed",
+                            op="export_3mf", hint="arrange=True lays them out")
+        x0, y0 = (W - lw) / 2, (D - ld) / 2
+        targets = [(x0 + lo.x - lo_x, y0 + lo.y - lo_y) for lo, _ in boxes]
+    return [(name, s.at(tx - lo.x, ty - lo.y, -lo.z), st)
+            for (name, s, st), (lo, _), (tx, ty) in zip(parts, boxes, targets)]
+
+
+def export_3mf(items, path: str, *, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
+               settings: dict | None = None, tolerance: float = 0.02, angular: float = 0.1) -> str:
+    """Write a print plate: a 3MF that Bambu Studio, OrcaSlicer and PrusaSlicer open ready to slice.
+
+    ``items``: Shapes, ``(name, shape)`` pairs, ``(name, shape, settings)`` for one part's own
+    settings, or an Assembly. Each part becomes an object of its own (named, colored), printed as
+    oriented: lay it on its flat face first (``part.rotate(x=180)``); it is dropped to z = 0.
+    ``arrange`` packs the footprints on the ``bed`` (width, depth[, height] in mm) with ``gap``
+    between them; ``arrange=False`` keeps your x/y layout, centered. Parts that do not fit raise.
+
+    ``settings`` go on every part, so the user picks only printer and filament:
+    ``{"layer_height": 0.2, "walls": 3, "infill": 15, "supports": False, "brim": 5}`` (all
+    optional; what is left out comes from the user's process preset). They show in the slicer
+    as each object's own settings. Meshes are watertight, in mm, within ``tolerance`` of the solid.
+    """
+    import zipfile
+    from xml.sax.saxutils import quoteattr
+
+    base = _print_settings(settings)
+    placed = _plate(items, bed, gap, arrange)
+    model = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">',
+             ' <metadata name="Application">Tule</metadata>',
+             f' <metadata name="Title">{_xml_text(os.path.splitext(os.path.basename(path))[0])}</metadata>',
+             " <resources>"]
+    colors = [parse_color(s.color) for _, s, _ in placed]
+    palette = sorted({color_hex(c) for c in colors if c})
+    if palette:
+        model.append('  <basematerials id="1">')
+        model += [f'   <base name={quoteattr(h)} displaycolor="{h.upper()}FF"/>' for h in palette]
+        model.append("  </basematerials>")
+    build, bambu_cfg, prusa_cfg = [], ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"], ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"]
+    for k, ((name, shape, own), rgb) in enumerate(zip(placed, colors)):
+        oid = k + 2
+        lo, hi = shape.bounds
+        cx, cy = (lo.x + hi.x) / 2, (lo.y + hi.y) / 2
+        V, F = _closed_mesh(shape.at(-cx, -cy, 0), name, tolerance, angular)  # the object's mesh about its own middle
+        mat = f' pid="1" pindex="{palette.index(color_hex(rgb))}"' if rgb else ""
+        model.append(f'  <object id="{oid}" type="model" name={quoteattr(name)}{mat}>')
+        model.append("   <mesh>\n    <vertices>")
+        model += [f'     <vertex x="{x:.6g}" y="{y:.6g}" z="{z:.6g}"/>' for x, y, z in V.tolist()]
+        model.append("    </vertices>\n    <triangles>")
+        model += [f'     <triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in F.tolist()]
+        model.append("    </triangles>\n   </mesh>\n  </object>")
+        build.append(f'  <item objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 {cx:.6g} {cy:.6g} 0"/>')
+        bk, pk = _slicer_keys({**base, **own})
+        q = quoteattr(name)
+        bambu_cfg.append(f'  <object id="{oid}">')
+        bambu_cfg.append(f'    <metadata key="name" value={q}/>')
+        bambu_cfg += [f'    <metadata key="{key}" value="{v}"/>' for key, v in bk]
+        bambu_cfg += [f'    <part id="{oid}" subtype="normal_part">', f'      <metadata key="name" value={q}/>', "    </part>", "  </object>"]
+        prusa_cfg.append(f' <object id="{oid}" instances_count="1">')
+        prusa_cfg.append(f'  <metadata type="object" key="name" value={q}/>')
+        prusa_cfg += [f'  <metadata type="object" key="{key}" value="{v}"/>' for key, v in pk]
+        prusa_cfg += [f'  <volume firstid="0" lastid="{len(F) - 1}">', f'   <metadata type="volume" key="name" value={q}/>',
+                      '   <metadata type="volume" key="volume_type" value="ModelPart"/>', "  </volume>", " </object>"]
+    model += [" </resources>", " <build>", *build, " </build>", "</model>", ""]
+    files = {
+        "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+        ' <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n'
+        ' <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n'
+        ' <Default Extension="config" ContentType="application/xml"/>\n'
+        "</Types>\n",
+        "_rels/.rels": '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        ' <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n'
+        "</Relationships>\n",
+        "3D/3dmodel.model": "\n".join(model),
+        "Metadata/model_settings.config": "\n".join(bambu_cfg + ["</config>", ""]),
+        "Metadata/Slic3r_PE_model.config": "\n".join(prusa_cfg + ["</config>", ""]),
+    }
+    tmp = _atomic_path(path)
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, text in files.items():
+            info = zipfile.ZipInfo(n, date_time=(1980, 1, 1, 0, 0, 0))  # no time of writing: same plate, same bytes
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, text.encode("utf-8"))
+    os.replace(tmp, path)
+    return path
+
+
+def _xml_text(s: str) -> str:
+    from xml.sax.saxutils import escape
+
+    return escape(s)
