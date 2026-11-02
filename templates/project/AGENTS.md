@@ -75,7 +75,7 @@ Before you show the user anything, `tule build --check`: it lists what is out of
 
 ## Work done by hand
 
-Work that is not a script (finding suppliers, comparing bearings, a design review) is never re-run by `tule build`; a report a script can write belongs in `src/`. Save its result in `work/` (`work/suppliers/bracket.json`; a JSON list of records shows as a table) and record what it was based on:
+Work that is not a script (finding suppliers, a design review) is never re-run by `tule build`; a report a script can write belongs in `src/`. Save its result in `work/` (`work/suppliers/bracket.json`; a JSON list of records shows as a table) and record what it was based on:
 
 ```sh
 tule based-on work/suppliers/bracket.json outputs/bracket
