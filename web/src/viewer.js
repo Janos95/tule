@@ -166,8 +166,10 @@ export class Viewer {
    * edges: Float32Array (segment endpoints) | null, tags: {tag: [face ids]},
    * matrix: 16 numbers, row-major | null}].
    * fit: true, false or "auto" (fit when the bounds are new or far from the
-   * last fit). */
-  setMeshes(meshes, fit = false, style = this.style) {
+   * last fit). extent: {min, max} the camera frames as well (every frame of a
+   * motion study, so it holds still while the study plays), or null. */
+  setMeshes(meshes, fit = false, style = this.style, extent = null) {
+    this.extent = extent ? new THREE.Box3(new THREE.Vector3(...extent.min), new THREE.Vector3(...extent.max)) : null;
     for (const part of this.group.children) {
       part.userData.geometry.dispose();
       part.userData.lines?.dispose();
@@ -233,6 +235,7 @@ export class Viewer {
         if (c.userData.edges) c.visible = this.wire && !ghost;
       }
     }
+    if (this.extent && !hidden?.size) box.union(this.extent);
     this.bounds = box.isEmpty() ? null : box;
     this.updateGrid();
     this.dirty = true;
@@ -418,7 +421,7 @@ export class Viewer {
     if (!this.bounds) return;
     const cam = this.camera;
     const c = this.bounds.getCenter(new THREE.Vector3());
-    const dir = this.fitted ? cam.position.clone().sub(this.controls.target).normalize() : new THREE.Vector3(...VIEWS.iso).normalize();
+    const dir = this.fitted ? cam.position.clone().sub(this.controls.target).normalize() : this.iso();
     const right = new THREE.Vector3().crossVectors(cam.up, dir).normalize();
     if (right.lengthSq() < 0.5) right.set(1, 0, 0);
     const up = new THREE.Vector3().crossVectors(dir, right);
@@ -450,9 +453,44 @@ export class Viewer {
     cam.updateProjectionMatrix();
   }
 
+  // the 3/4 view (from above, one of four corners) that sees the most faces: a
+  // part's features rather than its flat back; the usual corner unless another
+  // clearly sees more (as tule screenshot picks it, cli/tule_cli/render.py)
+  iso() {
+    const [x, y, z] = VIEWS.iso;
+    const corners = [[x, y, z], [-x, y, z], [x, -y, z], [-x, -y, z]].map((c) => new THREE.Vector3(...c).normalize());
+    const seen = [0, 0, 0, 0];
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    for (const part of this.group.children) {
+      const { mesh: m } = part.userData;
+      const rot = new THREE.Matrix3().setFromMatrix4(part.matrixWorld);
+      const faces = new Map(); // face id -> [nx, ny, nz, area]
+      const P = m.positions, I = m.indices;
+      for (let t = 0; t < I.length / 3; t++) {
+        a.fromArray(P, 3 * I[3 * t]);
+        b.fromArray(P, 3 * I[3 * t + 1]).sub(a);
+        c.fromArray(P, 3 * I[3 * t + 2]).sub(a);
+        b.cross(c); // area-weighted normal
+        const id = m.faceIds?.length ? m.faceIds[t] : t;
+        let f = faces.get(id);
+        if (!f) faces.set(id, (f = [0, 0, 0, 0]));
+        f[0] += b.x; f[1] += b.y; f[2] += b.z; f[3] += b.length();
+      }
+      for (const f of faces.values()) {
+        const n = new THREE.Vector3(f[0], f[1], f[2]).applyMatrix3(rot);
+        if (n.length() <= 0.5 * f[3]) continue; // curved all round (a hole's wall)
+        n.normalize();
+        corners.forEach((d, k) => (seen[k] += n.dot(d) > 0.2));
+      }
+    }
+    const best = seen.indexOf(Math.max(...seen));
+    return corners[seen[best] >= Math.max(seen[0] + 2, 1.2 * seen[0]) ? best : 0];
+  }
+
   view(name) {
     if (!this.bounds) return;
-    this.camera.position.copy(this.controls.target).add(new THREE.Vector3(...VIEWS[name]));
+    const dir = name === "iso" ? this.iso() : new THREE.Vector3(...VIEWS[name]);
+    this.camera.position.copy(this.controls.target).add(dir);
     this.fitted ||= this.bounds.clone();
     this.fit();
   }

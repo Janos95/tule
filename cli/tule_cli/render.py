@@ -59,9 +59,32 @@ def _unit(v) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-def camera(view: str) -> np.ndarray:
+def best_iso(parts: list[Part]) -> tuple:
+    """The 3/4 view (from above, one of four corners) that sees the most faces: a part's
+    features rather than its flat back. The usual corner unless another clearly sees more."""
+    x, y, z = VIEWS["iso"]
+    corners = [(x, y, z), (-x, y, z), (x, -y, z), (-x, -y, z)]
+    sums: dict = {}
+    for i, p in enumerate(parts):
+        v = p.positions[p.indices.astype(np.int64)].astype(np.float64)
+        n = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])  # area-weighted normals
+        ids = p.face_ids.astype(np.int64) if len(p.face_ids) == len(n) else np.arange(len(n))
+        u, inv = np.unique(ids, return_inverse=True)
+        acc = np.zeros((len(u), 4))
+        np.add.at(acc, inv, np.c_[n, np.linalg.norm(n, axis=1)])
+        sums[i] = acc
+    acc = np.concatenate(list(sums.values())) if sums else np.zeros((0, 4))
+    size = np.linalg.norm(acc[:, :3], axis=1)
+    acc = acc[size > 0.5 * acc[:, 3]]  # faces that point one way (not a hole's wall)
+    mean = acc[:, :3] / np.linalg.norm(acc[:, :3], axis=1, keepdims=True)
+    seen = [int((mean @ _unit(c) > 0.2).sum()) for c in corners]
+    best = max(range(4), key=lambda k: seen[k])
+    return corners[best] if seen[best] >= max(seen[0] + 2, 1.2 * seen[0]) else corners[0]
+
+
+def camera(view, direction=None) -> np.ndarray:
     """Rows: screen right, screen up, toward the viewer."""
-    d = _unit(VIEWS[view])
+    d = _unit(direction if direction is not None else VIEWS[view])
     fwd = -d
     right = _unit(np.cross(fwd, (0, 0, 1)))
     up = np.cross(right, fwd)
@@ -184,7 +207,7 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     parts = [p for p in parts if len(p.indices)]
     if not parts:
         raise ValueError("nothing to draw: the file has no triangles")
-    R = camera(view)
+    R = camera(view, best_iso(parts) if view == "iso" else None)
     offs = np.cumsum([0] + [len(p.positions) for p in parts])
     P = np.concatenate([p.positions for p in parts]).astype(np.float64)
     Nw = np.concatenate([p.normals for p in parts]).astype(np.float64)

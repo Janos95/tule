@@ -516,12 +516,44 @@ function placement(t, file) {
   return flat;
 }
 
+/** A motion study's box around every frame ({min, max}), from the boxes of the
+ * shown files (loaded: their meshes) moved by each frame's placements. */
+function studyBox(o, files, loaded) {
+  const boxes = new Map();
+  files.forEach((f, i) => {
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const m of loaded[i])
+      for (let j = 0; j < m.positions.length; j++) {
+        lo[j % 3] = Math.min(lo[j % 3], m.positions[j]);
+        hi[j % 3] = Math.max(hi[j % 3], m.positions[j]);
+      }
+    if (lo[0] <= hi[0]) boxes.set(f.file, [lo, hi]);
+  });
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const fr of frames(o))
+    for (const p of fr.parts ?? []) {
+      const b = boxes.get(p.file);
+      if (!b) continue;
+      const t = p.transform == null ? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0] : placement(p.transform, p.file);
+      for (let k = 0; k < 8; k++) {
+        const c = [b[k & 1 ? 1 : 0][0], b[k & 2 ? 1 : 0][1], b[k & 4 ? 1 : 0][2]];
+        for (let r = 0; r < 3; r++) {
+          const v = t[4 * r] * c[0] + t[4 * r + 1] * c[1] + t[4 * r + 2] * c[2] + t[4 * r + 3];
+          lo[r] = Math.min(lo[r], v);
+          hi[r] = Math.max(hi[r], v);
+        }
+      }
+    }
+  return lo[0] <= hi[0] ? { min: lo, max: hi } : null;
+}
+
 /** Shows an output (or input) by id; resolves once it is drawn. */
 function select(id) {
   if (state.selected === id && state.shown) return Promise.resolve();
   state.wanted = id;
   state.view = null;
   state.frame = 0;
+  $("scrub").max = "0";
   remember();
   renderList();
   return show();
@@ -655,7 +687,8 @@ async function show() {
   seq.hidden = kind !== "sequence";
   if (kind === "sequence") {
     const fr = frames(o);
-    const following = state.frame >= +$("scrub").max; // stay on the newest frame while it grows
+    // a running sequence: stay on the newest frame while it grows; a finished one opens on its first
+    const following = o.meta?.status === "running" && state.frame >= +$("scrub").max;
     $("scrub").max = String(Math.max(0, fr.length - 1));
     if (following) state.frame = fr.length - 1;
     state.frame = Math.max(0, Math.min(state.frame, fr.length - 1));
@@ -692,7 +725,7 @@ async function show() {
     };
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
-    viewer?.setMeshes(all, first ? true : "auto", style);
+    viewer?.setMeshes(all, first ? true : "auto", style, placed ? studyBox(o, shownFiles, loaded) : null);
     overlay?.apply(o.meta ?? null, kind === "overlay");
     $("strip").hidden = $("legend").hidden;
     state.meshes = all;
