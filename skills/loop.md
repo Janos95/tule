@@ -13,24 +13,26 @@ How to work on a Tule machine so that the user can follow along and nothing is l
 
 Faces are named `f<id>` the same way in the viewer, in screenshots and in `part.face(id)`. When the user says "the face on the left" or picks one in the viewer, confirm the id with a labeled screenshot before changing it.
 
-## Git
+## Saving
 
-`/workspace` is a git repository. Commit code that works with a message that says what changed:
+`/workspace` is a git repository. Save when something works, with a message that says what changed:
 
 ```sh
-git add -A && git commit -m "Bracket: 4 M5 holes, 2 mm fillets"
+tule save -m "Bracket: 4 M5 holes, 2 mm fillets"
 ```
+
+`tule save` commits everything and merges what other machines saved, then pushes. If it reports a conflict, open the listed files, resolve the `<<<<<<<` sections (keep both sides' intent), and `tule save` again; for a binary file pick one side (`git checkout --ours <file>` or `--theirs`). Plain `git commit` works too; the next `tule save` pushes it. Files over 5 MB go to Git LFS by themselves; if a save is refused for a large file, run the command in the error.
 
 For **variants**, use a branch per variant and a separate output name, so the user can compare them side by side in the viewer:
 
 ```sh
 git switch -c thin-wall
 # change WALL = 1.5 in main.py, write to outputs/bracket-thin
-python main.py && git commit -am "Thin-wall variant"
+python main.py && tule save -m "Thin-wall variant"   # saves the branch, not main
 git switch main
 ```
 
-Snapshots save everything (including outputs and uncommitted work) every few seconds; git is for readable history. `tule snapshot` saves now, e.g. before a risky change.
+Autosaves keep everything (including outputs and unsaved work) every few seconds, but only on this machine's copy; a save is what other machines and later sessions get. `tule snapshot` autosaves now, e.g. before a risky change.
 
 ## Long jobs
 
@@ -41,10 +43,10 @@ nohup python study.py > study.log 2>&1 &
 tail -n 20 study.log          # check back later
 ```
 
-The machine stops after 30 minutes without SSH sessions or traffic; a job running in the background does not keep it alive by itself, so keep a session open (or check in) during long runs. Everything in `/workspace` is saved when it stops.
+The machine stops after 30 minutes without SSH sessions or traffic; a job running in the background does not keep it alive by itself, so keep a session open (or check in) during long runs. Everything in `/workspace` is autosaved when it stops; save before you leave work for another machine or session.
 
 ## Housekeeping
 
 - Install packages with `pip install`; add them to `tule.toml` (`[packages] pip = [...]`) so they are there after a restart.
 - Keep big generated data under `/workspace` only if it must persist; scratch goes to `/tmp`.
-- Put notes for the next session (decisions, open questions) in `NOTES.md` and commit it.
+- Put notes for the next session (decisions, open questions) in `NOTES.md` and save it.

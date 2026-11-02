@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 
@@ -125,38 +126,60 @@ def status(p: str) -> dict:
     return api("GET", f"/api/projects/{p}")
 
 
-def wait_running(p: str, timeout: float = 120, quiet: bool = False) -> dict:
+def slot_of(machine: str) -> str:
+    """The slot a machine name runs in: cpu-* share the one Tule cloud machine; others are their own."""
+    if machine.startswith("cpu-") or machine == "cloud":
+        return "cloud"
+    return "joined" if machine == "external" else machine
+
+
+def find(s: dict, slot: str) -> dict:
+    """A slot's entry in a status (state "stopped" when it is not listed)."""
+    for m in s.get("machines") or []:
+        if m["id"] == slot:
+            return m
+    return {"id": slot, "state": "stopped"}
+
+
+def live(s: dict) -> list[dict]:
+    return [m for m in s.get("machines") or [] if m["state"] != "stopped"]
+
+
+def wait_running(p: str, slot: str, timeout: float = 120, quiet: bool = False) -> dict:
     t0 = time.time()
     shown = None
     while True:
         s = status(p)
-        if s["state"] == "running" and s.get("hostKey"):
+        m = find(s, slot)
+        if m["state"] == "running" and s.get("hostKey"):
             return s
-        if s["state"] != shown and not quiet:
-            print(f"tule: {p} is {s['state']}…", file=sys.stderr)
-            shown = s["state"]
-        if s["state"] == "stopped" and s.get("lastError"):
-            raise CliError(f"{p}: the machine did not start: {s['lastError']}")
-        if s["state"] == "stopped" and time.time() - t0 > 10:
-            raise CliError(f"{p}: the machine stopped while starting (tule status; check the Worker's logs)")
+        if m["state"] != shown and not quiet:
+            print(f"tule: {p} on {slot} is {m['state']}…", file=sys.stderr)
+            shown = m["state"]
+        if m["state"] == "stopped" and m.get("lastError"):
+            raise CliError(f"{p}: {slot} did not start: {m['lastError']}")
+        if m["state"] == "stopped" and time.time() - t0 > 10:
+            raise CliError(f"{p}: {slot} stopped while starting (tule status; check the Worker's logs)")
         if time.time() - t0 > timeout:
-            raise CliError(f"{p}: the machine is {s['state']} but its agent did not connect within {int(timeout)} s "
+            raise CliError(f"{p}: {slot} is {m['state']} but its agent did not connect within {int(timeout)} s "
                            "(the container's logs say why: Cloudflare dashboard, or docker logs in local dev)")
         time.sleep(0.5)
 
 
 def up(p: str, machine: str, quiet: bool = False) -> dict:
     t0 = time.time()
+    slot = slot_of(machine)
     s = api("POST", f"/api/projects/{p}/up", {"machine": machine})
     if s.get("note") and not quiet:
         print(f"tule: {s['note']}", file=sys.stderr)
-    if s["state"] != "running" or not s.get("hostKey"):
+    if find(s, slot)["state"] != "running" or not s.get("hostKey"):
         # a GPU pod or your own computer may first download the image
-        s = wait_running(p, timeout=120 if machine.startswith("cpu-") else 1500, quiet=quiet)
+        s = wait_running(p, slot, timeout=120 if machine.startswith("cpu-") else 1500, quiet=quiet)
     if not quiet:
-        cs = s.get("coldStartMs")
+        cs = find(s, slot).get("coldStartMs")
         extra = f" (cold start {cs / 1000:.1f} s: start to agent connected)" if cs and time.time() - t0 > 1 else ""
-        print(f"tule: {p} is running on {s['machine']}{extra}", file=sys.stderr)
+        others = [m["id"] for m in live(s) if m["id"] != slot]
+        print(f"tule: {p} is running on {slot}{extra}" + (f"; also on {', '.join(others)}" if others else ""), file=sys.stderr)
     return s
 
 
@@ -207,13 +230,25 @@ def cmd_ssh(args):
     if args.config:
         return write_ssh_config(p)
     s = status(p)
-    if s["state"] != "running" or not s.get("hostKey"):
-        s = up(p, args.machine)
+    if args.machine:
+        slot = slot_of(args.machine)
+        st = find(s, slot)["state"]
+        if st == "starting" or (st == "stopped" and slot == "joined"):
+            s = wait_running(p, slot, timeout=60)  # a joined machine (re)connects by itself
+        elif st != "running" or not s.get("hostKey"):
+            s = up(p, "cpu-1" if args.machine == "cloud" else args.machine)
+    else:
+        running = [m for m in live(s) if m["state"] == "running"]
+        if len(live(s)) > 1:
+            raise CliError(f"{p} runs on {' and '.join(m['id'] for m in live(s))}: say which with --machine")
+        slot = live(s)[0]["id"] if live(s) else "cloud"
+        if not running or not s.get("hostKey"):
+            s = up(p, live(s)[0]["size"] if live(s) else "cpu-1")
     ensure_access(p, s)
     argv = ["ssh", *ssh_options(p)]
     if args.command and not sys.stdin.isatty():
         argv.append("-T")
-    argv += [f"root@{HOST_PREFIX}{p}", *args.command]
+    argv += [f"root@{HOST_PREFIX}{p}.{slot}", *args.command]
     if os.name == "nt":
         sys.exit(subprocess.call(argv))
     os.execvp("ssh", argv)
@@ -251,8 +286,11 @@ def cmd_proxy(args):
 
     host = args.host
     p = host[len(HOST_PREFIX):] if host.startswith(HOST_PREFIX) else host
+    p, _, slot = p.partition(".")  # tule-<project>.<machine>: one of several machines
     url, token = need(load())
     ws_url = url.replace("https://", "wss://", 1).replace("http://", "ws://", 1) + f"/api/projects/{p}/ssh"
+    if slot:
+        ws_url += f"?machine={urllib.parse.quote(slot)}"
     try:
         ws = connect(ws_url, additional_headers={"Authorization": f"Bearer {token}"}, max_size=None,
                      open_timeout=30, ping_interval=20, compression=None)
@@ -335,13 +373,14 @@ def cmd_login(args):
 def cmd_new(args):
     r = api("POST", "/api/projects", {"name": args.name})
     store(project=args.name)
-    print(f"tule: created {args.name}; viewer: {r['viewer']}\n      start its machine: tule up -p {args.name}")
+    print(f"tule: created {args.name}; viewer: {r['viewer']}\n      load it on a machine: tule up -p {args.name}")
 
 
 def cmd_ls(args):
     for p in api("GET", "/api/projects")["projects"]:
-        state = p["state"] if p["state"] == "stopped" else f"{p['machine']} {p['state']}"
-        print(f"{p['name']:<32} {state:<20} {p['viewer']}")
+        ms = p.get("machines") or []
+        where = ", ".join(f"{m['id']} {m['state']}" + (" (unsaved)" if sum((m.get("unsaved") or {}).values()) else "") for m in ms) or "not loaded"
+        print(f"{p['name']:<32} {where:<36} {p['viewer']}")
 
 
 def cmd_delete(args):
@@ -378,8 +417,39 @@ def cmd_gpus(args):
 
 def cmd_down(args):
     p = project_of(args, load())
-    api("POST", f"/api/projects/{p}/down")
-    print(f"tule: {p} stopped", file=sys.stderr)
+    api("POST", f"/api/projects/{p}/down", {"machine": args.machine} if args.machine else {})
+    print(f"tule: {p} stopped" + (f" on {args.machine}" if args.machine else ""), file=sys.stderr)
+
+
+def cmd_forget(args):
+    p = project_of(args, load())
+    r = api("POST", f"/api/projects/{p}/forget", {"machine": args.machine})
+    print(f"tule: {p}: forgot the copy on {r['forgot']} (its unsaved work is gone)", file=sys.stderr)
+
+
+def cmd_save(args):
+    """Commit, merge what other machines saved, push to main: on the machine through the local tule-agent, else through the API."""
+    cfg = load()
+    from . import machine
+
+    if not args.project and not (cfg.get("url") and cfg.get("token")) and machine.on_machine():
+        r = machine.local_request({"op": "save", "message": args.message or ""})
+    else:
+        p = project_of(args, cfg)
+        body = {"message": args.message or "", **({"machine": args.machine} if args.machine else {})}
+        url, token = need(cfg)
+        req = urllib.request.Request(url + f"/api/projects/{p}/save", data=json.dumps(body).encode(), method="POST",
+                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=900) as res:
+                r = json.load(res)
+        except urllib.error.HTTPError as e:
+            r = json.load(e)
+    r = r.get("result", r)
+    if r.get("error"):
+        files = "".join(f"\n  {f}" for f in r.get("conflicts") or [])
+        raise CliError(f"{r['error']}{files}" + (f"\n{r['hint']}" if r.get("hint") else ""))
+    print(f"tule: saved {r['saved'][:12]}" + (" (merged the latest save)" if r.get("merged") else "") + ("" if r.get("committed", True) else " (nothing new to commit)"))
 
 
 def cmd_status(args):
@@ -410,21 +480,22 @@ def cmd_snapshot(args):
         if machine.on_machine():
             return machine.snapshot_here()
     p = project_of(args, cfg)
-    r = api("POST", f"/api/projects/{p}/snapshot")
+    r = api("POST", f"/api/projects/{p}/snapshot", {"machine": args.machine} if args.machine else {})
     print(f"tule: {p}: snapshot {r['snapshot']}" + ("" if r.get("changed", True) else " (nothing changed since)"))
 
 
 def cmd_snapshots(args):
     p = project_of(args, load())
-    r = api("GET", f"/api/projects/{p}/snapshots?limit={args.limit}")
+    q = f"&machine={urllib.parse.quote(args.machine)}" if args.machine else ""
+    r = api("GET", f"/api/projects/{p}/snapshots?limit={args.limit}{q}")
     for s in r["snapshots"]:
         when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s["at"] / 1000))
-        print(f"{s['id']}  {when}  {s['files']:>6} files  {s['bytes'] / 2**20:>9.1f} MiB  {s['reason']}")
+        print(f"{s['id']}  {when}  {s.get('machine') or '':<14} {s['files']:>6} files  {s['bytes'] / 2**20:>9.1f} MiB  {s['reason']}")
 
 
 def cmd_restore(args):
     p = project_of(args, load())
-    r = api("POST", f"/api/projects/{p}/restore", {"id": args.id})
+    r = api("POST", f"/api/projects/{p}/restore", {"id": args.id, **({"machine": args.machine} if args.machine else {})})
     print(f"tule: {p}: /workspace is now snapshot {r['snapshot']} ({r['files']} files written; the state before is saved too)")
 
 
@@ -462,16 +533,22 @@ def main(argv=None):
     sp = add("delete", cmd_delete, "delete a project (its /workspace and snapshots)", project=False)
     sp.add_argument("name")
     sp.add_argument("--yes", metavar="NAME", help="the name again, to confirm")
-    sp = add("up", cmd_up, "start (or resize) the project's machine")
+    sp = add("up", cmd_up, "load the project on a machine (others keep running); resizes the Tule cloud one")
     sp.add_argument("--machine", default="cpu-1", help="cpu-1 (default), cpu-2, cpu-4, or gpu-<type>")
     sp.add_argument("--gpu", metavar="TYPE", help="a GPU on your RunPod account, e.g. rtx4090 (tule gpus)")
     sp.add_argument("--on", metavar="COMPUTER", help="one of your own computers (tule hosts)")
     add("hosts", cmd_hosts, "your own computers: online, cores, memory, GPUs", project=False)
     add("gpus", cmd_gpus, "GPU machines: price and availability on your RunPod account", project=False)
-    add("down", cmd_down, "stop the project's machine")
+    sp = add("down", cmd_down, "stop the project's machines (or one: --machine)")
+    sp.add_argument("--machine", help="cloud, gpu-<type>, a computer's name, or joined")
+    sp = add("forget", cmd_forget, "drop a stopped machine's copy and its unsaved work")
+    sp.add_argument("--machine", required=True)
+    sp = add("save", cmd_save, "commit, merge the latest save, and push it (on the machine: this copy)")
+    sp.add_argument("-m", "--message", help="what changed")
+    sp.add_argument("--machine", help="which machine's copy (when several run)")
     add("status", cmd_status, "the project's machine, timings and outputs")
     sp = add("ssh", cmd_ssh, "a shell or a command on the machine (starts it if needed)")
-    sp.add_argument("--machine", default="cpu-1")
+    sp.add_argument("--machine", help="which machine (when several run), or the one to start (default cpu-1)")
     sp.add_argument("--config", action="store_true", help="write an ~/.ssh/config entry instead")
     sp.add_argument("command", nargs=argparse.REMAINDER)
     sp = add("proxy", cmd_proxy, "SSH ProxyCommand (used by tule ssh)", project=False)
@@ -479,11 +556,14 @@ def main(argv=None):
     sp = add("open", cmd_open, "open the viewer")
     sp.add_argument("--print", action="store_true", help="only print the link")
     add("join", cmd_join, "a join token for a machine you start yourself")
-    add("snapshot", cmd_snapshot, "save /workspace now (on the machine: through the local tule-agent)")
-    sp = add("snapshots", cmd_snapshots, "list the snapshots of /workspace, newest first")
+    sp = add("snapshot", cmd_snapshot, "autosave /workspace now (on the machine: through the local tule-agent)")
+    sp.add_argument("--machine")
+    sp = add("snapshots", cmd_snapshots, "list the autosaves of /workspace, newest first")
     sp.add_argument("--limit", type=int, default=20)
-    sp = add("restore", cmd_restore, "make /workspace match a snapshot (saves the current state first)")
+    sp.add_argument("--machine", help="only this machine's copy")
+    sp = add("restore", cmd_restore, "make a copy of /workspace match an autosave (saves the current state first)")
     sp.add_argument("id")
+    sp.add_argument("--machine", help="restore into this machine (default: the one that made the snapshot)")
     sp = add("keys", cmd_keys, "SSH keys: tule keys ls | tule keys add ~/.ssh/id_ed25519.pub", project=False)
     sp.add_argument("action", choices=["add", "ls"])
     sp.add_argument("file", nargs="?")

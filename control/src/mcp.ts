@@ -17,7 +17,7 @@ const LEGACY = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 const SERVER_INFO = { name: "tule", title: "Tule", version: "0.1.0" };
 
-export const INSTRUCTIONS = `Tule gives the user's engineering projects a machine each: Linux with OpenCascade, the \`tule\` Python modeling API (immutable shapes, tags that survive operations) and topology optimization. These tools manage the control plane only: projects, machines (cpu-1 = 1 vCPU/6 GiB, cpu-2, cpu-4; GPUs on the user's RunPod account), snapshots of /workspace, SSH keys, API keys and usage. The work happens on the machine over SSH with the tule CLI (connect_info says how): write Python in /workspace, write results to /workspace/outputs/<name>/ (STEP/STL; the user watches them live in the viewer), check them with \`tule screenshot\`. /workspace is saved continuously; nothing else on the machine persists. Read guide("index") first, then the topic you need.`;
+export const INSTRUCTIONS = `Tule runs the user's engineering projects on machines: Linux with OpenCascade, the \`tule\` Python modeling API (immutable shapes, tags that survive operations) and topology optimization. These tools manage the control plane only: projects, machines (cpu-1 = 1 vCPU/6 GiB, cpu-2, cpu-4; GPUs on the user's RunPod account; the user's own computers), saves, autosaves of /workspace, SSH keys, API keys and usage. A project can be loaded on several machines at once, each with its own copy of /workspace. The work happens on a machine over SSH with the tule CLI (connect_info says how): write Python in /workspace, write results to /workspace/outputs/<name>/ (STEP/STL; the user watches them live in the viewer), check them with \`tule screenshot\`. Each copy is autosaved continuously; \`tule save\` (or the save tool) commits it to the project's git history and merges what other machines saved. Nothing outside /workspace persists. Read guide("index") first, then the topic you need.`;
 
 type Tool = { name: string; description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, unknown> };
 const str = (description: string) => ({ type: "string", description });
@@ -30,18 +30,20 @@ export const TOOLS: Tool[] = [
   { name: "projects_list", description: "The user's projects with their machine state and viewer links.", inputSchema: obj({}), annotations: RO },
   { name: "projects_create", description: "Create a project (a new /workspace from the template: AGENTS.md, tule.toml, main.py, git).", inputSchema: obj({ name: str("lowercase letters, digits and '-', e.g. camera-bracket") }, ["name"]) },
   { name: "projects_rename", description: "Rename a project.", inputSchema: obj({ ...project, to: str("the new name") }, ["project", "to"]) },
-  { name: "projects_delete", description: "Delete a project: stops its machine and deletes /workspace and every snapshot. Cannot be undone; confirm with the user first.", inputSchema: obj({ ...project, confirm: str("the project name again, to confirm") }, ["project", "confirm"]), annotations: { destructiveHint: true } },
-  { name: "machine_start", description: "Start (or resize) the project's machine and wait until /workspace is restored. cpu-1 (default, 1 vCPU / 6 GiB), cpu-2 (2 / 8), cpu-4 (4 / 12), or a GPU on the user's RunPod account: gpu-rtx4090, gpu-l40s, gpu-a100, gpu-h100, ... (gpus_list has prices; GPU time costs the user money, so ask first), or one of the user's own computers by name (computers_list). Resizing moves /workspace to the new machine.", inputSchema: obj({ ...project, machine: str("cpu-1, cpu-2, cpu-4, gpu-<type>, or a computer's name") }, ["project"]) },
+  { name: "projects_delete", description: "Delete a project: stops its machines and deletes every copy of /workspace, its saves and autosaves. Cannot be undone; confirm with the user first.", inputSchema: obj({ ...project, confirm: str("the project name again, to confirm") }, ["project", "confirm"]), annotations: { destructiveHint: true } },
+  { name: "machine_start", description: "Load the project on a machine and wait until its /workspace is ready (a machine it ran on before gets its own copy back; a new one starts from the latest save). Other machines keep running. cpu-1 (default, 1 vCPU / 6 GiB), cpu-2 (2 / 8), cpu-4 (4 / 12), or a GPU on the user's RunPod account: gpu-rtx4090, gpu-l40s, gpu-a100, gpu-h100, ... (gpus_list has prices; GPU time costs the user money, so ask first), or one of the user's own computers by name (computers_list). The project has one Tule cloud machine: another cpu size resizes it.", inputSchema: obj({ ...project, machine: str("cpu-1, cpu-2, cpu-4, gpu-<type>, or a computer's name") }, ["project"]) },
   { name: "computers_list", description: "The user's own computers plugged into Tule (tule host up): online state, cores, memory, GPUs. A machine can run on one by passing its name to machine_start.", inputSchema: obj({}), annotations: RO },
   { name: "gpus_list", description: "GPU machines on the user's RunPod account: price per hour and current availability.", inputSchema: obj({}), annotations: RO },
-  { name: "machine_stop", description: "Save /workspace and stop the project's machine.", inputSchema: obj(project, ["project"]) },
-  { name: "machine_status", description: "The project's machine: state, size, timings, SSH sessions, latest snapshot.", inputSchema: obj(project, ["project"]), annotations: RO },
+  { name: "machine_stop", description: "Autosave and stop the project's machines, or one of them. Unsaved work stays in that machine's copy.", inputSchema: obj({ ...project, machine: str("one machine's id (default: all)") }, ["project"]) },
+  { name: "machine_status", description: "The project's machines: state, size, unsaved work, timings, SSH sessions; and the latest save.", inputSchema: obj(project, ["project"]), annotations: RO },
+  { name: "machine_forget", description: "Drop a stopped machine's copy of /workspace with its unsaved work. Confirm with the user first.", inputSchema: obj({ ...project, machine: str("the machine's id from machine_status") }, ["project", "machine"]), annotations: { destructiveHint: true } },
+  { name: "save", description: "Commit a machine's /workspace, merge what other machines saved, and push it as the project's latest save. On a merge conflict nothing is saved: the answer lists the files; resolve them on that machine and save again.", inputSchema: obj({ ...project, message: str("what changed"), machine: str("which machine (an id from machine_status: cloud, gpu-<type>, a computer's name, joined); needed only when several run") }, ["project"]) },
   { name: "connect_info", description: "How to work on the project's machine: one command that installs the tule CLI and signs it in (no user step), then SSH in; the viewer link.", inputSchema: obj(project, ["project"]), annotations: RO },
   { name: "join_token", description: "A join token for a machine started elsewhere (e.g. a pod made with the user's own RunPod connector): run the Tule image with these environment variables and it joins the project.", inputSchema: obj(project, ["project"]) },
   { name: "outputs_list", description: "The project's outputs (folders in /workspace/outputs) with viewer links.", inputSchema: obj(project, ["project"]), annotations: RO },
-  { name: "snapshots_list", description: "Snapshots of /workspace, newest first.", inputSchema: obj({ ...project, limit: { type: "number" } }, ["project"]), annotations: RO },
-  { name: "snapshot_now", description: "Save /workspace now (the machine must be running).", inputSchema: obj(project, ["project"]) },
-  { name: "snapshot_restore", description: "Make /workspace match a snapshot (the current state is saved first, so this can be undone).", inputSchema: obj({ ...project, id: str("snapshot id from snapshots_list") }, ["project", "id"]) },
+  { name: "snapshots_list", description: "Autosaves of /workspace (every machine's copy, or one), newest first.", inputSchema: obj({ ...project, limit: { type: "number" }, machine: str("only this machine's copy") }, ["project"]), annotations: RO },
+  { name: "snapshot_now", description: "Autosave a machine's /workspace now (it must be running).", inputSchema: obj({ ...project, machine: str("which machine (an id from machine_status: cloud, gpu-<type>, a computer's name, joined); needed only when several run") }, ["project"]) },
+  { name: "snapshot_restore", description: "Make a machine's /workspace match an autosave (the current state is autosaved first, so this can be undone).", inputSchema: obj({ ...project, id: str("snapshot id from snapshots_list"), machine: str("restore into this machine (default: the one that made it)") }, ["project", "id"]) },
   { name: "ssh_keys_list", description: "The user's SSH public keys (they work on every project's machine).", inputSchema: obj({}), annotations: RO },
   { name: "ssh_keys_add", description: "Add an SSH public key (ssh-ed25519 ...).", inputSchema: obj({ key: str("the public key line"), name: str("a label") }, ["key"]) },
   { name: "ssh_keys_remove", description: "Remove an SSH key by id.", inputSchema: obj({ id: str("key id from ssh_keys_list") }, ["id"]) },
@@ -69,9 +71,13 @@ async function call(env: Env, user: User, name: string, a: Record<string, unknow
       const r = await ops.up(env, user, a.project, a.machine, origin);
       if (r.error) return r;
       // wait (bounded) until the machine is ready, so the agent can SSH in next
-      for (let i = 0; i < (String(a.machine ?? "").startsWith("gpu-") ? 150 : 100); i++) {
+      const m = String(a.machine || "cpu-1");
+      const slot = m.startsWith("cpu-") ? "cloud" : m;
+      const ready = (s: ops.Result) => (s.machines as ops.Result[] | undefined)?.find((x) => x.id === slot);
+      for (let i = 0; i < (m.startsWith("cpu-") ? 100 : 150); i++) {
         const s = await ops.status(env, user, a.project, origin);
-        if (s.state === "running" || s.error) return s;
+        const x = ready(s);
+        if (s.error || x?.state === "running" || (x?.state === "stopped" && x.lastError)) return s;
         await new Promise((res) => setTimeout(res, 600));
       }
       return { ...(await ops.status(env, user, a.project, origin)), note: "still starting; check machine_status again shortly" };
@@ -82,7 +88,9 @@ async function call(env: Env, user: User, name: string, a: Record<string, unknow
       return { gpus: await gpuCatalog(key) };
     }
     case "computers_list": return { computers: await ops.listHosts(env, user) };
-    case "machine_stop": return ops.down(env, user, a.project);
+    case "machine_stop": return ops.down(env, user, a.project, a.machine);
+    case "machine_forget": return ops.forget(env, user, a.project, a.machine);
+    case "save": return ops.command(env, user, a.project, { t: "save", message: String(a.message ?? "") }, a.machine);
     case "machine_status": return ops.status(env, user, a.project, origin);
     case "connect_info": {
       const p = await ops.resolve(env, user, a.project);
@@ -90,9 +98,9 @@ async function call(env: Env, user: User, name: string, a: Record<string, unknow
     }
     case "join_token": return ops.join(env, user, a.project, origin);
     case "outputs_list": return ops.outputs(env, user, a.project, origin);
-    case "snapshots_list": return ops.snapshots(env, user, a.project, Number(a.limit ?? 20));
-    case "snapshot_now": return ops.command(env, user, a.project, { t: "snapshot", reason: "agent" });
-    case "snapshot_restore": return ops.command(env, user, a.project, { t: "restore", id: String(a.id ?? "") });
+    case "snapshots_list": return ops.snapshots(env, user, a.project, Number(a.limit ?? 20), a.machine);
+    case "snapshot_now": return ops.command(env, user, a.project, { t: "snapshot", reason: "agent" }, a.machine);
+    case "snapshot_restore": return ops.command(env, user, a.project, { t: "restore", id: String(a.id ?? "") }, a.machine);
     case "ssh_keys_list": return { keys: (await acc.sshKeys(user.id)).map((k) => ({ id: k.id, name: k.name, key: k.key.slice(0, 40) + "…" })) };
     case "ssh_keys_add": return ops.addSshKey(env, user, a.key, a.name);
     case "ssh_keys_remove": return ops.removeSshKey(env, user, a.id);

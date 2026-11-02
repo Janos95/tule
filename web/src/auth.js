@@ -33,7 +33,7 @@ export const auth = {
   /** The WebSocket URL for an API path ("/api/projects/<p>/view"). */
   socket(path) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${location.host}${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`;
+    return `${proto}//${location.host}${path}${token ? `${path.includes("?") ? "&" : "?"}t=${encodeURIComponent(token)}` : ""}`;
   },
   /** fetch() for an API path, authorized; throws Error("<error>: <hint>") on a non-2xx answer. */
   async api(path, init = {}) {

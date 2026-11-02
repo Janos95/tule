@@ -4,6 +4,7 @@
 needed). One JSON object per line in each direction:
 
     {"op": "snapshot", "reason": "manual"}  -> {"snapshot": id, "changed": bool}
+    {"op": "save", "message": "..."}        -> {"saved": sha, "merged": bool} or {"error", "conflicts", "hint"}
     {"op": "status"}                        -> {"workspace", "ready", "connected", "snapshot"}
 
 Errors come back as {"error": "..."}. The socket is root-only
@@ -58,9 +59,22 @@ async def _snapshot(agent, msg: dict) -> dict:
     return {"snapshot": sid or agent.workspace.last_id, "changed": sid is not None}
 
 
+async def _save(agent, msg: dict) -> dict:
+    import saves
+
+    if agent.booted is None:
+        return {"error": "the workspace is not restored yet; try again in a few seconds"}
+    async with agent.lock:
+        out = await asyncio.to_thread(saves.save, agent.workspace.root, str(msg.get("message") or ""))
+        if not out.get("error"):
+            await asyncio.to_thread(agent.workspace.snapshot, "saved")
+    await agent.report()
+    return {"result": out} if out.get("error") else out
+
+
 async def _status(agent, msg: dict) -> dict:
     return {"workspace": agent.workspace.root, "ready": agent.booted is not None,
             "connected": agent.ws is not None, "snapshot": agent.workspace.last_id}
 
 
-OPS = {"snapshot": _snapshot, "status": _status}
+OPS = {"snapshot": _snapshot, "save": _save, "status": _status}

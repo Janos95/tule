@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Moves staged files over 5 MB that are not in Git LFS yet into it.
+
+Adds a pattern to .gitattributes (*.ext, or the file's path when it has no
+extension), then stages the file again through the LFS filter. Installed on
+Tule machines as core.hooksPath (see runtime/Dockerfile).
+"""
+import os
+import subprocess
+import sys
+
+LIMIT = int(os.environ.get("TULE_MAX_BLOB", str(5 << 20)))
+
+
+def git(*a):
+    return subprocess.run(["git", *a], capture_output=True, text=True).stdout
+
+
+staged = [p for p in git("diff", "--cached", "--name-only", "--diff-filter=AM", "-z").split("\0") if p]
+moved = []
+for path in staged:
+    if "filter: lfs" in git("check-attr", "filter", "--", path):
+        continue
+    try:
+        size = int(git("cat-file", "-s", f":{path}").strip() or 0)
+    except ValueError:
+        continue
+    if size <= LIMIT:
+        continue
+    ext = os.path.splitext(path)[1]
+    pattern = f"*{ext}" if ext and len(ext) <= 10 else "/" + path
+    subprocess.run(["git", "lfs", "track", pattern], capture_output=True, check=True)
+    moved.append((path, size, pattern))
+if moved:
+    subprocess.run(["git", "add", ".gitattributes"], check=True)
+    # stage them again, now through the LFS filter
+    subprocess.run(["git", "add", "--renormalize", "--", *[p for p, _, _ in moved]], check=True)
+    for path, size, pattern in moved:
+        print(f"tule: {path} ({size >> 20} MB) goes to Git LFS ({pattern} added to .gitattributes)", file=sys.stderr)

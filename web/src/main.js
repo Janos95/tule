@@ -97,7 +97,8 @@ async function connect(delay = 500) {
   if (!(await auth.signedIn())) return;
   $("project-name").textContent = project;
   document.title = `${project} · Tule`;
-  ws = new WebSocket(auth.socket(`/api/projects/${project}/view`));
+  const pickedM = new URLSearchParams(location.search).get("machine");
+  ws = new WebSocket(auth.socket(`/api/projects/${project}/view${pickedM ? `?machine=${encodeURIComponent(pickedM)}` : ""}`));
   ws.binaryType = "arraybuffer";
   ws.onopen = () => (delay = 500);
   ws.onmessage = (e) => (typeof e.data === "string" ? onText(JSON.parse(e.data)) : onMesh(e.data));
@@ -191,21 +192,58 @@ function request(file) {
   return meshes.get(file.hash);
 }
 
+/** A machine's name as the projects page shows it. */
+function machineName(m) {
+  if (m.kind === "cloud") return "Tule cloud";
+  if (m.kind === "gpu") return `RunPod ${(m.gpu ?? m.id.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}`;
+  if (m.kind === "joined") return "other machine";
+  return m.computer ?? m.id;
+}
+
+const unsavedOf = (m) => (m.unsaved ? m.unsaved.files + m.unsaved.commits : 0);
+
+/** The footer: the copy shown (a project can be loaded on several machines; then it is a picker). */
 function machine(s) {
-  const changed = state.machine !== s.state;
-  state.machine = s.state;
+  const all = s.machines ?? [];
+  const m = all.find((x) => x.id === s.viewing);
+  const st = s.state === "offline" ? "offline" : (m?.state ?? "stopped");
+  state.machine = st;
   annotate?.machineChanged();
   const el = $("machine");
-  el.dataset.state = s.state;
-  const text = {
-    running: `${s.machine ?? "machine"} · running`,
-    starting: `${s.machine ?? "machine"} · starting`,
-    stopped: "machine stopped",
-    offline: "reconnecting…",
-  }[s.state] ?? s.state;
-  $("machine-text").textContent = text;
-  el.title = s.state === "stopped" ? "Start it with: tule up" : `The project's machine${s.sessions ? ` · ${s.sessions} SSH session(s)` : ""}`;
+  el.dataset.state = st;
+  const n = m ? unsavedOf(m) : 0;
+  const text = $("machine-text");
+  if (st === "offline") text.textContent = "reconnecting…";
+  else if (!m) text.textContent = "not loaded on a machine";
+  else {
+    // the dot says running; the text says what is not obvious
+    text.textContent = `${machineName(m)}${st === "running" ? "" : ` · ${st}`}${st === "starting" ? "" : n ? " · " : m.unsaved ? " · saved" : ""}`;
+    if (n && st !== "starting") text.insertAdjacentHTML("beforeend", `<span class="unsaved">${n} unsaved</span>`);
+  }
+  el.title = !m ? "Load it with: tule up" : `${machineName(m)}'s copy of /workspace${m.sessions ? ` · ${m.sessions} SSH session(s)` : ""}`;
+  const pick = $("machine-pick");
+  const several = all.length > 1 && st !== "offline";
+  pick.hidden = !several;
+  $("machine-more").toggleAttribute("hidden", !several); // an SVG has no .hidden
+  if (several) {
+    pick.replaceChildren(
+      ...all.map((x) => {
+        const n = unsavedOf(x);
+        const o = new Option(`${machineName(x)} · ${x.state}${n ? ` · ${n} unsaved` : ""}`, x.id);
+        o.selected = x.id === s.viewing;
+        return o;
+      }),
+    );
+  }
 }
+
+$("machine-pick").addEventListener("change", (e) => {
+  const id = e.target.value;
+  const u = new URL(location.href);
+  u.searchParams.set("machine", id);
+  history.replaceState(null, "", u);
+  ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ t: "pick", machine: id }));
+});
 
 // ------------------------------------------------------------ outputs
 

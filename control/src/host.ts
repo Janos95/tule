@@ -70,7 +70,7 @@ export class Host extends DurableObject<Env> {
       const { t: _t, rid: _r, ...rest } = m;
       done?.(rest);
     } else if (m.t === "failed" && typeof m.project === "string") {
-      await stub<Project>(this.env.PROJECT, m.project).hostFailed(String(m.error ?? "the container did not start"));
+      await stub<Project>(this.env.PROJECT, m.project).hostFailed(String(m.error ?? "the container did not start"), this.info.id);
     } else if (m.t === "beat") {
       this.info = { ...this.info, seenAt: Date.now(), running: Array.isArray(m.running) ? (m.running as string[]) : [] };
       await this.ctx.storage.put("info", this.info);

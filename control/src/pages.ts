@@ -45,9 +45,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .card{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--panel)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--idle);margin-right:6px}.dot.running{background:var(--ok-fill)}.dot.starting{background:var(--warn-fill)}
 .plist{display:flex;flex-direction:column;border-top:1px solid var(--line)}
-.prow{display:grid;grid-template-columns:minmax(0,1fr) 210px 84px 96px;align-items:center;gap:16px;padding:12px 8px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
-.prow:hover{background:var(--hover)}
-.pname{font-weight:500}.pstate{color:var(--muted);font-size:14px;white-space:nowrap}.pmachine{color:var(--muted);font-size:14px;display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pgroup{border-bottom:1px solid var(--line)}
+.prow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;padding:12px 8px;color:inherit;text-decoration:none}
+.prow:hover{background:var(--hover)}.prow.sub{padding:7px 8px 7px 28px;margin-top:-4px}.prow.sub:last-child{padding-bottom:12px}
+.pname{font-weight:500}.pstate{color:var(--muted);font-size:14px;white-space:nowrap}.pstate .unsaved{color:var(--warn)}.pmachine{color:var(--muted);font-size:14px;display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ic{flex:none;width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.85}.pdate{color:var(--muted);font-size:13px;text-align:right}
 .newp{border-bottom:1px solid var(--line)}
 .newp summary,.newp-go{all:unset;box-sizing:border-box;display:block;width:100%;cursor:pointer;padding:12px 8px;color:var(--muted)}
@@ -82,7 +83,7 @@ body:has(.guestbar) main{padding-bottom:64px}
 .notice{padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
 @media (max-width:600px){.item{grid-template-columns:1fr auto}.item-meta{grid-column:1/-1;grid-row:2}}
 .hero{padding:48px 0 24px}.hero h1{font-size:30px}.hero p{font-size:17px;color:var(--muted);max-width:620px}
-@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow{grid-template-columns:minmax(0,1fr) auto;row-gap:2px}.pmachine{grid-column:1;grid-row:2;font-size:13px}.pmachine:empty{display:none}.pstate{grid-column:2;grid-row:1}.pdate{display:none}}
+@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow.sub{padding-left:20px}.pmachine,.pstate{font-size:13px}}
 `;
 
 const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#8fc46a" stroke-width="32" stroke-linecap="round"/></svg>`;
@@ -129,7 +130,9 @@ export function landing(_origin: string, note = ""): Response {
   );
 }
 
-export type ProjectRow = ProjectRef & { state: string; machine: string | null; os?: string };
+/** A copy of the project on a machine (project.ts machineStatus). */
+export type MachineRow = { id: string; kind: string; size: string; state: string; unsaved: { files: number; commits: number } | null; gpu?: string; computer?: string; os?: string };
+export type ProjectRow = ProjectRef & { machines: MachineRow[] };
 
 /** The last row of a list: "+ New …", which turns into a one-line field in place.
     Enter submits, Esc closes. */
@@ -153,17 +156,22 @@ const ICONS: Record<string, string> = {
 };
 const icon = (name: string) => new Html(`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
 
-/** Where a project runs, as an icon and a name: cpu-* are Tule's, gpu-* RunPod pods,
-    "external" a machine that joined with a token, anything else one of your computers. */
-function machineLabel(p: ProjectRow): Html | string {
-  const m = p.machine;
-  if (!m) return "";
-  if (m.startsWith("cpu-")) return html`${icon("cloud")}Tule cloud`;
-  if (m.startsWith("gpu-")) return html`${icon("gpu")}RunPod ${(GPUS[m.slice(4)] ?? m.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}`;
-  if (m === "external") return html`${icon("plug")}other machine`;
-  const os = (p.os ?? "").toLowerCase();
+/** Where a copy runs, as an icon and a name: Tule's cloud, a RunPod pod, a machine
+    that joined with a token, or one of your computers. */
+function machineLabel(m: MachineRow): Html {
+  if (m.kind === "cloud") return html`${icon("cloud")}Tule cloud`;
+  if (m.kind === "gpu") return html`${icon("gpu")}RunPod ${(GPUS[m.id.slice(4)] ?? m.id.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}`;
+  if (m.kind === "joined") return html`${icon("plug")}other machine`;
+  const os = (m.os ?? "").toLowerCase();
   const kind = os.startsWith("darwin") ? "apple" : /microsoft|wsl/.test(os) ? "windows" : os.startsWith("linux") ? "server" : "desktop";
-  return html`${icon(kind)}${m}`;
+  return html`${icon(kind)}${m.computer ?? m.id}`;
+}
+
+/** "running · saved", "running · 3 unsaved", "starting", "stopped · 2 unsaved". */
+function machineState(m: MachineRow): Html {
+  const n = m.unsaved ? m.unsaved.files + m.unsaved.commits : 0;
+  const tail = m.state === "starting" ? "" : n ? html` · <span class="unsaved">${n} unsaved</span>` : m.state === "running" && m.unsaved ? " · saved" : "";
+  return html`<span class="dot ${m.state}"></span>${m.state}${tail}`;
 }
 
 export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, limits?: GuestLimits): Response {
@@ -176,11 +184,13 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
   );
   const body = html`<div class="plist">
         ${rows.map(
-          (p) => html`<a class="prow" href="/p/${p.name}">
+          (p) => html`<div class="pgroup"><a class="prow" href="/p/${p.name}">
             <span class="pname">${p.name}</span>
-            <span class="pmachine">${p.state === "stopped" ? "" : machineLabel(p)}</span>
-            <span class="pstate"><span class="dot ${p.state}"></span>${p.state}</span>
-            <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>`,
+            <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>
+            ${p.machines.map(
+              (m) => html`<a class="prow sub" href="/p/${p.name}?machine=${encodeURIComponent(m.id)}">
+              <span class="pmachine">${machineLabel(m)}</span><span class="pstate">${machineState(m)}</span></a>`,
+            )}</div>`,
         )}
         ${create}
       </div>`;

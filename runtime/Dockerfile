@@ -5,7 +5,7 @@
 FROM python:3.13-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-server git ca-certificates libgl1 libx11-6 \
+ && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 \
  && { dpkg --remove --force-depends mesa-libgallium libllvm19 libz3-4 libgl1-mesa-dri libglx-mesa0 2>/dev/null || true; } \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
 # (OCP only needs libGL.so.1 to load; the Mesa drivers, 200 MB, are for rendering)
@@ -21,9 +21,16 @@ RUN pip install --no-cache-dir --no-deps /opt/tule/python
 RUN --mount=type=bind,source=cli,target=/tmp/cli,rw pip install --no-cache-dir --no-deps /tmp/cli
 COPY skills /opt/tule/skills
 COPY templates/project /opt/tule/template
-COPY runtime/tule_agent.py runtime/workspace.py runtime/local.py runtime/files.py runtime/annotations.py /opt/tule/
+COPY runtime/tule_agent.py runtime/workspace.py runtime/saves.py runtime/local.py runtime/files.py runtime/annotations.py /opt/tule/
+# git: saves go to the project's Tule remote (git-remote-tule, from the CLI); big
+# files through Git LFS, with the pre-commit hook moving any it missed there
+COPY runtime/git-hooks /opt/tule/git-hooks
 RUN git config --system init.defaultBranch main \
- && git config --system user.name "Tule agent" && git config --system user.email "agent@tule.local"
+ && git config --system user.name "Tule agent" && git config --system user.email "agent@tule.local" \
+ && git lfs install --system --skip-repo \
+ && git config --system core.hooksPath /opt/tule/git-hooks \
+ && git config --system lfs.locksverify false \
+ && git config --system --add credential.helper "" && git config --system --add credential.helper tule
 
 ENV TULE_WORKSPACE=/workspace PYTHONUNBUFFERED=1
 WORKDIR /workspace

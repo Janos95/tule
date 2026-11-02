@@ -84,7 +84,7 @@ Tule does not run or bill for an agent. Users bring their own.
 5. **Create projects** on the site or by asking the agent ("start a Tule
    project for a camera bracket"); both call the same control plane.
 
-Then the agent works: it starts the project's machine, connects over SSH,
+Then the agent works: it loads the project on a machine, connects over SSH,
 models, writes results to `outputs/`, and the user watches in the viewer.
 
 ## Architecture
@@ -97,14 +97,14 @@ models, writes results to `outputs/`, and the user watches in the viewer.
  └───────────────────┘               │   viewer assets, tunnel endpoint        │
  ┌───────────────────┐               │   │                                     │
  │ browser: viewer,  │◀──WSS─────────│ Durable Object "Project" (one each)     │
- │ files, settings   │               │   - owns the project's machine          │
+ │ files, settings   │               │   - owns the project's machines         │
  └───────────────────┘               │   - routes SSH / viewer / sync streams  │
-                                     │   - workspace lock, snapshots index     │
+                                     │   - autosave index, git refs            │
                                      │   - usage and budget accounting         │
                                      │ Durable Object "Accounts": users,       │
                                      │   connections (RunPod key, encrypted),  │
                                      │   API keys, SSH keys, projects          │
-                                     │ R2: workspace snapshots (by content)    │
+                                     │ R2: snapshots, git bundles, LFS objects │
                                      └───────────────▲─────────────────────────┘
                                                      │ WSS, dialed OUT by the machine
                                   ┌──────────────────┴───────────────────┐
@@ -269,67 +269,75 @@ machine is rebuilt from the image every boot.
   - ignored: `__pycache__`, `.pytest_cache` and the patterns in
     `.tuleignore`;
   - not yet: garbage collection of unreferenced chunks, a size limit.
-- **One writer at a time:** the Project Durable Object holds the workspace
-  lock; the machine that owns it syncs, GPU functions get copies.
-- **Git inside:** `/workspace` is a git repository for the code, so there are
-  diffs, branches and readable history, and it can be pushed to GitHub.
-  Snapshots catch everything git does not, so nothing is lost even if the
-  agent never commits.
+- **A copy per machine:** each machine a project is loaded on autosaves its
+  own copy (the snapshots above, tagged with the machine); no lock.
+- **Git inside:** `/workspace` is a git repository whose remote is hosted by
+  Tule; a save is a commit pushed to it (see "Several machines per project,
+  saves in git"). Snapshots catch everything git does not, so nothing is lost
+  even if the agent never saves.
 - **`tule.toml`:** extra packages to install at boot (the heavy stack is in
   the image), entry point, parameters.
 - **New projects** start from a template: `AGENTS.md`/`CLAUDE.md` with the
   agent instructions, `tule.toml`, `main.py`, empty `outputs/`.
 
-#### Planned: several machines per project, saves in git (2026-11-01)
+#### Several machines per project, saves in git (2026-11-01)
 
-Not built. Today a project has one machine and one writer. The plan lets a
-project be loaded on several machines at once, e.g. the agent iterating on
-designs on Tule cloud while an FEA run goes on a RunPod GPU, with two
-separate kinds of saving:
+A project can be loaded on several machines at once, e.g. the agent
+iterating on designs on Tule cloud while an FEA run goes on a RunPod GPU.
+There are two separate kinds of saving:
 
-- **A project is a history; a machine holds a working copy.** A project "in
-  progress" is one loaded on at least one machine. A stopped project is
-  loaded nowhere.
-- **Autosave is crash safety, not history.** Today's snapshots stay as they
-  are, but per working copy (project × machine) instead of per project, so
-  each machine syncs its own copy and the single-writer lock goes. Autosave
-  takes the whole `/workspace`, unsaved and unmerged work included, so
-  nothing is lost when a machine disconnects or a pod is preempted. It never
-  commits or merges.
-- **Save is git.** An explicit save is a commit and `git push` to a remote
-  Tule hosts for the project (the git smart HTTP protocol in the Worker,
-  stored in R2). Merging happens here: work on different parts (sourcing
-  parts for a BIM on one machine, FEA on another) merges cleanly, and real
-  conflicts go to the agent, which resolves them with ordinary git. Agents
-  need nothing new.
-- **Large files via Git LFS.** STEP files, scans, meshes and results go
-  through Git LFS; Tule serves its HTTP API from the same R2 store, so they
-  are never merged and never stored twice. Enforced, not left to the agent
-  (a large file in plain git history is only removed by rewriting it):
+- **A project is a history; a machine holds a working copy.** The Project
+  Durable Object keeps a slot per machine: `cloud` (the one Tule cloud
+  machine; cpu-1/2/4 resize it), `gpu-<type>`, a computer's name, and
+  `joined` (a join token). Each slot has its own join token, autosave
+  pointer, outputs, billing, idle stop and unsaved count. A project with no
+  running slot is loaded nowhere.
+- **Autosave is crash safety, not history.** The snapshots are per copy.
+  They take the whole `/workspace`, unsaved and unmerged work included, so
+  nothing is lost when a machine disconnects or a pod is preempted. They
+  never commit or merge.
+- **Save is git.** `tule save` (the `save` MCP tool, or on the machine) adds
+  everything, commits, fetches, merges main, and pushes to main. Work on
+  different parts merges cleanly; a conflict stops the save, lists the
+  files, and the agent resolves it with ordinary git and saves again.
+- **The remote** is a git remote helper (`git-remote-tule`, installed with
+  the CLI, like git-remote-s3): the refs live in the Project Durable Object,
+  each push adds one git bundle in R2
+  (`projects/<id>/git/<n>.bundle`) holding the commits the remote lacked, and
+  a fetch applies the missing bundles in order. A push is compare-and-swap
+  on the ref, so a non-fast-forward push is refused. Chosen over git's smart
+  HTTP protocol, which would need pack negotiation in the Worker. Auth: the
+  machine's join token or the user's API key.
+- **Large files via Git LFS.** Tule serves the LFS batch API (basic
+  transfer) from R2 (`projects/<id>/lfs/<oid>`, checked against its
+  SHA-256 on upload), so big files are never merged and never stored twice.
+  Enforced, not left to the agent:
   1. the project template's `.gitattributes` sends the usual binary types to
-     LFS (STEP, STL, 3MF, meshes, scans, simulation results, images);
-  2. a pre-commit hook in the image moves any other file over a size limit
-     (about 5 MB) to LFS and adds its pattern to `.gitattributes`;
-  3. Tule's remote refuses a push with a large non-LFS file, and the error
-     says what to run (for a commit made with the hook off or elsewhere).
-  The agent instructions need one line: big files go to LFS on their own; if
-  a push is refused, do what the error says.
-- **Generated outputs are not merged.** They come from code; each output
-  records the commit it was made from, so the viewer can say "stress
-  results are from abc, 2 saves behind" and the agent can regenerate.
-- **Which state a machine gets:** a machine newly loaded with the project
-  starts from the latest save (main); a machine that comes back resumes its
-  own last snapshot. A machine that is gone for good but left unsaved work
-  shows up on the project ("unsaved changes from rechenknecht") until the
-  agent merges or discards it.
+     LFS (STEP, STL, 3MF, meshes, simulation results, images, archives);
+  2. a pre-commit hook in the image moves any other file over 5 MB to LFS
+     and adds its pattern to `.gitattributes`;
+  3. the remote helper refuses a push with a plain blob over 5 MB, and the
+     error gives the `git lfs migrate import` command that fixes it (for a
+     commit made with the hook off or elsewhere).
+- **Which state a machine gets:** a machine that comes back resumes its own
+  last autosave; a machine newly loaded with the project starts from the
+  latest save (main); a new project's template is committed and pushed as
+  main. Projects from before git saves start from their newest autosave.
+- **Unsaved work stays visible:** a stopped machine with unsaved work stays
+  on the project ("stopped · 3 unsaved") until it is loaded again and saved,
+  or forgotten (`tule forget --machine …`, `machine_forget`).
+- **Choosing a machine:** commands take `--machine` (MCP: `machine`), and
+  need it only when several run. SSH host names are `tule-<project>.<slot>`.
+- **UI:** the projects list shows each project with its machines as rows
+  under it (where, state, saved or "N unsaved"). The viewer shows one copy;
+  its footer picks which when several are loaded. There is no view of main
+  alone: outputs come from a running copy.
 - **Hosting:** Tule hosts the repositories so one connector is still all a
-  user sets up. Pushing to (or mirroring on) GitHub can come later as an
-  option.
+  user sets up. Pushing to (or mirroring on) GitHub can come later.
 - **Open:** a merged `tule.toml` (packages) may be a combination neither
   machine ran, so a save that touches it should rebuild before results are
-  trusted; the live viewer needs to say which copy it shows (main, or one
-  machine's); the projects list then shows every machine a project is
-  loaded on.
+  trusted; outputs could record the commit they were made from ("from abc,
+  2 saves behind"); garbage collection of git bundles (repacking).
 
 ### Outputs
 
@@ -514,13 +522,14 @@ No exec or file tools: like RunPod's, the MCP never carries the work. Plus
 tule login [--code tulel_…]    # device code: approve in the browser, or a code from connect_info
 tule keys add ~/.ssh/id_ed25519.pub
 tule new bracket               # create a project from the template
-tule up [--gpu rtx4090]        # start / resize the project's machine
+tule up [--machine gpu-rtx4090] # load the project on a machine (others keep running)
+tule save [-m "what changed"]  # commit, merge the latest save, push it
 tule ssh [cmd]                 # shell or command on the machine (also: plain ssh via ProxyCommand)
 tule run [file]                # run the entry point on the machine, stream output
 tule sync [--pull]             # copy /workspace to or from a local folder
 tule screenshot -o view.png [--output bracket] [--labels] [--view iso]
 tule open                      # open the viewer for this project
-tule snapshot | down | ls | logs
+tule snapshot | down | forget | ls | logs   # --machine picks one when several run
 ```
 
 `tule ssh --config` writes an `~/.ssh/config` entry with
@@ -774,4 +783,4 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
-| Machines | one per project (2026-11-01). Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's snapshot. To change: several machines per project, each with its own autosaved working copy, saving and merging through git (see "Planned: several machines per project, saves in git"). The projects list (an icon and where it runs: Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token) assumes one machine and would change with it. |
+| Machines | per project, several at once (2026-11-01): each with its own autosaved copy, saving and merging through git (see "Several machines per project, saves in git"); one Tule cloud machine per project. Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's save. The projects list shows each machine under its project: an icon and where it runs (Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token). |

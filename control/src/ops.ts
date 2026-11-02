@@ -36,7 +36,8 @@ export async function listProjects(env: Env, user: User, origin: string): Promis
   const rows = await Promise.all(
     ps.map(async (p) => {
       const s = await projectStub(env, p.id).status();
-      return { name: p.name, state: s.state, machine: s.machine, created: new Date(p.created).toISOString(), viewer: viewerUrl(origin, p.name) };
+      const machines = (s.machines as Result[]).map((m) => ({ id: m.id, size: m.size, state: m.state, unsaved: m.unsaved }));
+      return { name: p.name, state: s.state, machines, saved: s.saved, created: new Date(p.created).toISOString(), viewer: viewerUrl(origin, p.name) };
     }),
   );
   return { projects: rows };
@@ -48,7 +49,7 @@ export async function createProject(env: Env, user: User, name: unknown, origin:
   const p = await accounts(env).createProject(user.id, name);
   if ("error" in p) return p;
   await projectStub(env, p.id).init(p.id, name, user.id);
-  return { project: name, viewer: viewerUrl(origin, name), next: `start its machine (tule up -p ${name}, or machine_start)` };
+  return { project: name, viewer: viewerUrl(origin, name), next: `load it on a machine (tule up -p ${name}, or machine_start)` };
 }
 
 export async function deleteProject(env: Env, user: User, name: unknown): Promise<Result> {
@@ -81,10 +82,19 @@ export async function up(env: Env, user: User, name: unknown, machine: unknown, 
   return projectStub(env, p.id).up(m, origin);
 }
 
-export async function down(env: Env, user: User, name: unknown): Promise<Result> {
+const machineArg = (m: unknown) => (typeof m === "string" && m ? m : undefined);
+
+export async function down(env: Env, user: User, name: unknown, machine?: unknown): Promise<Result> {
   const p = await resolve(env, user, name);
   if (!isRef(p)) return p;
-  return projectStub(env, p.id).down();
+  return projectStub(env, p.id).down(machineArg(machine));
+}
+
+export async function forget(env: Env, user: User, name: unknown, machine: unknown): Promise<Result> {
+  const p = await resolve(env, user, name);
+  if (!isRef(p)) return p;
+  const m = machineArg(machine);
+  return m ? projectStub(env, p.id).forget(m) : fail("say which machine's copy to forget", "the ids are in machine_status");
 }
 
 export async function join(env: Env, user: User, name: unknown, origin: string): Promise<Result> {
@@ -94,16 +104,16 @@ export async function join(env: Env, user: User, name: unknown, origin: string):
   return { ...r, env: { TULE_URL: origin, TULE_PROJECT: p.id, TULE_JOIN_TOKEN: r.joinToken } };
 }
 
-export async function snapshots(env: Env, user: User, name: unknown, limit = 20): Promise<Result> {
+export async function snapshots(env: Env, user: User, name: unknown, limit = 20, machine?: unknown): Promise<Result> {
   const p = await resolve(env, user, name);
   if (!isRef(p)) return p;
-  return projectStub(env, p.id).snapshots(limit);
+  return projectStub(env, p.id).snapshots(limit, machineArg(machine));
 }
 
-export async function command(env: Env, user: User, name: unknown, msg: Result): Promise<Result> {
+export async function command(env: Env, user: User, name: unknown, msg: Result, machine?: unknown): Promise<Result> {
   const p = await resolve(env, user, name);
   if (!isRef(p)) return p;
-  return projectStub(env, p.id).command(msg);
+  return projectStub(env, p.id).command(msg, machineArg(machine));
 }
 
 export async function outputs(env: Env, user: User, name: unknown, origin: string): Promise<Result> {

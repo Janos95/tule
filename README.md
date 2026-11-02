@@ -18,10 +18,12 @@ curl -fsSL https://tule.janosmeny.com/cli.sh | sh    # installs the CLI; approve
 tule new bracket && tule up -p bracket
 tule ssh -p bracket -- python - < examples/bracket.py
 tule open -p bracket                  # the viewer shows outputs/bracket
+tule save -p bracket -m "First bracket"   # commit and push the project's git history
 ```
 
-GPU machines run on your own RunPod account: paste a RunPod API key in Settings,
-then `tule up --gpu rtx4090` (`tule gpus` lists prices).
+A project can run on several machines at once, each with its own copy, merged
+when saved. GPU machines run on your own RunPod account: paste a RunPod API key
+in Settings, then `tule up --machine gpu-rtx4090` (`tule gpus` lists prices).
 
 ## Develop
 

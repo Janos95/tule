@@ -23,8 +23,9 @@ Wire protocol on the one WebSocket (text frames are JSON, binary frames are
                 {"t": "ssh-close", "sid": n}
                 {"t": "mesh-error", "rid": n, "error": "..."}
                 {"t": "beat"} every 30 s
-                {"t": "ready", "snapshot": id, "files": n, "restoreMs": ms}  /workspace is restored
-                {"t": "reply", "rid": n, ...}  the answer to stop / snapshot / restore
+                {"t": "ready", "snapshot": id, "files": n, "restoreMs": ms, "from": "copy"|"save"|"template"}
+                {"t": "unsaved", "files": n, "commits": n}  work not in the latest save (after autosaves)
+                {"t": "reply", "rid": n, ...}  the answer to stop / snapshot / restore / save
                 {"t": "res", "rid": n, ...}  the answer to a viewer's request
                 {"t": "broadcast", ...}  an event for every viewer
                 binary kind 1: SSH bytes for stream id; kind 2: a mesh for request id
@@ -33,6 +34,7 @@ Wire protocol on the one WebSocket (text frames are JSON, binary frames are
                 {"t": "mesh", "rid": n, "path": "bracket/bracket.step", "hash": "..."}
                 {"t": "stop" | "snapshot", "rid": n}  save now (stop: the machine is going away)
                 {"t": "restore", "rid": n, "id": "..."}  make /workspace match a snapshot
+                {"t": "save", "rid": n, "message": "..."}  commit, merge main, push (saves.py)
                 {"t": "req", "rid": n, "op": "...", "args": {...}}  a viewer's request (REQUESTS)
                 binary kind 1: SSH bytes for stream id
 """
@@ -52,6 +54,7 @@ import time
 
 import websockets
 
+import saves
 from annotations import REQUESTS as ANNOTATION_REQUESTS
 from files import REQUESTS as FILE_REQUESTS
 from workspace import Api, Workspace
@@ -335,6 +338,8 @@ class Agent:
         self.streams: dict[int, Stream] = {}
         self.ws = None
         self.workspace = Workspace(WORKSPACE, Api(url, project, token), log=lambda *a: log(*a))
+        self.git = (url, project, token)  # for saves.setup
+        self.reported: dict | None = None  # the last unsaved counts sent
         self.lock = asyncio.Lock()  # one snapshot or restore at a time
         self.booted: dict | None = None  # the ready message, once /workspace is restored
 
@@ -388,7 +393,9 @@ class Agent:
                 await self.send({"t": "hostkey", **new})
             self.outputs.stamp = None  # resend the index
             await self.send(self.booted)
-        elif t in ("stop", "snapshot", "restore"):
+            self.reported = None
+            await self.report()
+        elif t in ("stop", "snapshot", "restore", "save"):
             asyncio.create_task(self.command(m))
         elif t == "req":
             asyncio.create_task(self.request(m))
@@ -433,21 +440,51 @@ class Agent:
             await self.send({"t": "mesh-error", "rid": rid, "error": f"{type(e).__name__}: {e}"})
 
     def boot(self) -> dict:
-        """Restores the newest snapshot, or starts a new project from the template."""
+        """This machine's working copy: its own last autosave (it is coming back), else
+        the latest save (git main), else a new project from the template (saved as main)."""
         t0 = time.time()
+        git_ok = saves.available()
+        if git_ok:
+            try:
+                saves.setup(WORKSPACE, *self.git)
+            except Exception as e:  # git is optional: autosave still works
+                log("git setup failed:", repr(e))
+                git_ok = False
         m = self.workspace.api.manifest("latest")
-        sid, n = None, 0
+        sid, n, source = None, 0, "copy"
         if m is not None:
             sid = m.get("id")
             n = self.workspace.restore(m)
+        elif git_ok and saves.has_main(WORKSPACE):
+            source = "save"
+            saves.start_from_main(WORKSPACE)
+            sid = self.workspace.snapshot("started from the latest save", force=True)
         else:
+            source = "template"
             new_project(WORKSPACE)
+            if git_ok:
+                saves.configure(WORKSPACE)
+                if not saves.push_new(WORKSPACE):
+                    log("could not save the new project to its remote; it stays unsaved")
             sid = self.workspace.snapshot("new project", force=True)
+        if git_ok:
+            saves.configure(WORKSPACE)
         os.makedirs(OUTPUTS, exist_ok=True)
         ms = int((time.time() - t0) * 1000)
-        log(f"workspace ready: snapshot {sid}, {n} files written, {ms} ms")
+        log(f"workspace ready ({source}): snapshot {sid}, {n} files written, {ms} ms")
         install_packages(WORKSPACE)
-        return {"t": "ready", "snapshot": sid, "files": n, "restoreMs": ms}
+        return {"t": "ready", "snapshot": sid, "files": n, "restoreMs": ms, "from": source}
+
+    async def report(self):
+        """Sends the unsaved counts when they changed."""
+        try:
+            u = await asyncio.to_thread(saves.unsaved, WORKSPACE)
+        except Exception as e:
+            log("unsaved check failed:", repr(e))
+            return
+        if u != self.reported:
+            self.reported = u
+            await self.send({"t": "unsaved", **u})
 
     async def sync(self):
         """Saves /workspace a few seconds after it stops changing, and at least every minute while it changes."""
@@ -464,6 +501,7 @@ class Agent:
                     async with self.lock:
                         await asyncio.to_thread(self.workspace.snapshot, "change")
                     dirty, saved_at = False, now
+                    await self.report()
                 except Exception as e:  # keep the changes dirty; the next round retries
                     log("snapshot failed:", repr(e))
 
@@ -481,10 +519,15 @@ class Agent:
                         raise RuntimeError(f"no snapshot {m['id']}")
                     n = await asyncio.to_thread(self.workspace.restore, manifest)
                     reply = {"snapshot": m["id"], "files": n}
+                elif t == "save":
+                    reply = await asyncio.to_thread(saves.save, WORKSPACE, m.get("message") or "")
+                    if not reply.get("error"):
+                        await asyncio.to_thread(self.workspace.snapshot, "saved")
                 else:
                     sid = await asyncio.to_thread(self.workspace.snapshot, t if t == "stop" else m.get("reason", "manual"))
                     reply = {"snapshot": sid or self.workspace.last_id, "changed": sid is not None}
             await self.send({"t": "reply", "rid": rid, **reply})
+            await self.report()
         except Exception as e:
             await self.send({"t": "reply", "rid": rid, "error": f"{type(e).__name__}: {e}"})
 

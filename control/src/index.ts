@@ -32,7 +32,7 @@ import { accounts, authorize, authRoutes, deviceApi, isAdmin, devicePage, loginU
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
-import { landing, page, projectsPage, settingsPage, type ProjectRow } from "./pages";
+import { landing, page, projectsPage, settingsPage, type MachineRow, type ProjectRow } from "./pages";
 import { Host } from "./host";
 import { gitKey, lfsKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
@@ -109,16 +109,18 @@ async function blobs(req: Request, env: Env, id: string, rest: string[], machine
   return error("method not allowed", 405);
 }
 
-async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[], machine: boolean, url: URL): Promise<Response> {
+/** `machine`: the slot of the machine asking (by its join token), or "" for the user. */
+async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[], machine: string, url: URL): Promise<Response> {
   const project = ops.projectStub(env, id);
   if (machine && req.method === "POST" && rest.length === 0) {
     const b = await body(req);
     if (!b.manifest || typeof b.manifest !== "object") return error("expected {reason, manifest}", 400);
-    return json(await project.addSnapshot(String(b.reason ?? ""), b.manifest as Record<string, unknown>));
+    return json(await project.addSnapshot(machine, String(b.reason ?? ""), b.manifest as Record<string, unknown>));
   }
   if (req.method !== "GET") return error("method not allowed", 405);
-  if (rest.length === 0) return json(await project.snapshots(Number(url.searchParams.get("limit") ?? 50)));
-  const sid = rest[0] === "latest" ? await project.latestSnapshot() : rest[0];
+  if (rest.length === 0) return json(await project.snapshots(Number(url.searchParams.get("limit") ?? 50), url.searchParams.get("machine") ?? undefined));
+  // "latest" for a machine: what it boots from (its own copy, else nothing: it starts from the latest save)
+  const sid = rest[0] === "latest" ? (machine ? await project.bootSnapshot(machine) : await project.latestSnapshot()) : rest[0];
   if (!sid || !SNAP.test(sid)) return error("no snapshot yet", 404);
   const o = await env.WORKSPACES.get(snapshotKey(id, sid));
   return o ? new Response(o.body, { headers: { "Content-Type": "application/json" } }) : error(`no snapshot ${sid}`, 404);
@@ -160,7 +162,7 @@ async function gitAllowed(req: Request, env: Env, id: string): Promise<boolean> 
     const user = await accounts(env).apiKeyUser(token);
     return !!user && (await accounts(env).projects(user.id)).some((p) => p.id === id);
   }
-  return ops.projectStub(env, id).checkJoin(token);
+  return !!(await ops.projectStub(env, id).checkJoin(token));
 }
 
 const lfsJson = (b: unknown, status = 200) =>
@@ -198,8 +200,9 @@ async function gitRoute(req: Request, env: Env, url: URL, id: string, what: stri
     return error("use GET refs, GET bundles/<id>, POST push", 404);
   }
   // Git LFS
-  // the address the client used (a machine and a laptop may reach this Worker by different names in dev)
-  const base = req.headers.get("Host") ? `${url.protocol}//${req.headers.get("Host")}` : origin;
+  // a machine gets the address machines use (MACHINE_URL in local dev); a laptop the one it used
+  const host = req.headers.get("Host");
+  const base = tokenOf(req).startsWith("tule_") && host ? `${url.protocol}//${host}` : origin;
   const href = (oid: string) => `${base}/api/projects/${id}/lfs/objects/${oid}`;
   const auth = { Authorization: req.headers.get("Authorization") ?? "" };
   if (rest[0] === "objects" && rest[1] === "batch" && req.method === "POST") {
@@ -251,9 +254,10 @@ async function machineRoute(req: Request, env: Env, url: URL, id: string, what: 
   if (what === "git" || what === "lfs") return gitRoute(req, env, url, id, what, rest, origin);
   const h = req.headers.get("Authorization") ?? "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : "";
-  if (!token || !(await project.checkJoin(token))) return error("invalid join token", 401);
+  const slot = token ? await project.checkJoin(token) : null;
+  if (!slot) return error("invalid join token", 401);
   if (what === "blobs") return blobs(req, env, id, rest, true);
-  if (what === "snapshots") return snapshotsRoute(req, env, id, rest, true, url);
+  if (what === "snapshots") return snapshotsRoute(req, env, id, rest, slot, url);
   return error("machines may only use agent, blobs, snapshots, git and lfs", 403);
 }
 
@@ -306,18 +310,21 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
   const project = ops.projectStub(env, ref.id);
   const ws = req.headers.get("Upgrade")?.toLowerCase() === "websocket";
   if (what === "ssh" || what === "view") return ws ? project.fetch(req) : error("expected a WebSocket", 426);
-  if (what === "snapshots") return snapshotsRoute(req, env, ref.id, rest, false, url);
+  if (what === "snapshots") return snapshotsRoute(req, env, ref.id, rest, "", url);
   if (what === "blobs") return blobs(req, env, ref.id, rest, false);
   if (what === "outputs") return reply(await ops.outputs(env, user, name, origin));
   if (req.method !== "POST") return error("method not allowed", 405);
-  const b = what === "down" || what === "snapshot" || what === "join" ? {} : await body(req);
-  if (what === "up") return reply(await project.up(String(b.machine ?? "cpu-1"), env.MACHINE_URL || origin));
-  if (what === "down") return reply(await project.down());
+  const b = await body(req);
+  const machine = typeof b.machine === "string" && b.machine ? b.machine : undefined;
+  if (what === "up") return reply(await project.up(machine ?? "cpu-1", env.MACHINE_URL || origin));
+  if (what === "down") return reply(await project.down(machine));
+  if (what === "forget") return reply(machine ? await project.forget(machine) : { error: "expected {machine}" });
   if (what === "join") return reply(await ops.join(env, user, name, env.MACHINE_URL || origin));
   if (what === "rename") return reply(await ops.renameProject(env, user, name, b.to));
-  if (what === "snapshot") return reply(await project.command({ t: "snapshot", reason: "manual" }));
-  if (what === "restore") return reply(await project.command({ t: "restore", id: String(b.id ?? "") }));
-  return error(`unknown action ${JSON.stringify(what)}`, 404, "use up, down, join, rename, snapshot, restore, snapshots, outputs, ssh, view");
+  if (what === "snapshot") return reply(await project.command({ t: "snapshot", reason: "manual" }, machine));
+  if (what === "restore") return reply(await project.command({ t: "restore", id: String(b.id ?? "") }, machine));
+  if (what === "save") return reply(await project.command({ t: "save", message: String(b.message ?? "") }, machine));
+  return error(`unknown action ${JSON.stringify(what)}`, 404, "use up, down, forget, join, rename, snapshot, restore, save, snapshots, outputs, ssh, view");
 }
 
 // ------------------------------------------------------------ pages
@@ -329,8 +336,8 @@ async function projectRows(env: Env, user: User): Promise<ProjectRow[]> {
   return Promise.all(
     ps.map(async (p) => {
       const s = await ops.projectStub(env, p.id).status();
-      const machine = (s.machine as string | null) ?? null;
-      return { ...p, state: String(s.state), machine, os: machine ? os.get(machine) : undefined };
+      const machines = (s.machines as MachineRow[]).map((m) => ({ ...m, os: m.computer ? os.get(m.computer) : undefined }));
+      return { ...p, machines };
     }),
   );
 }
