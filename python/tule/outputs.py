@@ -19,6 +19,7 @@ outputs.overlay("bracket-walls", part,                # numbers on faces, colore
                 faces={12: 1.8, 13: 0.9}, scale={"label": "wall thickness", "unit": "mm", "min": 0, "max": 3})
 outputs.part("bracket", part, info={"material": "aluminium 6061", "mass": "20.8 g"})  # facts, any kind
 outputs.drawing("bracket-drawing", part, info={"material": "6061"}, dxf="top")  # PDF + SVG (+ DXF)
+outputs.plate("print", [base, lid], settings={"layer_height": 0.2, "walls": 3})  # print.3mf + the plate in 3D
 ```
 
 Nothing here is required: any tool may write the files and JSON directly.
@@ -92,7 +93,7 @@ import numpy as np
 
 from .assembly import Assembly
 from .errors import TuleError
-from .io import Mesh, export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
+from .io import Mesh, _plate, export_3mf, export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
 from .selection import Selection
 from .shape import Shape
 
@@ -283,6 +284,33 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
         meta["info"] = info
     _write_json(folder, meta)
     return folder
+
+
+def plate(name: str, parts, *, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
+          settings: dict | None = None, title: str | None = None, info: dict | None = None) -> str:
+    """A print plate: ``outputs/<name>/<name>.3mf`` to open in the slicer and print, shown as an
+    assembly of the parts where they sit on the bed. Returns the folder.
+
+    ``parts``: Shapes, ``(name, shape)`` or ``(name, shape, settings)``, or an Assembly, each
+    oriented to print (flat face down). ``bed``, ``gap``, ``arrange`` and ``settings``
+    (``layer_height``, ``walls``, ``infill`` %, ``supports``, ``brim`` mm) as for ``export_3mf``;
+    the settings also show under the view. ``info``: more facts.
+    """
+    from .io import _print_settings
+
+    info = _info(info)
+    base = _print_settings(settings)
+    placed = _plate(parts, bed, gap, arrange)
+    folder = _folder(name)
+    stem = _slug(name.rsplit("/", 1)[-1])
+    export_3mf(placed, os.path.join(folder, f"{stem}.3mf"), bed=bed, arrange=False, settings=base)
+    shown = {"bed": " × ".join(f"{float(b):g}" for b in tuple(bed)[:2]) + " mm"}
+    for k, v in base.items():
+        shown[k.replace("_", " ")] = (False if k == "brim" and not v else f"{v:g} mm" if k in ("layer_height", "brim")
+                                      else f"{v:g} %" if k == "infill" else v)
+    if any(own for _, _, own in placed):
+        shown["own settings"] = ", ".join(n for n, _, own in placed if own)
+    return assembly(name, [s.named(n) for n, s, _ in placed], title=title, info={**shown, **(info or {})})
 
 
 class Sequence:

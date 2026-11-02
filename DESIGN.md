@@ -623,6 +623,24 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   sections, surface finish and GD&T symbols, hole tables, bolt circles
   found automatically, threads found from the model (the agent writes
   `M5` as callout text).
+- **Print plates** (built 2026-11-02): `outputs.plate(name, parts, bed=,
+  settings=)` writes `<name>.3mf` and shows the parts where they sit on the
+  bed (an assembly; Download offers the 3MF first). In QA runs users asked
+  three times for "a file I can just hit print on"; agents wrote 3MF XML by
+  hand or one STL per part plus a page of slicer settings. `export_3mf` packs
+  footprints in rows (the most compact layout that fits; parts that do not
+  fit raise with a hint), drops each part to z = 0 as oriented, and writes
+  one object per part (watertight mesh in mm, name, color as core
+  basematerials). The settings (`layer_height`, `walls`, `infill`,
+  `supports`, `brim`) go on every object, in `Metadata/model_settings.config`
+  (Bambu Studio, OrcaSlicer) and `Metadata/Slic3r_PE_model.config`
+  (PrusaSlicer), so they override whatever process preset the user picks.
+  No project-wide config: a partial one is read as a whole printer profile.
+  Checked by slicing with the Bambu Studio 2.08 CLI (layer heights, walls,
+  infill, supports and brim change the G-code); OrcaSlicer and PrusaSlicer
+  from their loaders' source. Bambu Studio drops object settings when a 3MF
+  is imported as "geometry only" (opening it keeps them). Colors do not pick
+  filaments: one filament prints the plate.
 - Later: variants side by side.
 
 ### Isolation and quotas
@@ -890,7 +908,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   helical and bevel gears, racks.
 - Measure: `volume`, `area`, `bounds`, `center_of_mass`, `inertia`,
   `mass(material)`, `distance`.
-- I/O: `export_step` (names, colors, tags), `export_stl`, `export_3mf`,
+- I/O: `export_step` (names, colors, tags), `export_stl`, `export_3mf` (a print plate),
   `export_gltf`, `import_step`.
 
 ### Selection, tags, parameters

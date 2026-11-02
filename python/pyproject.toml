@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+test = ["pytest>=8", "trimesh>=4", "lxml", "networkx"]   # trimesh reads 3MF plates back
 gpu = ["cupy-cuda12x>=13"]   # tule.topopt on NVIDIA GPUs (device="auto" picks it up)
 
 [tool.setuptools.packages.find]
