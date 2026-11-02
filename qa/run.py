@@ -604,9 +604,13 @@ def cmd_turn(a):
         screenshot(run / "shots" / f"projects-{n}.png", st["key"], "/")
         g = Guest(st["ip"], st["session"])
         banner = "Connect your agent" in g.page("/")
-        timed_out = '"qa.timeout"' in raw.read_text()
+        text = raw.read_text()
+        timed_out = '"qa.timeout"' in text
+        # the model's own quota, not Tule: the run is blocked until then
+        quota = re.search(r"hit your usage limit[^\"]*?try again at ([^\".]+)", text)
         summary = {"turn": n, "minutes": round((time.time() - t) / 60, 1), "reply": reply, "banner": banner,
-                   "timed_out": timed_out, **summarize(raw)}
+                   "timed_out": timed_out, **({"blocked": f"usage limit until {quota.group(1).strip()}"} if quota else {}),
+                   **summarize(raw)}
     except Exception as e:
         session = st.get("codex_session")
         summary = {"turn": n, "error": f"{type(e).__name__}: {e}"}
@@ -639,6 +643,9 @@ def cmd_wait(a):
         png = run / "shots" / f"{k}-{n}.png"
         meta = json.loads(png.with_suffix(".json").read_text()) if png.with_suffix(".json").exists() else {}
         shots.append(f"{png}  (settled: {meta.get('settled')}, console errors: {len(meta.get('errors', []))}{' ' + clip(meta['errors'], 400) if meta.get('errors') else ''}{' ' + meta['error'][:300] if meta.get('error') else ''})")
+    if s.get("blocked"):
+        print(f"BLOCKED: Codex hit its {s['blocked']}. Not a Tule finding: stop the run here (finish), "
+              "write findings for the turns before, and mark the outcome \"blocked by model quota\".\n")
     print(f"# turn {n}: {s['minutes']} min{', TIMED OUT' if s['timed_out'] else ''}\n\n## agent's reply\n{s['reply'] or '(no reply)'}\n\n"
           f"## what it did\n{s['commands']} shell commands, {len(s['failed_commands'])} failed\n"
           f"Tule tools: {', '.join(s['tools']) or 'none'}\n"
