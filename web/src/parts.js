@@ -121,6 +121,32 @@ export function initParts({ viewer, project }) {
       rows.set(leaf.id, leaf);
       list.push(leaf);
     });
+    // numbered siblings fold into one row ("ring pin ×16"), opened like a group
+    const fold = (list, parent) => {
+      const stem = (n) => (n.kind === "part" ? n.label.replace(/[\s_#-]*\(?\d+\)?$/, "") : null);
+      const counts = new Map();
+      for (const n of list) if (stem(n) && stem(n) !== n.label) counts.set(stem(n), (counts.get(stem(n)) ?? 0) + 1);
+      const made = new Map();
+      for (let i = 0; i < list.length; i++) {
+        const n = list[i];
+        if (n.kind === "group") fold(n.children, n.id);
+        const st = stem(n);
+        if (!st || st === n.label || counts.get(st) < 3) continue;
+        let g = made.get(st);
+        if (!g) {
+          g = { id: `g:${parent}/${st} ×`, label: `${st} ×${counts.get(st)}`, kind: "group", keys: [], children: [], depth: n.depth };
+          made.set(st, g);
+          rows.set(g.id, g);
+          list.splice(i, 0, g);
+          i++;
+        }
+        list.splice(i--, 1);
+        n.depth += 1;
+        g.keys.push(...n.keys);
+        g.children.push(n);
+      }
+    };
+    fold(top, root.join("/"));
     if (keys.includes(null)) rows.set("r", { id: "r", label: "Reference", kind: "reference", keys: [null], color: colors.get(null), depth: 0 });
     if (!rows.has(hover)) hover = null;
     if (!rows.has(selected)) selected = null;
