@@ -1,0 +1,66 @@
+# What the simulated user asks for. Each scenario starts on a fresh guest account with one
+# project loaded on a machine, set up first:
+#
+#   opening   the user's first message, as they would type it (vague on purpose)
+#   persona   who the user is and how they talk; the simulated user plays them
+#   goal      what the user wants by the end; the simulated user stops once it is met
+#   files     repository files copied into /workspace ({"src/bracket.py" = "examples/bracket.py"})
+#   setup     shell commands on the machine, in /workspace, before the agent starts
+
+[[scenario]]
+name = "first-part"
+opening = "I need a bracket that clamps onto a 25 mm tube and holds a GoPro. Can you make one?"
+persona = "A hobbyist with a 3D printer. Knows what they want, not CAD terms. Short messages, a little impatient."
+goal = "A printable bracket they can see in the viewer, with the tube clamp and the GoPro mount, and to know where to look."
+
+[[scenario]]
+name = "thicker"
+opening = "can we make it thicker, say 10mm"
+persona = "A mechanical engineer in a hurry. Writes in lowercase and expects the agent to work out what 'it' is."
+goal = "The bracket's plate is 10 mm thick, rebuilt and saved, and they are told what changed."
+files = { "src/bracket.py" = "examples/bracket.py" }
+setup = ["tule build", "tule save -m 'Bracket'"]
+
+[[scenario]]
+name = "whats-here"
+opening = "what's in this project and is it all current?"
+persona = "A project manager taking over from a colleague. Not technical; wants a short plain answer."
+goal = "A short, accurate summary of what the project contains and whether anything is out of date or broken."
+files = { "src/bracket.py" = "examples/bracket.py" }
+setup = [
+  "mkdir -p lib && printf 'WALL = 6\\n' > lib/params.py",
+  "printf 'from tule import *\\nfrom lib.params import WALL\\noutputs.part(\"plate\", rect(80, 40, center=True).extrude(WALL))\\n' > src/plate.py",
+  "printf 'from tule import import_step, outputs\\np = import_step(\"outputs/plate/plate.step\")\\nopen(outputs.folder() + \"/bom.csv\", \"w\").write(f\"part,qty,volume_mm3\\\\nplate,1,{p.volume:.0f}\\\\n\")\\n' > src/bom.py",
+  "tule build",
+  "tule save -m 'Bracket, plate and BOM'",
+  "printf 'WALL = 5\\n' > lib/params.py",
+]
+
+[[scenario]]
+name = "suppliers"
+opening = "Could you find two or three shops that could CNC this bracket in aluminium and give me a rough idea of cost?"
+persona = "A startup founder. Friendly; wants something they can forward to a colleague."
+goal = "A short comparison of a few suppliers with rough prices, kept in the project where they can find it again."
+files = { "src/bracket.py" = "examples/bracket.py" }
+setup = ["tule build", "tule save -m 'Bracket'"]
+
+[[scenario]]
+name = "broken"
+opening = "the viewer says the rig failed, what's going on?"
+persona = "A designer who edited a script by hand and broke it. Wants it fixed and to understand what went wrong in one sentence."
+goal = "The rig builds again and they know what was wrong."
+setup = [
+  "printf 'from tule import *\\nbase = box(100, 100, 10).named(\"base\")\\npost = box(20, 20, 60).at(0, 0, 10).named(\"post\")\\noutputs.assembly(\"rig\", [base, post])\\n' > src/rig.py",
+  "tule build",
+  "tule save -m 'Rig'",
+  "sed -i 's/box(20, 20, 60)/box(20, 20, height)/' src/rig.py",
+  "tule build || true",
+]
+
+[[scenario]]
+name = "variants"
+opening = "I want to compare a thin and a thick version of the bracket side by side. 4 and 12 mm plate."
+persona = "An engineer weighing options; precise, wants both visible at the same time."
+goal = "Two bracket variants (4 mm and 12 mm plate) visible in the viewer, built from shared code, and saved."
+files = { "src/bracket.py" = "examples/bracket.py" }
+setup = ["tule build", "tule save -m 'Bracket'"]

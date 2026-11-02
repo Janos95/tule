@@ -3,6 +3,7 @@
 //                    dev pages poll it and reload themselves
 //   /auth/dev        signs this browser in as the dev user, without Google
 //   /__dev/sweep     runs the guest sweep now; /__dev/merge merges this guest into the dev user
+//   /__dev/as?key=   signs this browser in as the API key's user (qa/: screenshots as a test guest)
 import { accounts, safeNext } from "./auth";
 
 let boot = ""; // set on the first request (the clock is frozen while the module loads); new on every reload
@@ -29,6 +30,19 @@ export async function devRoutes(req: Request, env: Env, url: URL): Promise<Respo
     if (!g?.guest) return new Response("not a guest session\n", { status: 400 });
     const n = await accounts(env).mergeGuest(g.id, (await accounts(env).devUser()).id);
     return new Response(`moved ${n} project(s) to the dev user\n`);
+  }
+  if (url.pathname === "/__dev/as") {
+    const key = url.searchParams.get("key") ?? "";
+    const user = key.startsWith("tule_") ? await accounts(env).apiKeyUser(key) : null;
+    if (!user) return new Response("expected ?key=<an API key>\n", { status: 400 });
+    const session = await accounts(env).createSession(user.id);
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: safeNext(url.searchParams.get("next")),
+        "Set-Cookie": `tule_session=${encodeURIComponent(session)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+      },
+    });
   }
   if (url.pathname === "/auth/dev") {
     const a = accounts(env);
