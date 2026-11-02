@@ -340,7 +340,9 @@ class Build:
             if code != 0 or problems:
                 for p in problems[:5]:
                     log(f"{name}: {p}")
-                error = f"killed by signal {-code}" if code < 0 else f"exit status {code}" if code else problems[0]
+                why = {15: " (SIGTERM: the SSH session that ran tule build ended? run long builds with nohup, see tule docs loop)",
+                       9: " (SIGKILL: out of memory?)"}.get(-code, "")
+                error = f"killed by signal {-code}{why}" if code < 0 else f"exit status {code}" if code else problems[0]
                 self.fail(name, error, "\n".join(tail))
                 return []
             # a file changed while the script ran is recorded as changed: the output may have the old one

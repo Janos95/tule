@@ -198,7 +198,7 @@ outputs/
   bracket-loads/   output.json bracket.step           an overlay: colored faces, labels, arrows
 ```
 
-Geometry: STEP (faces, names, colors and tags travel inside; prefer it: the viewer and `tule screenshot --labels` show face ids and tags) or STL (meshes).
+Geometry: STEP (faces, names, colors and tags travel inside; prefer it) or STL (meshes).
 
 ## Writing them
 
@@ -214,14 +214,13 @@ outputs.assembly("stack", [part, box(10).at(0, 0, 5).named("block", "#d33")])
 with outputs.sequence("grow", "Growing a block") as seq:       # status "running" until the block ends
     for i in range(1, 4):
         seq.add(box(10, 10, i * 5), label=f"step {i}", height=i * 5)
+with outputs.sequence("tilt") as seq:     # motion: make parts once, move them per frame (.at, .rotate):
+    for a in range(0, 91, 10):            # a frame then stores placements only
+        seq.add([part, part.rotate(y=-a).at(40, 0, 5)], label=f"{a} deg", angle=a)
 outputs.overlay("plate-loads", part, title="Load case 1",
                 faces={part.faces["load"]: {"role": "load", "label": "200 N"},
                        part.faces["fixed"]: {"role": "fixed", "label": "clamped"}},
                 arrows=[{"at": (20, 10, 5), "dir": (0, 0, -1), "label": "200 N"}])
-outputs.overlay("plate-walls", part, title="Wall thickness",    # numbers on faces: a color scale
-                faces={i: 1.0 + 0.5 * i for i in part.faces.ids},
-                scale={"label": "wall thickness", "unit": "mm"})
-outputs.part("plate-info", part, info={"mass": "10.8 g"})       # facts, any kind
 ```
 
 Any tool may write the files directly into `outputs.folder()` instead (a solver's STL frames): temporary name, then `os.replace`; `output.json` last.
@@ -246,7 +245,7 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. Unmentioned faces are drawn gray. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Use it for anything per face: wall thickness, draft angle, a score.
 - **Info** (any kind): a flat object of facts (units in text: `"20.8 g"`), shown under the view.
-- **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end; `values` are plotted.
+- **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end; `values` are plotted. A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images
 
@@ -275,6 +274,6 @@ tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back le
 tule inspect outputs/bracket/bracket.step                # faces, ids, types, areas, tags
 ```
 
-Read the PNG. It also prints which faces are labeled, too small to label, or hidden. A sequence renders its last frame.
+Read the PNG. It also lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3` another).
 
 Outputs are not in git (`tule build` remakes them).

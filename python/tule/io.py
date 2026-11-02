@@ -385,12 +385,16 @@ def tessellate(item: Union["Shape", "Assembly"], tolerance: float = 0.05, angula
     edges = []
     edge_set = shape._sub("edge")
     seams = shape._seams()
+    faces_of: dict[int, list[int]] = {}  # edge id -> the triangulated faces around it, in face order (one pass)
+    for fi, f in enumerate(faces):
+        if fi in face_tri:
+            for e in subshapes(f, "edge"):
+                faces_of.setdefault(edge_set.index(e), []).append(fi)
     for ei, e in enumerate(edge_set):
         if e in seams or static(BRep_Tool, "Degenerated")(e):
             continue
-        for fi, f in enumerate(faces):
-            if fi not in face_tri or e not in subshapes(f, "edge"):
-                continue
+        for fi in faces_of.get(ei, ()):
+            f = faces[fi]
             tri, loc = face_tri[fi]
             poly = static(BRep_Tool, "PolygonOnTriangulation")(e, tri, loc)
             if poly is None:

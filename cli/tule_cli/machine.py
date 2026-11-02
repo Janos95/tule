@@ -221,8 +221,23 @@ def _overlay_color(spec: dict) -> tuple:
     return PALETTE[sum(map(ord, str(role or ""))) % len(PALETTE)]
 
 
-def scene(target: str):
-    """(parts, overlay or None, caption) for a file or an output folder (its output.json, or inferred)."""
+def _placed(parts, transform):
+    """Parts moved by an output.json "transform" (16 numbers or a 4x4, row-major)."""
+    import dataclasses
+
+    import numpy as np
+
+    if transform is None:
+        return parts
+    m = np.asarray(transform, dtype=np.float64).reshape(4, 4)
+    R, t = m[:3, :3], m[:3, 3]
+    return [dataclasses.replace(p, positions=(p.positions @ R.T + t).astype(np.float32),
+                                normals=(p.normals @ R.T).astype(np.float32)) for p in parts]
+
+
+def scene(target: str, frame: int | None = None):
+    """(parts, overlay or None, caption) for a file or an output folder (its output.json, or inferred);
+    a sequence shows its last frame, or ``frame`` (negative counts from the end)."""
     from .render import Overlay
 
     if os.path.isfile(target):
@@ -249,16 +264,23 @@ def scene(target: str):
     if kind == "assembly":
         parts = []
         for e in meta.get("parts", []):
-            parts += to_parts(file_in(e["file"]), e.get("color"), (e.get("name") or "").rsplit("/", 1)[-1] or None)
+            parts += _placed(to_parts(file_in(e["file"]), e.get("color"), (e.get("name") or "").rsplit("/", 1)[-1] or None),
+                             e.get("transform"))
         caption = f"{folder} (assembly, {len(parts)} parts)"
     elif kind == "sequence":
         frames = meta.get("frames") or []
         if not frames:
             raise CliError(f"{jpath}: the sequence has no frames yet")
-        fr = frames[-1]
-        parts = to_parts(file_in(fr["file"]))
+        i = len(frames) - 1 if frame is None else frame % len(frames) if -len(frames) <= frame < len(frames) else None
+        if i is None:
+            raise CliError(f"{folder} has frames 0 to {len(frames) - 1}, not {frame}")
+        fr = frames[i]
+        if fr.get("parts"):  # a motion frame: parts placed
+            parts = [q for e in fr["parts"] for q in _placed(to_parts(file_in(e["file"]), e.get("color"), e.get("name")), e.get("transform"))]
+        else:
+            parts = to_parts(file_in(fr["file"]))
         vals = ", ".join(f"{k} {v:.4g}" for k, v in (fr.get("values") or {}).items())
-        caption = f"{folder}: frame {len(frames) - 1} of {len(frames)} ({meta.get('status', 'done')})" + (f", {vals}" if vals else "")
+        caption = f"{folder}: frame {i} of {len(frames)} ({meta.get('status', 'done')})" + (f", {fr['label']}" if fr.get("label") else "") + (f", {vals}" if vals else "")
     elif kind in ("part", "overlay"):
         name = meta.get("file") or (files[0] if files else None)
         if not name:
@@ -317,7 +339,7 @@ def cmd_screenshot(args):
     if args.view not in VIEWS:
         raise CliError(f"unknown view {args.view!r}; use one of {', '.join(VIEWS)}")
     target = find_output(args.output, args.file)
-    parts, overlay, caption = scene(target)
+    parts, overlay, caption = scene(target, args.frame)
     import numpy as np
 
     P = np.concatenate([p.positions for p in parts])
@@ -522,6 +544,7 @@ def add_commands(add):
     sp.add_argument("--view", default="iso", help="iso (default), front, back, left, right, top, bottom")
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
     sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
+    sp.add_argument("--frame", type=int, help="a sequence's frame (default: the last; -2 the one before)")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)
     sp.add_argument("file", nargs="+", help="STEP/STL files or output folders")
     sp.add_argument("--json", action="store_true", help="print JSON instead of text")

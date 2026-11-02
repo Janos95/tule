@@ -176,3 +176,22 @@ def test_snapshot_on_the_machine(tmp_path, monkeypatch, capsys):
     assert FakeWorkspace.calls == ["manual", "manual"]
     asyncio.run_coroutine_threadsafe(stop(), loop).result()
     loop.call_soon_threadsafe(loop.stop)
+
+
+def test_motion_frames_and_assembly_placements(tmp_path, monkeypatch):
+    from tule import Assembly, box, outputs
+
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path))
+    base, arm = box(10).named("base", "#4a8"), box(2, 2, 20).named("arm", "#d33")
+    with outputs.sequence("swing") as seq:
+        for a in (0, 90):
+            seq.add([base, arm.rotate(y=a).at(10, 0, 10)], label=f"{a} deg")
+    outputs.assembly("pair", Assembly(base, arm.at(30, 0, 0)))
+    first, _, cap0 = scene(str(tmp_path / "swing"), 0)
+    last, _, cap = scene(str(tmp_path / "swing"))
+    hi = lambda ps: np.concatenate([p.positions for p in ps]).max(0)
+    assert hi(first)[2] == pytest.approx(30, abs=1e-3)  # standing up
+    assert hi(last)[0] == pytest.approx(30, abs=1e-3) and hi(last)[2] == pytest.approx(10, abs=1e-3)  # swung over
+    assert "frame 1 of 2 (done), 90 deg" in cap and "frame 0" in cap0
+    parts, _, _ = scene(str(tmp_path / "pair"))
+    assert hi(parts)[0] == pytest.approx(32, abs=1e-3)

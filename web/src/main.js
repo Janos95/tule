@@ -327,7 +327,11 @@ function kindOf(o) {
 
 function frames(o) {
   const byFile = new Map(o.files.map((f) => [f.file, f]));
-  if (o.meta?.frames) return o.meta.frames.map((fr) => ({ ...fr, f: byFile.get(fr.file) })).filter((fr) => fr.f);
+  // a frame is one file, or parts (each file written once) with placements: a motion study
+  if (o.meta?.frames)
+    return o.meta.frames
+      .map((fr) => ({ ...fr, f: byFile.get(fr.file), parts: Array.isArray(fr.parts) ? fr.parts.map((p) => ({ ...p, f: byFile.get(p?.file) })) : null }))
+      .filter((fr) => fr.f || (fr.parts?.length && fr.parts.every((p) => p.f)));
   return [...o.files].sort((a, b) => a.file.localeCompare(b.file, undefined, { numeric: true })).map((f) => ({ file: f.file, f }));
 }
 
@@ -646,6 +650,7 @@ async function show() {
   $("caption").textContent = o.meta?.title ?? "";
   let shownFiles = o.files;
   let frame = null;
+  let placed = null; // a motion frame's parts: [{file, name, color, transform}]
   const seq = $("sequence");
   seq.hidden = kind !== "sequence";
   if (kind === "sequence") {
@@ -660,17 +665,18 @@ async function show() {
     // the plot's legend names the frame and its values; without values, the label goes here
     $("frame").textContent = `${state.frame + 1} / ${fr.length}${$("plot").hidden && cur?.label ? ` · ${cur.label}` : ""}`;
     $("live").hidden = o.meta?.status !== "running";
-    shownFiles = cur ? [cur.f] : [];
+    placed = cur?.parts ?? null;
+    shownFiles = placed ? placed.map((p) => p.f) : cur ? [cur.f] : [];
     frame = state.frame;
   } else if (kind === "overlay" || kind === "part") {
     const f = o.files.find((x) => x.file === o.meta?.file) ?? o.files[0];
     shownFiles = f ? [f] : [];
   }
   // an assembly's parts: output.json's list when it has one (a file may be placed more than once)
-  const entries = kind === "assembly" && Array.isArray(o.meta?.parts) ? o.meta.parts.filter((p) => o.files.some((f) => f.file === p?.file)) : null;
-  if (entries?.length) shownFiles = entries.map((p) => o.files.find((f) => f.file === p.file));
+  const entries = placed ?? (kind === "assembly" && Array.isArray(o.meta?.parts) ? o.meta.parts.filter((p) => o.files.some((f) => f.file === p?.file)) : null);
+  if (entries?.length && !placed) shownFiles = entries.map((p) => o.files.find((f) => f.file === p.file));
   // what is drawn: the files and, but for a growing sequence, output.json (overlay faces, placements)
-  const key = o.id + "|" + shownFiles.map((f) => f.hash).join(",") + (kind === "sequence" ? "" : "|" + JSON.stringify(o.meta ?? null));
+  const key = o.id + "|" + shownFiles.map((f) => f.hash).join(",") + (kind === "sequence" ? (placed ? "|" + JSON.stringify(placed.map((p) => p.transform ?? null)) : "") : "|" + JSON.stringify(o.meta ?? null));
   if (key === state.shown) return;
   const first = !state.shown || !state.shown.startsWith(o.id + "|");
   state.shown = key;
@@ -681,7 +687,7 @@ async function show() {
     if (state.shown !== key) return;
     const named = (m, f, i) => {
       const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
-      const matrix = kind === "assembly" && entry?.transform != null ? placement(entry.transform, f.file) : null;
+      const matrix = (kind === "assembly" || placed) && entry?.transform != null ? placement(entry.transform, f.file) : null;
       return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color, matrix };
     };
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));

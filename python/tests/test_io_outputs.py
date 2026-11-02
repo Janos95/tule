@@ -130,10 +130,19 @@ def test_outputs_part_assembly_sequence(outdir):
     assert meta["frames"][0]["values"] == {"volume": 1.0}
     assert not [f for f in os.listdir(outdir / "grow") if f.startswith(".")]  # no temp files left
 
-    seq = outputs.sequence("move")  # an assembly's frames keep parts and colors
-    seq.add([box(1).named("a", "#f00"), box(1).named("b").at(2, 0, 0)])
+    seq = outputs.sequence("move")  # an assembly's parts are written once; a frame places them
+    base, arm = box(10).named("base", "#4a8"), box(1, 1, 8).named("arm", "#d33")
+    for a in (0, 30, 60):
+        seq.add([base, arm.rotate(y=a).at(10, 0, 10)], angle=a)
+    seq.add([base, box(2).named("arm", "#d33")])  # a new solid: a new file
     meta = json.load(open(outdir / "move" / "output.json"))
-    assert meta["frames"][0]["file"] == "frame_0000.step"
+    assert sorted(f for f in os.listdir(outdir / "move") if f.endswith(".step")) == ["arm.step", "arm_2.step", "base.step"]
+    f0, f2, f3 = meta["frames"][0], meta["frames"][2], meta["frames"][3]
+    assert [p["file"] for p in f0["parts"]] == ["base.step", "arm.step"] and "transform" not in f0["parts"][0]
+    assert f0["parts"][1]["color"] == "#d33" and f0["parts"][1]["transform"][3] == pytest.approx(10)
+    t = f2["parts"][1]["transform"]  # 60° about y: x' = cos·x + sin·z
+    assert t[0] == pytest.approx(0.5) and t[2] == pytest.approx(3 ** 0.5 / 2) and t[12:] == [0, 0, 0, 1]
+    assert f3["parts"][1]["file"] == "arm_2.step" and f2["values"] == {"angle": 60.0}
     assert (outputs.folder("bom") / "x.csv").parent.name == "bom"
 
 

@@ -251,6 +251,7 @@ class Sequence:
         self.fmt = fmt
         self.folder = _folder(name)
         self.frames: list[dict] = []
+        self._parts: list[tuple] = []  # (geometry, name, color, file): each part's file, written once
         self.status = "running"
         self._flush()
 
@@ -263,23 +264,48 @@ class Sequence:
             fname = f"frame_{i:04d}.stl"
             P, I = _mesh_arrays(mesh)
             write_stl_mesh(os.path.join(self.folder, fname), P, I)
+        elif isinstance(shape, (list, tuple, Assembly)) and self.fmt is None:
+            # an assembly's frame: each part's file is written once; a part that only moved
+            # (.at, .rotate: the same solid) costs its placement, so a motion study stays small
+            asm = shape if isinstance(shape, Assembly) else Assembly(*shape, name=self.name)
+            fname = None
+            placed = [self._place(path.split("/", 1)[-1], part) for path, part in asm.parts()]
         elif shape is not None:
-            if isinstance(shape, (list, tuple)):
-                shape = Assembly(*shape, name=self.name)
-            # an assembly's frames keep their parts' names and colors (STEP); a lone shape is light (STL)
-            fmt = self.fmt or ("step" if isinstance(shape, Assembly) else "stl")
+            fmt = self.fmt or "stl"
             fname = f"frame_{i:04d}.{fmt}"
             _write_geometry(os.path.join(self.folder, fname), shape)
         else:
             raise TuleError("add a shape or a mesh", op="sequence")
-        frame: dict[str, Any] = {"file": fname}
+        frame: dict[str, Any] = {"file": fname} if fname else {"parts": placed}
         if label is not None:
             frame["label"] = label
         if values:
             frame["values"] = {k: float(v) for k, v in values.items()}
         self.frames.append(frame)
         self._flush()
-        return fname
+        return fname or ""
+
+    def _place(self, name: str, part: Shape) -> dict:
+        """A frame's entry for one part: its file (written the first time this solid appears) and placement."""
+        from OCP.TopLoc import TopLoc_Location
+
+        loc = part.wrapped.Location()
+        base = part.wrapped.Located(TopLoc_Location())
+        fname = next((f for g, n, c, f in self._parts if g.IsPartner(base) and n == name and c == part.color), None)
+        if fname is None:
+            stem, used = _slug(name), {f for *_, f in self._parts}
+            fname, k = f"{stem}.step", 2
+            while fname in used:
+                fname, k = f"{stem}_{k}.step", k + 1
+            _write_geometry(os.path.join(self.folder, fname), Shape(base, name=name, color=part.color))
+            self._parts.append((base, name, part.color, fname))
+        entry: dict[str, Any] = {"file": fname, "name": name}
+        if part.color:
+            entry["color"] = part.color
+        if not loc.IsIdentity():
+            t = loc.Transformation()
+            entry["transform"] = [round(t.Value(r, c), 9) for r in (1, 2, 3) for c in (1, 2, 3, 4)] + [0, 0, 0, 1]
+        return entry
 
     def done(self, status: str = "done") -> str:
         self.status = status

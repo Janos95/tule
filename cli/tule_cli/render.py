@@ -163,6 +163,10 @@ def _depth_inside(key: np.ndarray, max_d: int = 48) -> np.ndarray:
 
 
 def _font(size: int):
+    try:  # DejaVu (on Tule machines) has the punctuation captions use (•, ×, °, ⌀); Pillow's default lacks some
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
+    except OSError:
+        pass
     try:
         return ImageFont.load_default(size=size)
     except TypeError:  # Pillow < 10.1

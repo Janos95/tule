@@ -33,6 +33,7 @@ try:
 except ImportError:  # Windows
     pwd = None
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -692,6 +693,8 @@ def main(argv=None):
     host.add_commands(sub)
 
     args = ap.parse_args(argv)
+    if args.cmd in ("inspect", "docs") and hasattr(signal, "SIGPIPE"):  # `tule inspect … | head` ends quietly
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     if args.cmd == "ssh" and args.command[:1] == ["--"]:
         args.command = args.command[1:]
     try:
