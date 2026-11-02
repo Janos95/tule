@@ -3,8 +3,6 @@
 //                    dev pages poll it and reload themselves
 //   /auth/dev        signs this browser in as the dev user, without Google
 //   /__dev/sweep     runs the guest sweep now; /__dev/merge merges this guest into the dev user
-//   /__dev/connect   the dev user's connect_info, as the connector returns it (locally the connector's
-//                    OAuth audience does not match, so it cannot be called with an API key)
 import { accounts, safeNext } from "./auth";
 
 let boot = ""; // set on the first request (the clock is frozen while the module loads); new on every reload
@@ -23,11 +21,6 @@ export async function devRoutes(req: Request, env: Env, url: URL): Promise<Respo
   // the hourly guest sweep, now (GUEST_DAYS from .dev.vars decides who is old)
   if (url.pathname === "/__dev/sweep") {
     return new Response(`deleted ${await accounts(env).sweep()} guest(s)\n`);
-  }
-  if (url.pathname === "/__dev/connect") {
-    const { connectInfo } = await import("./ops");
-    const user = await accounts(env).devUser();
-    return Response.json(await connectInfo(env, user, env.PUBLIC_URL || url.origin, url.searchParams.get("project") ?? "demo"));
   }
   // a guest signing in, without Google: this browser's guest merges into the dev user
   if (url.pathname === "/__dev/merge") {

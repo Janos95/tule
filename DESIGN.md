@@ -68,7 +68,10 @@ Tule does not run or bill for an agent. Users bring their own.
    tulel_…`, that installs the CLI (with uv, else pip) from Tule's own
    `/install/` wheel and signs it in with a code the connector approved in
    advance (works once, for an hour). The user never opens a terminal, copies
-   a key or approves a code; the web pages show only the connector address.
+   a key or approves a code. Until the account's agent first uses the
+   connector (MCP `initialize` sets `users.agent_seen`), the projects page
+   shows a strip under the header: "Connect your agent" and the connector
+   address as a click-to-copy field. After that it is only in Settings.
 4. **Connect RunPod (optional)** in Tule's settings: paste a RunPod API key;
    Tule validates it and shows the balance. RunPod's own limits (prepaid
    balance, account spend limit) are the budget; Tule adds no cap of its own.

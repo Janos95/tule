@@ -67,6 +67,14 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 button.small{padding:3px 10px;font-size:13px}
 .guestbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:6px 14px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn-fill);color:var(--warn);font-size:13px;font-weight:500;white-space:nowrap;box-shadow:0 2px 8px var(--shadow)}
 body:has(.guestbar) main{padding-bottom:64px}
+.agentbar{background:var(--panel);border-bottom:1px solid var(--line)}
+.agentbar>div{max-width:860px;margin:0 auto;padding:8px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.agentbar b{font-weight:600;font-size:14px;white-space:nowrap}
+.copyfield{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:5px 10px;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--text);font:13px var(--mono);cursor:pointer}
+.copyfield:hover{border-color:var(--faint)}.copyfield:focus-visible{box-shadow:0 0 0 3px var(--focus)}
+.copyfield span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.copyfield svg{flex:none;width:14px;height:14px;fill:none;stroke:var(--muted);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.copyfield .ck,.copyfield.copied .cp{display:none}.copyfield.copied .ck{display:block;stroke:var(--ok)}
 .notice{padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
 @media (max-width:600px){.item{grid-template-columns:1fr auto}.item-meta{grid-column:1/-1;grid-row:2}}
 .hero{padding:48px 0 24px}.hero h1{font-size:30px}.hero p{font-size:17px;color:var(--muted);max-width:620px}
@@ -75,7 +83,7 @@ body:has(.guestbar) main{padding-bottom:64px}
 
 const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#8fc46a" stroke-width="32" stroke-linecap="round"/></svg>`;
 
-export function layout(title: string, body: Html | string, user?: User | null): string {
+export function layout(title: string, body: Html | string, user?: User | null, strip: Html | string = ""): string {
   const nav = user
     ? user.guest
       ? html`<nav><a href="/settings">Settings</a><a class="button primary" href="/auth/login">Sign in</a></nav>`
@@ -83,18 +91,18 @@ export function layout(title: string, body: Html | string, user?: User | null): 
     : html`<nav><a class="button" href="/auth/login">Sign in</a></nav>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}</style></head>
-<body><header><a class="brand" href="/">${LOGO}tule</a>${nav}</header><main><h1>${esc(title)}</h1>${body}</main>${
+<body><header><a class="brand" href="/">${LOGO}tule</a>${nav}</header>${strip}<main><h1>${esc(title)}</h1>${body}</main>${
     user?.guest ? `<div class="guestbar">Guest projects are deleted after a day.</div>` : ""
   }<script>${NEWP_JS}</script></body></html>`;
 }
 
 /** Copy buttons; "+ New …" rows: opening focuses the field, Esc closes it again. */
-const NEWP_JS = `document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)});
+const NEWP_JS = `document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);if(b.classList.contains("copyfield")){b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)}else{b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)}});
 document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
 document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
 
-export function page(title: string, body: Html | string, status = 200, user?: User | null): Response {
-  return new Response(layout(title, body, user), {
+export function page(title: string, body: Html | string, status = 200, user?: User | null, strip: Html | string = ""): Response {
+  return new Response(layout(title, body, user, strip), {
     status,
     headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Frame-Options": "DENY" },
   });
@@ -138,8 +146,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
     !!error,
     error ? html`<span class="warn">${error}</span>` : "",
   );
-  const body = rows.length
-    ? html`<div class="plist">
+  const body = html`<div class="plist">
         ${rows.map(
           (p) => html`<a class="prow" href="/p/${p.name}">
             <span class="pname">${p.name}</span>
@@ -147,10 +154,8 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
             <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>`,
         )}
         ${create}
-      </div>`
-    : html`<div class="plist">${create}</div>
-      ${agentSection(origin)}`;
-  return page("Projects", body, 200, user);
+      </div>`;
+  return page("Projects", body, 200, user, user.agent ? "" : agentStrip(origin));
 }
 
 export type SettingsData = {
@@ -183,14 +188,21 @@ const rowButton = (actionUrl: string, text: string, id?: string, danger = false)
 
 const copyButton = (text: string) => html`<button type="button" class="small" data-copy="${text}">Copy</button>`;
 
+/** A value shown as a field: clicking anywhere copies it (the icon turns into a check). */
+const copyField = (text: string) =>
+  html`<button type="button" class="copyfield" data-copy="${text}" title="Copy"><span>${text}</span><svg class="cp" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg><svg class="ck" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg></button>`;
+
+/** Until the account's agent has used the connector: a strip under the header with its address. */
+const agentStrip = (origin: string) => html`<div class="agentbar"><div><b>Connect your agent</b>${copyField(`${origin}/mcp`)}</div></div>`;
+
 /** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (connect_info).
     Settings also shows the CLI command, for working on a machine by hand. */
 function agentSection(origin: string, cli = false): Html {
   const cmd = `curl -fsSL ${origin}/cli.sh | sh\ntule ssh -p <project>`;
   return section(
     "Connect your agent",
-    "Add this connector to your agent: a custom connector in Claude or ChatGPT, a remote MCP server in Claude Code, Codex or Cursor. Your agent sets up the rest.",
-    html`${item("Connector", html`<code>${origin}/mcp</code>`, copyButton(`${origin}/mcp`))}
+    "Add the connector to your agent; it sets up the rest.",
+    html`${item("Connector", copyField(`${origin}/mcp`))}
       ${cli ? html`<div class="item item-block"><span class="item-label">CLI, by hand</span><span class="item-action">${copyButton(cmd)}</span><pre>${cmd}</pre></div>` : ""}`,
   );
 }

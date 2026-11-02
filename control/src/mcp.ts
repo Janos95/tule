@@ -135,6 +135,7 @@ export async function mcp(req: Request, env: Env, userId: string): Promise<Respo
   const ok = (result: Record<string, unknown>) => json({ jsonrpc: "2.0", id, result: { resultType: "complete", ...result } });
   switch (msg.method) {
     case "initialize": {
+      await accounts(env).agentConnected(userId); // the pages stop showing "Connect your agent"
       const asked = params.protocolVersion;
       const version = typeof asked === "string" && LEGACY.includes(asked) ? asked : LEGACY[0];
       return ok({ protocolVersion: version, capabilities: { tools: { listChanged: false } }, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS });

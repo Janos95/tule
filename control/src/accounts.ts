@@ -15,7 +15,8 @@
 // users address projects by name.
 import { DurableObject } from "cloudflare:workers";
 
-export type User = { id: string; email: string; name: string; guest?: boolean };
+// agent: the account's agent has used the connector at least once (the pages stop offering setup)
+export type User = { id: string; email: string; name: string; guest?: boolean; agent?: boolean };
 export type ProjectRef = { id: string; name: string; created: number };
 type Result = Record<string, unknown>;
 
@@ -72,7 +73,7 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS host_keys (hash TEXT PRIMARY KEY, user_id TEXT, expires INTEGER);
     `);
     // columns added after the first deploy
-    for (const [table, col] of [["users", "guest INTEGER DEFAULT 0"], ["users", "last_seen INTEGER"], ["devices", "kind TEXT"], ["devices", "host_name TEXT"]]) {
+    for (const [table, col] of [["users", "guest INTEGER DEFAULT 0"], ["users", "last_seen INTEGER"], ["users", "agent_seen INTEGER"], ["devices", "kind TEXT"], ["devices", "host_name TEXT"]]) {
       try {
         this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`);
       } catch {
@@ -104,8 +105,14 @@ export class Accounts extends DurableObject<Env> {
   }
 
   user(id: string): User | null {
-    const u = this.one<{ id: string; email: string | null; name: string | null; guest: number }>("SELECT id, email, name, guest FROM users WHERE id = ?", id);
-    return u ? { id: u.id, email: u.email ?? "guest", name: u.name ?? "Guest", ...(u.guest ? { guest: true } : {}) } : null;
+    const u = this.one<{ id: string; email: string | null; name: string | null; guest: number; agent_seen: number | null }>(
+      "SELECT id, email, name, guest, agent_seen FROM users WHERE id = ?", id);
+    return u ? { id: u.id, email: u.email ?? "guest", name: u.name ?? "Guest", ...(u.guest ? { guest: true } : {}), ...(u.agent_seen ? { agent: true } : {}) } : null;
+  }
+
+  /** The connector was used (MCP initialize): remember the first time. */
+  agentConnected(userId: string) {
+    this.sql.exec("UPDATE users SET agent_seen = ? WHERE id = ? AND agent_seen IS NULL", Date.now(), userId);
   }
 
   // ------------------------------------------------------------ guests
