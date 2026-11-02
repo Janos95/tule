@@ -129,7 +129,7 @@ outputs.part("bracket", part)
 
 ## Style
 
-- Every operation returns a new value; nothing changes in place. Units: mm by convention.
+- Every operation returns a new value; nothing changes in place. Units: mm.
 - Parameters are variables at the top of the script (shared ones in `lib/params.py`); derive the rest.
 - `from tule import *` gives everything below; `help(box)` documents each call.
 
