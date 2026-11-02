@@ -296,30 +296,80 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
 
 
 def plate(name: str, parts, *, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
-          settings: dict | None = None, title: str | None = None, info: dict | None = None) -> str:
+          settings: dict | None = None, title: str | None = None, info: dict | None = None,
+          estimate: bool = False) -> str:
     """A print plate: ``outputs/<name>/<name>.3mf`` to open in the slicer and print, shown as an
-    assembly of the parts where they sit on the bed. Returns the folder.
+    assembly of the parts where they sit on the bed. Returns the folder. The 3MF carries every
+    part (Download also offers each part's file): no separate STLs are needed.
 
     ``parts``: Shapes, ``(name, shape)`` or ``(name, shape, settings)``, or an Assembly, each
-    oriented to print (flat face down). ``bed``, ``gap``, ``arrange`` and ``settings``
-    (``layer_height``, ``walls``, ``infill`` %, ``supports``, ``brim`` mm) as for ``export_3mf``;
-    the settings also show under the view. ``info``: more facts.
+    oriented to print (flat face down); ``("pin", pin, {"copies": 4})`` puts four on the plate.
+    ``bed``, ``gap``, ``arrange`` and ``settings`` (``layer_height``, ``walls``, ``infill`` %,
+    ``supports``, ``brim`` mm, ``material``: PLA, PETG, …) as for ``export_3mf``; the settings
+    also show under the view. ``info``: more facts.
+
+    ``estimate=True`` slices the plate with PrusaSlicer's command line (``prusa-slicer``; raises
+    with the install command when it is missing) and shows the print time and filament (g, m)
+    under the view; ``output.json``'s ``"plate"`` has them for a BOM or report script. It is an
+    estimate on a generic profile (0.4 mm nozzle, the material's density, moderate speeds), not
+    the user's printer: a fast CoreXY printer prints sooner. What settings leave out is the
+    profile's: 0.2 mm layers, 2 walls, 15 % gyroid infill, no supports or brim.
     """
-    from .io import _print_settings
+    from .io import _duration, _print_settings, _prusa_slicer, _slice_estimate, _write_3mf
 
     info = _info(info)
     base = _print_settings(settings)
+    if estimate:
+        _prusa_slicer()  # missing: say so before anything is written
     placed = _plate(parts, bed, gap, arrange)
     folder = _folder(name)
     stem = _slug(name.rsplit("/", 1)[-1])
-    export_3mf(placed, os.path.join(folder, f"{stem}.3mf"), bed=bed, arrange=False, settings=base)
-    shown = {"bed": " × ".join(f"{float(b):g}" for b in tuple(bed)[:2]) + " mm"}
+    path = _write_3mf(placed, os.path.join(folder, f"{stem}.3mf"), base)
+    shown: dict[str, Any] = {"bed": " × ".join(f"{float(b):g}" for b in tuple(bed)[:2]) + " mm"}
     for k, v in base.items():
         shown[k.replace("_", " ")] = (False if k == "brim" and not v else f"{v:g} mm" if k in ("layer_height", "brim")
                                       else f"{v:g} %" if k == "infill" else v)
-    if any(own for _, _, own in placed):
-        shown["own settings"] = ", ".join(n for n, _, own in placed if own)
-    return assembly(name, [s.named(n) for n, s, _ in placed], title=title, info={**shown, **(info or {})})
+    own = list(dict.fromkeys(n for n, _, o, _, _ in placed if o))
+    if own:
+        shown["own settings"] = ", ".join(own)
+    summary: dict[str, Any] = {"file": os.path.basename(path), "parts": {}}
+    for n, *_, copies in placed:
+        summary["parts"][n] = copies
+    if estimate:
+        est = _slice_estimate(path, base, bed)
+        summary["estimate"] = est
+        shown["print time"] = _duration(est["print_time_s"])
+        if "filament_g" in est:
+            g, m = est["filament_g"], est.get("filament_m")
+            shown["filament"] = f"{g:.1f} g" if g < 10 else f"{g:.0f} g"
+            if m is not None:
+                shown["filament"] += f" ({m:.2f} m)" if m < 10 else f" ({m:.1f} m)"
+        shown["estimate"] = "generic 0.4 mm printer, PrusaSlicer"
+    # the view: each part's file once, its copies placed again ("pin ×4/2")
+    entries, files, used = [], {}, set()
+    for n, shp, _, k, copies in placed:
+        if n not in files:
+            base_name = _slug(n.replace("/", "_"))
+            fname, i = f"{base_name}.step", 2
+            while fname in used:
+                fname, i = f"{base_name}_{i}.step", i + 1
+            used.add(fname)
+            _write_geometry(os.path.join(folder, fname), shp)
+            files[n] = (fname, shp.bounds[0])
+        fname, first = files[n]
+        entry: dict[str, Any] = {"file": fname, "name": f"{name}/{n}" if copies == 1 else f"{name}/{n} ×{copies}/{k}"}
+        if shp.color:
+            entry["color"] = shp.color
+        if copies > 1:
+            entry["copies"] = copies
+            if k > 1:
+                lo = shp.bounds[0]
+                entry["transform"] = [1, 0, 0, round(lo.x - first.x, 5), 0, 1, 0, round(lo.y - first.y, 5), 0, 0, 1, 0, 0, 0, 0, 1]
+        entries.append(entry)
+    meta: dict[str, Any] = {"kind": "assembly", "parts": entries, "title": title or name,
+                            "info": {**shown, **(info or {})}, "plate": summary}
+    _write_json(folder, meta)
+    return folder
 
 
 class Sequence:

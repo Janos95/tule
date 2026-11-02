@@ -523,15 +523,23 @@ PRINT_SETTINGS = {
     "infill": "sparse infill in percent (15)",
     "supports": "True or False",
     "brim": "brim width in mm, True (5 mm) or False",
+    "material": "the filament, PLA, PETG, ABS, ASA, TPU, PA or PC (for the estimate; the user picks it in the slicer)",
+    "copies": "a part's number of copies on the plate (its own settings only)",
 }
+
+# g/cm³ and nozzle/bed °C of generic filaments: the print estimate's profile
+MATERIALS = {"PLA": (1.24, 215, 60), "PETG": (1.27, 240, 80), "ABS": (1.04, 255, 100), "ASA": (1.07, 260, 100),
+             "TPU": (1.21, 230, 50), "PA": (1.14, 275, 90), "PC": (1.20, 275, 110)}
 
 
 def _print_settings(settings, who: str = "settings") -> dict:
-    """Checks print settings: the keys of ``PRINT_SETTINGS``, values in sensible ranges."""
+    """Checks print settings: the keys of ``PRINT_SETTINGS``, values in sensible ranges.
+    ``material`` belongs to the plate's settings, ``copies`` to a part's own."""
     if settings is None:
         return {}
     if not isinstance(settings, dict):
         raise TuleError(f"{who} must be a dict", op="export_3mf", hint='{"layer_height": 0.2, "walls": 3, "infill": 15, "supports": False}')
+    own = who != "settings"
     out = {}
     for k, v in settings.items():
         if k not in PRINT_SETTINGS:
@@ -541,7 +549,22 @@ def _print_settings(settings, who: str = "settings") -> dict:
             continue
         if hasattr(v, "item"):
             v = v.item()
-        if k == "supports":
+        if k == "copies" and not own:
+            raise TuleError("copies are per part, not for the whole plate", op="export_3mf",
+                            hint='("pin", pin, {"copies": 4}); the whole plate twice: print it twice')
+        if k == "material" and own:
+            raise TuleError(f"material is the whole plate's (one filament), not in {who}", op="export_3mf",
+                            hint='settings={"material": "PETG"}')
+        if k == "copies":
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v) or not 1 <= v <= 500:
+                raise TuleError(f"copies must be a whole number from 1 to 500, got {v!r}", op="export_3mf", hint='{"copies": 4}')
+            v = int(v)
+        elif k == "material":
+            m = str(v).strip().upper()
+            if m not in MATERIALS:
+                raise TuleError(f"unknown material {v!r}", op="export_3mf", hint="one of " + ", ".join(MATERIALS))
+            v = m
+        elif k == "supports":
             if not isinstance(v, bool):
                 raise TuleError(f"supports must be True or False, got {v!r}", op="export_3mf")
         elif k == "brim":
@@ -586,6 +609,9 @@ def _slicer_keys(s: dict) -> tuple[list, list]:
     if "infill" in s:
         bambu.append(("sparse_infill_density", _num(s["infill"]) + "%"))
         prusa.append(("fill_density", _num(s["infill"]) + "%"))
+        if s["infill"] >= 100:  # gyroid and the other sparse patterns refuse 100 %
+            bambu.append(("sparse_infill_pattern", "zig-zag"))
+            prusa.append(("fill_pattern", "rectilinear"))
     if "supports" in s:
         on = "1" if s["supports"] else "0"
         bambu.append(("enable_support", on))
@@ -636,8 +662,8 @@ def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float) ->
     return V, F
 
 
-def _plate_items(items) -> list[tuple[str, "Shape", dict]]:
-    """``items`` as (name, shape, settings): Shapes, (name, shape[, settings]) pairs, Assemblies, or a list of them."""
+def _plate_items(items) -> list[tuple[str, "Shape", dict, int]]:
+    """``items`` as (name, shape, settings, copies): Shapes, (name, shape[, settings]) pairs, Assemblies, or a list of them."""
     from .assembly import Assembly
     from .shape import Shape
 
@@ -649,7 +675,8 @@ def _plate_items(items) -> list[tuple[str, "Shape", dict]]:
         if not isinstance(shape, Shape):
             raise TuleError(f"cannot print a {type(shape).__name__}", op="export_3mf",
                             hint="pass Shapes, (name, shape) pairs, (name, shape, settings) or an Assembly")
-        out.append((name or shape.name or f"part{len(out) + 1}", shape, _print_settings(settings, f"settings of {name!r}")))
+        own = _print_settings(settings, f"settings of {name or shape.name or 'a part'!r}")
+        out.append((name or shape.name or f"part{len(out) + 1}", shape, own, own.pop("copies", 1)))
 
     for it in items:
         if isinstance(it, Assembly):
@@ -666,9 +693,9 @@ def _plate_items(items) -> list[tuple[str, "Shape", dict]]:
         raise TuleError("nothing to print", op="export_3mf")
     seen: dict[str, int] = {}
     named = []
-    for name, shape, s in out:  # one name per object: the slicer's list and the viewer's files
+    for name, shape, s, n in out:  # one name per object: the slicer's list and the viewer's files
         k = seen[name] = seen.get(name, 0) + 1
-        named.append((name if k == 1 else f"{name}-{k}", shape, s))
+        named.append((name if k == 1 else f"{name}-{k}", shape, s, n))
     return named
 
 
@@ -697,9 +724,15 @@ def _shelves(sizes, width: float, gap: float):
     return pos, (total_w, y - gap)
 
 
-def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -> list[tuple[str, "Shape", dict]]:
-    """Parts laid out on the bed (origin at its front left corner), each dropped to z = 0."""
-    parts = _plate_items(items)
+def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -> list[tuple[str, "Shape", dict, int, int]]:
+    """Parts laid out on the bed (origin at its front left corner), each dropped to z = 0:
+    (name, shape, settings, copy, copies), one entry per copy (copy 1 to copies, next to each other)."""
+    listed = _plate_items(items)
+    if not arrange and any(n > 1 for *_, n in listed):
+        raise TuleError("copies need arrange=True (with arrange=False they would sit on each other)", op="export_3mf",
+                        hint="arrange=True, or place each copy yourself as a part of its own")
+    parts = [(name, shape, st) for name, shape, st, n in listed for _ in range(n)]
+    which = [(k + 1, n) for *_, n in listed for k in range(n)]
     bed = tuple(float(b) for b in bed)
     if len(bed) not in (2, 3) or min(bed) <= 0:
         raise TuleError(f"bed is (width, depth) or (width, depth, height) in mm, got {bed}", op="export_3mf", hint="bed=(256, 256)")
@@ -744,8 +777,8 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -
                             op="export_3mf", hint="arrange=True lays them out")
         x0, y0 = (W - lw) / 2, (D - ld) / 2
         targets = [(x0 + lo.x - lo_x, y0 + lo.y - lo_y) for lo, _ in boxes]
-    return [(name, s.at(tx - lo.x, ty - lo.y, -lo.z), st)
-            for (name, s, st), (lo, _), (tx, ty) in zip(parts, boxes, targets)]
+    return [(name, s.at(tx - lo.x, ty - lo.y, -lo.z), st, k, n)
+            for (name, s, st), (lo, _), (tx, ty), (k, n) in zip(parts, boxes, targets, which)]
 
 
 def export_3mf(items, path: str, *, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
@@ -762,26 +795,35 @@ def export_3mf(items, path: str, *, bed=(256, 256, 256), gap: float = 5.0, arran
     ``{"layer_height": 0.2, "walls": 3, "infill": 15, "supports": False, "brim": 5}`` (all
     optional; what is left out comes from the user's process preset). They show in the slicer
     as each object's own settings. Meshes are watertight, in mm, within ``tolerance`` of the solid.
+    ``("pin", pin, {"copies": 4})``: four of a part, one object with four instances, arranged.
     """
+    base = _print_settings(settings)
+    return _write_3mf(_plate(items, bed, gap, arrange), path, base, tolerance, angular)
+
+
+def _write_3mf(placed, path: str, base: dict, tolerance: float = 0.02, angular: float = 0.1) -> str:
+    """The 3MF of a laid-out plate (``_plate``'s entries) with the plate's settings ``base``."""
     import zipfile
     from xml.sax.saxutils import quoteattr
 
-    base = _print_settings(settings)
-    placed = _plate(items, bed, gap, arrange)
     model = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">',
              ' <metadata name="Application">Tule</metadata>',
              f' <metadata name="Title">{_xml_text(os.path.splitext(os.path.basename(path))[0])}</metadata>',
              " <resources>"]
-    colors = [parse_color(s.color) for _, s, _ in placed]
+    objects: dict[str, list] = {}  # name: its copies, (shape, settings) each
+    for name, shape, own, _, _ in placed:
+        objects.setdefault(name, []).append((shape, own))
+    colors = [parse_color(c[0][0].color) for c in objects.values()]
     palette = sorted({color_hex(c) for c in colors if c})
     if palette:
         model.append('  <basematerials id="1">')
         model += [f'   <base name={quoteattr(h)} displaycolor="{h.upper()}FF"/>' for h in palette]
         model.append("  </basematerials>")
     build, bambu_cfg, prusa_cfg = [], ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"], ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"]
-    for k, ((name, shape, own), rgb) in enumerate(zip(placed, colors)):
+    for k, ((name, copies), rgb) in enumerate(zip(objects.items(), colors)):
         oid = k + 2
+        shape, own = copies[0]
         lo, hi = shape.bounds
         cx, cy = (lo.x + hi.x) / 2, (lo.y + hi.y) / 2
         V, F = _closed_mesh(shape.at(-cx, -cy, 0), name, tolerance, angular)  # the object's mesh about its own middle
@@ -792,14 +834,16 @@ def export_3mf(items, path: str, *, bed=(256, 256, 256), gap: float = 5.0, arran
         model.append("    </vertices>\n    <triangles>")
         model += [f'     <triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in F.tolist()]
         model.append("    </triangles>\n   </mesh>\n  </object>")
-        build.append(f'  <item objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 {cx:.6g} {cy:.6g} 0"/>')
+        for c, _ in copies:  # a copy: the same object placed again (an instance in the slicers)
+            lo, hi = c.bounds
+            build.append(f'  <item objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 {(lo.x + hi.x) / 2:.6g} {(lo.y + hi.y) / 2:.6g} 0"/>')
         bk, pk = _slicer_keys({**base, **own})
         q = quoteattr(name)
         bambu_cfg.append(f'  <object id="{oid}">')
         bambu_cfg.append(f'    <metadata key="name" value={q}/>')
         bambu_cfg += [f'    <metadata key="{key}" value="{v}"/>' for key, v in bk]
         bambu_cfg += [f'    <part id="{oid}" subtype="normal_part">', f'      <metadata key="name" value={q}/>', "    </part>", "  </object>"]
-        prusa_cfg.append(f' <object id="{oid}" instances_count="1">')
+        prusa_cfg.append(f' <object id="{oid}" instances_count="{len(copies)}">')
         prusa_cfg.append(f'  <metadata type="object" key="name" value={q}/>')
         prusa_cfg += [f'  <metadata type="object" key="{key}" value="{v}"/>' for key, v in pk]
         prusa_cfg += [f'  <volume firstid="0" lastid="{len(F) - 1}">', f'   <metadata type="volume" key="name" value={q}/>',
@@ -828,6 +872,134 @@ def export_3mf(items, path: str, *, bed=(256, 256, 256), gap: float = 5.0, arran
             z.writestr(info, text.encode("utf-8"))
     os.replace(tmp, path)
     return path
+
+
+# ---------------------------------------------------------------- print estimates (PrusaSlicer's CLI)
+
+SLICE_TIMEOUT = 300  # seconds; a plate that takes longer raises rather than hang the build
+SLICER_INSTALL = "apt-get update && apt-get install -y --no-install-recommends prusa-slicer"
+
+
+def _prusa_slicer() -> str:
+    """The PrusaSlicer executable, or a TuleError that says how to install it."""
+    import shutil
+
+    for exe in ("prusa-slicer", "PrusaSlicer", "/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"):
+        found = shutil.which(exe)
+        if found:
+            return found
+    raise TuleError("the print estimate needs PrusaSlicer's command line (prusa-slicer), which is not on this machine",
+                    op="estimate", hint=f"install it once (about 1 GB, a few minutes): {SLICER_INSTALL}; "
+                                        "or leave estimate=False: the 3MF does not need it")
+
+
+def _slicer_config(settings: dict, bed) -> dict:
+    """A generic printer for the estimate: 0.4 mm nozzle, 1.75 mm filament, moderate speeds and
+    accelerations (an i3-class printer at its quality preset; a fast CoreXY one prints sooner)."""
+    material = settings.get("material", "PLA")
+    density, nozzle_t, bed_t = MATERIALS[material]
+    W, D = (float(b) for b in tuple(bed)[:2])
+    infill = settings.get("infill", 15)
+    walls = settings.get("walls", 2)
+    return {
+        "nozzle_diameter": 0.4, "filament_diameter": 1.75, "filament_type": material, "filament_density": density,
+        "temperature": nozzle_t, "first_layer_temperature": nozzle_t, "bed_temperature": bed_t, "first_layer_bed_temperature": bed_t,
+        "bed_shape": f"0x0,{W:g}x0,{W:g}x{D:g},0x{D:g}", "max_print_height": float(tuple(bed)[2]) if len(tuple(bed)) > 2 else 256,
+        "gcode_flavor": "marlin2", "machine_limits_usage": "time_estimate_only",
+        "layer_height": settings.get("layer_height", 0.2), "first_layer_height": 0.2,
+        "perimeters": walls, "top_solid_layers": 5, "bottom_solid_layers": 4,
+        "top_solid_min_thickness": 0.7, "bottom_solid_min_thickness": 0.5,
+        "fill_density": f"{infill:g}%", "fill_pattern": "gyroid" if infill < 100 else "rectilinear",
+        "support_material": int(settings.get("supports", False)), "support_material_auto": 1,
+        "brim_width": settings.get("brim", 0), "skirts": 1, "skirt_distance": 3,
+        "perimeter_speed": 60, "small_perimeter_speed": 40, "external_perimeter_speed": 40, "infill_speed": 120,
+        "solid_infill_speed": 100, "top_solid_infill_speed": 60, "gap_fill_speed": 40, "bridge_speed": 30,
+        "support_material_speed": 60, "travel_speed": 200, "first_layer_speed": 25, "max_volumetric_speed": 12,
+        "default_acceleration": 1500, "perimeter_acceleration": 1000, "external_perimeter_acceleration": 800,
+        "infill_acceleration": 2000, "solid_infill_acceleration": 1500, "top_solid_infill_acceleration": 800,
+        "bridge_acceleration": 1000, "first_layer_acceleration": 600, "travel_acceleration": 2500,
+        "machine_max_acceleration_x": 3000, "machine_max_acceleration_y": 3000, "machine_max_acceleration_extruding": 2500,
+        "machine_max_acceleration_travel": 3000, "machine_max_acceleration_retracting": 1500,
+    }
+
+
+def _parse_gcode_estimate(text: str, density: float = 1.24) -> dict:
+    """PrusaSlicer's estimate from its G-code comments: print time in s, filament in g, m and cm³
+    (several extruders summed)."""
+    import re
+
+    vals: dict[str, str] = {}
+    for line in text.splitlines():
+        if line.startswith(";") and "=" in line:
+            k, _, v = line[1:].partition("=")
+            vals.setdefault(k.strip().lower(), v.strip())
+
+    def total(key):
+        if key not in vals:
+            return None
+        try:
+            return sum(float(x) for x in vals[key].split(",") if x.strip())
+        except ValueError:
+            return None
+
+    when = next((vals[k] for k in ("estimated printing time (normal mode)", "estimated printing time (silent mode)") if k in vals), None)
+    if when is None:
+        raise TuleError("the slicer's G-code has no print time estimate", op="estimate",
+                        hint="expected a '; estimated printing time (normal mode) = 1h 2m 3s' comment")
+    secs = sum(float(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u] for n, u in re.findall(r"(\d+(?:\.\d+)?)\s*([dhms])", when))
+    mm, cm3 = total("filament used [mm]"), total("filament used [cm3]")
+    g = total("total filament used [g]") or total("filament used [g]") or (cm3 * density if cm3 else None)
+    out = {"print_time_s": round(secs)}
+    if g is not None:
+        out["filament_g"] = round(g, 2)
+    if mm is not None:
+        out["filament_m"] = round(mm / 1000, 3)
+    if cm3 is not None:
+        out["filament_cm3"] = round(cm3, 2)
+    return out
+
+
+def _duration(secs: float) -> str:
+    """3 h 12 min, 14 min, under 1 min."""
+    m = round(secs / 60)
+    if m < 1:
+        return "under 1 min"
+    return f"{m // 60} h {m % 60} min" if m >= 60 else f"{m} min"
+
+
+def _slice_estimate(path: str, settings: dict, bed, timeout: float | None = None) -> dict:
+    """Slices the 3MF at ``path`` with PrusaSlicer on a generic profile (``_slicer_config``) and
+    reads its estimate: ``{"print_time_s", "filament_g", "filament_m", "filament_cm3", "profile"}``."""
+    import re
+    import subprocess
+    import tempfile
+
+    exe = _prusa_slicer()
+    timeout = timeout or SLICE_TIMEOUT
+    cfg = _slicer_config(settings, bed)
+    with tempfile.TemporaryDirectory(prefix="tule-slice-") as tmp:
+        ini = os.path.join(tmp, "generic.ini")
+        with open(ini, "w") as f:
+            f.writelines(f"{k} = {v}\n" for k, v in cfg.items())
+        gcode = os.path.join(tmp, "plate.gcode")
+        cmd = [exe, "--export-gcode", "--dont-arrange", "--datadir", os.path.join(tmp, "data"), "--load", ini,
+               "--loglevel", "1", "--output", gcode, os.path.abspath(path)]
+        try:
+            run = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=tmp, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            raise TuleError(f"slicing the plate took more than {timeout:g} s; stopped", op="estimate",
+                            hint="many or finely detailed parts slice slowly: estimate=False, or fewer parts per plate") from None
+        if run.returncode != 0 or not os.path.exists(gcode):
+            lines = [ln.strip() for ln in (run.stderr + "\n" + run.stdout).splitlines()]
+            said = [ln for ln in lines if ln and not re.match(r"^\d+ => ", ln)][-6:]
+            raise TuleError("PrusaSlicer could not slice the plate: " + (" | ".join(said) or f"exit status {run.returncode}"),
+                            op="estimate", hint="the 3MF is written; the slicer's message says which part or setting it refused")
+        with open(gcode, "rb") as f:  # the estimate is in the last comments, before the config block
+            f.seek(max(0, os.path.getsize(gcode) - (1 << 20)))
+            text = f.read().decode("utf-8", "replace")
+    out = _parse_gcode_estimate(text, cfg["filament_density"])
+    out["profile"] = f"generic 0.4 mm nozzle, {cfg['filament_type']} ({cfg['filament_density']:g} g/cm³), PrusaSlicer"
+    return out
 
 
 def _xml_text(s: str) -> str:

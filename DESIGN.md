@@ -641,6 +641,20 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   from their loaders' source. Bambu Studio drops object settings when a 3MF
   is imported as "geometry only" (opening it keeps them). Colors do not pick
   filaments: one filament prints the plate.
+  Copies and estimates (2026-11-02, from QA: an agent downloaded a 218 MB
+  Bambu Studio AppImage for a print time, and quantities ended up in free
+  text): `("pin", pin, {"copies": 4})` is one 3MF object with four build
+  items (instances in PrusaSlicer and Bambu Studio, both checked by
+  slicing), arranged like separate parts; the view places one STEP four
+  times ("pin ×4/1" …) and `output.json`'s `plate` counts them.
+  `estimate=True` runs PrusaSlicer's CLI (headless, `--datadir` in a temp
+  folder, a 300 s timeout) on the 3MF with a generic profile (0.4 mm
+  nozzle, `material`'s density, i3-class speeds) and reads the time and
+  filament from the G-code comments. PrusaSlicer is not in the image:
+  `apt-get install --no-install-recommends prusa-slicer` adds about 0.9 GB
+  (1.3 GB with recommends) for its GTK/wx/OCCT dependencies, so the
+  estimate raises with that command when it is missing. 100 % infill sets
+  a rectilinear pattern on that object (gyroid refuses it).
 - Later: variants side by side.
 
 ### Isolation and quotas
