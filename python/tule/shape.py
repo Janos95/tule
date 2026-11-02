@@ -638,6 +638,9 @@ class Shape:
         """Tight axis-aligned bounds ``(lo, hi)``."""
         b = Bnd_Box()
         static(BRepBndLib, "AddOptimal")(self._s, b, False, False)
+        if b.IsVoid():
+            raise TuleError(f"{self.name or 'the shape'} is empty: it has no bounds", op="bounds",
+                            hint="the operation that made it left nothing: check len(part.faces) after each step")
         return from_pnt(b.CornerMin()), from_pnt(b.CornerMax())
 
     @property

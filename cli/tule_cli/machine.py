@@ -810,6 +810,7 @@ def add_commands(add):
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
     sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
     sp.add_argument("--frame", type=int, help="a sequence's frame, from 1 as in the viewer (default: the last; -2 the one before); a PDF's page")
+    sp.add_argument("--page", type=int, dest="frame", help="a PDF's page, from 1 (a datasheet's drawing)")
     sp.add_argument("-p", "--project", help="from your own computer: render on this project's machine, write the PNG here")
     sp.add_argument("--field", help="an overlay field to color by, by label (default: the first; e.g. displacement)")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)

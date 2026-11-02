@@ -384,3 +384,9 @@ def test_a_path_with_corner_radii_is_lines_and_arcs():
     assert t.is_valid and t.volume == pytest.approx(length * math.pi * (0.6**2 - 0.4**2), rel=1e-6)
     with pytest.raises(TuleError, match="need more room"):
         pipe([(0, 0, 0), (5, 0, 0, 10), (5, 5, 0)], 0.5)
+
+
+def test_an_empty_shape_has_no_bounds_and_says_so():
+    empty = box(1, 1, 1) & box(1, 1, 1).at(5, 0, 0)
+    with pytest.raises(TuleError, match="empty"):
+        empty.size
