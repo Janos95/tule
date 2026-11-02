@@ -48,7 +48,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .pgroup{border-bottom:1px solid var(--line)}
 .prow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;padding:12px 8px;color:inherit;text-decoration:none}
 .prow:hover{background:var(--hover)}.prow.sub{padding:7px 8px 7px 28px;margin-top:-4px}.prow.sub:last-child{padding-bottom:12px}
-.pname{font-weight:500}.pstate{color:var(--muted);font-size:14px;white-space:nowrap}.pstate .unsaved{color:var(--warn)}.pmachine{color:var(--muted);font-size:14px;display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pname{font-weight:500}.pstate{color:var(--muted);font-size:14px;white-space:nowrap}.pstate .unsaved{color:var(--warn)}.pgpu{margin-left:-1px;opacity:.75}.pgpu::before{content:"·";margin-right:6px}.pmachine{color:var(--muted);font-size:14px;display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ic{flex:none;width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.85}.pdate{color:var(--muted);font-size:13px;text-align:right}
 .newp{border-bottom:1px solid var(--line)}
 .newp summary,.newp-go{all:unset;box-sizing:border-box;display:block;width:100%;cursor:pointer;padding:12px 8px;color:var(--muted)}
@@ -131,7 +131,7 @@ export function landing(_origin: string, note = ""): Response {
 }
 
 /** A copy of the project on a machine (project.ts machineStatus). */
-export type MachineRow = { id: string; kind: string; size: string; state: string; unsaved: { files: number; commits: number } | null; gpu?: string; computer?: string; os?: string };
+export type MachineRow = { id: string; kind: string; size: string; state: string; unsaved: { files: number; commits: number } | null; gpu?: string; computer?: string; os?: string; gpus?: string[] };
 export type ProjectRow = ProjectRef & { machines: MachineRow[] };
 
 /** The last row of a list: "+ New …", which turns into a one-line field in place.
@@ -156,21 +156,30 @@ const ICONS: Record<string, string> = {
 };
 const icon = (name: string) => new Html(`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
 
-/** Where a copy runs, as an icon and a name: Tule's cloud, a RunPod pod, a machine
-    that joined with a token, or one of your computers. */
+/** "RTX 4090", "2× RTX 4090": a GPU's short name, muted after the machine's name. */
+function gpuTag(names: string[]): Html | string {
+  const short = names.map((n) => n.replace(/^NVIDIA (GeForce )?/, ""));
+  if (!short.length) return "";
+  const same = short.every((n) => n === short[0]);
+  return html`<span class="pgpu">${same && short.length > 1 ? `${short.length}× ${short[0]}` : short.join(", ")}</span>`;
+}
+
+/** Where a copy runs: an icon (Tule's cloud, a RunPod pod, a machine that joined with
+    a token, or one of your computers by its OS), the name, and its GPU if it has one. */
 function machineLabel(m: MachineRow): Html {
   if (m.kind === "cloud") return html`${icon("cloud")}Tule cloud`;
-  if (m.kind === "gpu") return html`${icon("gpu")}RunPod ${(GPUS[m.id.slice(4)] ?? m.id.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}`;
+  if (m.kind === "gpu") return html`${icon("gpu")}RunPod${gpuTag([GPUS[m.id.slice(4)] ?? m.id.slice(4)])}`;
   if (m.kind === "joined") return html`${icon("plug")}other machine`;
   const os = (m.os ?? "").toLowerCase();
   const kind = os.startsWith("darwin") ? "apple" : /microsoft|wsl/.test(os) ? "windows" : os.startsWith("linux") ? "server" : "desktop";
-  return html`${icon(kind)}${m.computer ?? m.id}`;
+  return html`${icon(kind)}${m.computer ?? m.id}${gpuTag(m.gpus ?? [])}`;
 }
 
-/** "running · saved", "running · 3 unsaved", "starting", "stopped · 2 unsaved". */
+const isDirty = (m: MachineRow) => !!m.unsaved && m.unsaved.files + m.unsaved.commits > 0;
+
+/** "running", "starting", "running · unsaved", "stopped · unsaved". */
 function machineState(m: MachineRow): Html {
-  const n = m.unsaved ? m.unsaved.files + m.unsaved.commits : 0;
-  const tail = m.state === "starting" ? "" : n ? html` · <span class="unsaved">${n} unsaved</span>` : m.state === "running" && m.unsaved ? " · saved" : "";
+  const tail = m.state !== "starting" && isDirty(m) ? html` · <span class="unsaved">unsaved</span>` : "";
   return html`<span class="dot ${m.state}"></span>${m.state}${tail}`;
 }
 
@@ -187,7 +196,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
           (p) => html`<div class="pgroup"><a class="prow" href="/p/${p.name}">
             <span class="pname">${p.name}</span>
             <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>
-            ${p.machines.map(
+            ${p.machines.filter((m) => m.state !== "stopped" || isDirty(m)).map(
               (m) => html`<a class="prow sub" href="/p/${p.name}?machine=${encodeURIComponent(m.id)}">
               <span class="pmachine">${machineLabel(m)}</span><span class="pstate">${machineState(m)}</span></a>`,
             )}</div>`,

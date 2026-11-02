@@ -331,12 +331,15 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
 
 async function projectRows(env: Env, user: User): Promise<ProjectRow[]> {
   const [ps, hosts] = await Promise.all([accounts(env).projects(user.id), user.guest ? [] : accounts(env).hosts(user.id)]);
-  // a computer's OS, for its icon ("Darwin 25.6", "Linux 6.8…-WSL2")
-  const os = new Map(hosts.map((h) => [h.name, String((h.specs as { os?: unknown } | null)?.os ?? "")]));
+  // a computer's OS, for its icon ("Darwin 25.6", "Linux 6.8…-WSL2"), and its GPUs
+  const specs = new Map(hosts.map((h) => [h.name, (h.specs ?? {}) as { os?: unknown; gpus?: unknown }]));
   return Promise.all(
     ps.map(async (p) => {
       const s = await ops.projectStub(env, p.id).status();
-      const machines = (s.machines as MachineRow[]).map((m) => ({ ...m, os: m.computer ? os.get(m.computer) : undefined }));
+      const machines = (s.machines as MachineRow[]).map((m) => {
+        const sp = m.computer ? specs.get(m.computer) : undefined;
+        return { ...m, os: sp?.os ? String(sp.os) : undefined, gpus: Array.isArray(sp?.gpus) ? sp.gpus.map(String) : [] };
+      });
       return { ...p, machines };
     }),
   );

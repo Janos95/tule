@@ -200,7 +200,7 @@ function machineName(m) {
   return m.computer ?? m.id;
 }
 
-const unsavedOf = (m) => (m.unsaved ? m.unsaved.files + m.unsaved.commits : 0);
+const dirty = (m) => !!m.unsaved && m.unsaved.files + m.unsaved.commits > 0;
 
 /** The footer: the copy shown (a project can be loaded on several machines; then it is a picker). */
 function machine(s) {
@@ -211,14 +211,14 @@ function machine(s) {
   annotate?.machineChanged();
   const el = $("machine");
   el.dataset.state = st;
-  const n = m ? unsavedOf(m) : 0;
+  const n = m && st !== "starting" && dirty(m);
   const text = $("machine-text");
   if (st === "offline") text.textContent = "reconnecting…";
   else if (!m) text.textContent = "not loaded on a machine";
   else {
     // the dot says running; the text says what is not obvious
-    text.textContent = `${machineName(m)}${st === "running" ? "" : ` · ${st}`}${st === "starting" ? "" : n ? " · " : m.unsaved ? " · saved" : ""}`;
-    if (n && st !== "starting") text.insertAdjacentHTML("beforeend", `<span class="unsaved">${n} unsaved</span>`);
+    text.textContent = `${machineName(m)}${st === "running" ? "" : ` · ${st}`}${n ? " · " : ""}`;
+    if (n) text.insertAdjacentHTML("beforeend", `<span class="unsaved">unsaved</span>`);
   }
   el.title = !m ? "Load it with: tule up" : `${machineName(m)}'s copy of /workspace${m.sessions ? ` · ${m.sessions} SSH session(s)` : ""}`;
   const pick = $("machine-pick");
@@ -228,8 +228,7 @@ function machine(s) {
   if (several) {
     pick.replaceChildren(
       ...all.map((x) => {
-        const n = unsavedOf(x);
-        const o = new Option(`${machineName(x)} · ${x.state}${n ? ` · ${n} unsaved` : ""}`, x.id);
+        const o = new Option(`${machineName(x)} · ${x.state}${dirty(x) ? " · unsaved" : ""}`, x.id);
         o.selected = x.id === s.viewing;
         return o;
       }),

@@ -324,12 +324,14 @@ There are two separate kinds of saving:
   latest save (main); a new project's template is committed and pushed as
   main. Projects from before git saves start from their newest autosave.
 - **Unsaved work stays visible:** a stopped machine with unsaved work stays
-  on the project ("stopped · 3 unsaved") until it is loaded again and saved,
+  on the project ("stopped · unsaved") until it is loaded again and saved,
   or forgotten (`tule forget --machine …`, `machine_forget`).
 - **Choosing a machine:** commands take `--machine` (MCP: `machine`), and
   need it only when several run. SSH host names are `tule-<project>.<slot>`.
 - **UI:** the projects list shows each project with its machines as rows
-  under it (where, state, saved or "N unsaved"). The viewer shows one copy;
+  under it: an icon for where it runs (Tule cloud, RunPod, or the computer's
+  OS), its name and GPU if any, and its state ("running", "starting",
+  "· unsaved"); a stopped, saved copy is not shown. The viewer shows one copy;
   its footer picks which when several are loaded. There is no view of main
   alone: outputs come from a running copy.
 - **Hosting:** Tule hosts the repositories so one connector is still all a
