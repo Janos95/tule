@@ -204,6 +204,20 @@ def test_fillet_error_reports_max_radius():
     assert len(e.value.edges) == 12
 
 
+def test_a_fillet_bigger_than_a_convex_round_of_the_profile_is_refused():
+    # a 0.8 fillet rolled around a 0.7 corner folds over itself: OCCT still calls the
+    # result valid, but its slivers mesh open (a leaky STL)
+    part = polygon([(0, 0, 0.7), (20, 0, 0.7), (20, 10, 0.7), (0, 10, 0.7)]).extrude(5)
+    with pytest.raises(TuleError, match="convex 0.7 mm round") as e:
+        part.fillet(part.edges.perpendicular(Z), 0.8)
+    assert e.value.data["max_radius"] == pytest.approx(0.7)
+    ok = part.fillet(part.edges.perpendicular(Z), 0.5)
+    assert ok.is_valid
+    # around a hole the arc is concave: a fillet bigger than the hole's radius is fine
+    plate = box(20, 20, 5, center=True) - cylinder(1, 10, center=True)
+    assert plate.fillet(plate.edges.perpendicular(Z).nearest((0, 0, 2.5)), 1.5).is_valid
+
+
 def test_shell():
     b = box(10, 10, 10)
     s = b.shell(b.faces["top"], 1)

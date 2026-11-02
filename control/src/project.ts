@@ -137,7 +137,7 @@ function dirty(u: unknown) {
 export class Project extends DurableObject<Env> {
   state: State = {};
   outputs = new Map<string, unknown[]>(); // per slot
-  pending = new Map<number, { ws: WebSocket; rid: number }>(); // viewer requests in flight
+  pending = new Map<number, { ws: WebSocket; rid: number }>(); // viewer requests in flight (also in storage as rq:<id>: hibernation forgets this map)
   asks = new Map<number, (reply: Result) => void>(); // commands to agents awaiting a reply
   lastSaved = 0;
 
@@ -704,6 +704,49 @@ export class Project extends DurableObject<Env> {
 
   // ------------------------------------------------------------ sockets
 
+  /** A viewer request passed on to a machine: its id there, remembered in memory and in storage. */
+  relay(ws: WebSocket, rid: number, kind: "req" | "mesh", slot: string): number {
+    const grid = crypto.getRandomValues(new Uint32Array(1))[0];
+    this.pending.set(grid, { ws, rid });
+    const v = (ws.deserializeAttachment() as { v?: string } | null)?.v;
+    if (v) void this.ctx.storage.put(`rq:${grid}`, { v, rid, kind, slot, at: Date.now() });
+    return grid;
+  }
+
+  /** Who asked request `grid` (it is answered: forgotten). */
+  async answer(grid: number): Promise<{ ws: WebSocket; rid: number } | undefined> {
+    const p = this.pending.get(grid);
+    this.pending.delete(grid);
+    const key = `rq:${grid}`;
+    const saved = p ? undefined : await this.ctx.storage.get<{ v: string; rid: number }>(key);
+    void this.ctx.storage.delete(key);
+    if (p) return p;
+    const ws = saved && this.ctx.getWebSockets(`v:${saved.v}`)[0];
+    return ws ? { ws, rid: saved!.rid } : undefined;
+  }
+
+  /** The machine's connection went: what it was asked will not be answered, so the viewers hear it now. */
+  async dropRelays(slot: string) {
+    const all = await this.ctx.storage.list<{ v: string; rid: number; kind: string; slot: string; at: number }>({ prefix: "rq:" });
+    const gone: string[] = [];
+    for (const [key, r] of all) {
+      const old = Date.now() - r.at > 3600_000;
+      if (r.slot !== slot && !old) continue;
+      gone.push(key);
+      this.pending.delete(Number(key.slice(3)));
+      if (old) continue;
+      const error = "the machine reconnected while answering; try again";
+      for (const ws of this.ctx.getWebSockets(`v:${r.v}`)) {
+        try {
+          ws.send(JSON.stringify(r.kind === "mesh" ? { t: "mesh-error", rid: r.rid, error } : { t: "res", rid: r.rid, error }));
+        } catch {
+          // closing
+        }
+      }
+    }
+    if (gone.length) await this.ctx.storage.delete(gone);
+  }
+
   /** The slot a viewer looks at: its pick, else the most recently ready connected one, else the newest copy with outputs. */
   viewSlot(ws?: WebSocket): string | undefined {
     const picked = (ws?.deserializeAttachment() as { m?: string } | null)?.m;
@@ -726,6 +769,7 @@ export class Project extends DurableObject<Env> {
       const slot = await this.checkJoin(h.startsWith("Bearer ") ? h.slice(7) : "");
       if (!slot) return new Response("invalid join token\n", { status: 401 });
       for (const old of this.ctx.getWebSockets(`m:${slot}`)) old.close(4000, "replaced by a new connection");
+      await this.dropRelays(slot);
       for (const s of this.ctx.getWebSockets(`sm:${slot}`)) s.close(4002, "the machine reconnected");
       this.ctx.acceptWebSocket(server, ["agent", `m:${slot}`]);
       server.serializeAttachment({ m: slot });
@@ -740,9 +784,10 @@ export class Project extends DurableObject<Env> {
       agent.send(JSON.stringify({ t: "ssh-open", sid }));
       this.touch(p.slot);
     } else if (what === "view") {
-      this.ctx.acceptWebSocket(server, ["view"]);
+      const v = crypto.randomUUID();
+      this.ctx.acceptWebSocket(server, ["view", `v:${v}`]);
       const m = url.searchParams.get("machine");
-      server.serializeAttachment({ m: m && own(this.machines, m) ? m : undefined });
+      server.serializeAttachment({ m: m && own(this.machines, m) ? m : undefined, v });
       await this.sendView(server, await this.status());
     } else {
       return new Response("not found\n", { status: 404 });
@@ -780,7 +825,7 @@ export class Project extends DurableObject<Env> {
       }
       if (m.t === "pick") {
         const slot = typeof m.machine === "string" && own(this.machines, m.machine) ? m.machine : undefined;
-        ws.serializeAttachment({ m: slot });
+        ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), m: slot });
         await this.sendView(ws, await this.status());
         return;
       }
@@ -792,16 +837,14 @@ export class Project extends DurableObject<Env> {
       if (m.t === "req") {
         const r = m as { rid: number; op?: unknown; args?: unknown };
         if (!agent) return ws.send(JSON.stringify({ t: "res", rid: r.rid, error: away }));
-        const grid = crypto.getRandomValues(new Uint32Array(1))[0];
-        this.pending.set(grid, { ws, rid: r.rid });
+        const grid = this.relay(ws, r.rid, "req", slot!);
         agent.send(JSON.stringify({ t: "req", rid: grid, op: r.op, args: r.args ?? {} }));
         this.touch(slot);
         return;
       }
       if (m.t !== "mesh" || typeof m.path !== "string") return;
       if (!agent) return ws.send(JSON.stringify({ t: "mesh-error", rid: m.rid, error: away }));
-      const grid = crypto.getRandomValues(new Uint32Array(1))[0];
-      this.pending.set(grid, { ws, rid: m.rid });
+      const grid = this.relay(ws, m.rid, "mesh", slot!);
       agent.send(JSON.stringify({ t: "mesh", rid: grid, path: m.path, hash: m.hash ?? "" }));
     }
   }
@@ -820,8 +863,7 @@ export class Project extends DurableObject<Env> {
         else ws.send(JSON.stringify({ t: "ssh-close", sid: id }));
         this.touch(slot);
       } else if (kind === MESH) {
-        const p = this.pending.get(id);
-        this.pending.delete(id);
+        const p = await this.answer(id);
         if (p && p.ws.readyState === WebSocket.OPEN) {
           const out = new Uint8Array(b.byteLength - 1);
           new DataView(out.buffer).setUint32(0, p.rid);
@@ -879,8 +921,7 @@ export class Project extends DurableObject<Env> {
         break;
       }
       case "res": {
-        const p = this.pending.get(Number(m.rid));
-        this.pending.delete(Number(m.rid));
+        const p = await this.answer(Number(m.rid));
         if (p && p.ws.readyState === WebSocket.OPEN) p.ws.send(JSON.stringify({ ...m, rid: p.rid }));
         break;
       }
@@ -898,9 +939,8 @@ export class Project extends DurableObject<Env> {
         break;
       }
       case "mesh-error": {
-        const p = this.pending.get(Number(m.rid));
-        this.pending.delete(Number(m.rid));
-        if (p) p.ws.send(JSON.stringify({ t: "mesh-error", rid: p.rid, error: m.error }));
+        const p = await this.answer(Number(m.rid));
+        if (p && p.ws.readyState === WebSocket.OPEN) p.ws.send(JSON.stringify({ t: "mesh-error", rid: p.rid, error: m.error }));
         break;
       }
       case "ready":
@@ -963,6 +1003,7 @@ export class Project extends DurableObject<Env> {
           await this.save();
         }
         for (const s of this.ctx.getWebSockets(`sm:${slot}`)) s.close(4003, "the machine disconnected");
+        await this.dropRelays(slot);
         this.broadcast();
       }
     }

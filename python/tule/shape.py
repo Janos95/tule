@@ -410,11 +410,27 @@ class Shape:
         sel = self._resolve(edges, "edge")
         if not sel.items:
             raise TuleError("no edges selected", op=op)
+        if fold := self._folding_arc(sel.items, size):
+            e, r = fold
+            word = "radius" if op == "fillet" else "distance"
+            raise TuleError(f"cannot {op} with {size:g}: an edge runs around a convex {r:.3g} mm round, "
+                            f"and a {word} that big folds over itself", op=op, edges=self._ids("edge", [e]),
+                            hint=f"use a {word} below {r:.3g}, or make that rounded corner of the profile bigger",
+                            **({"max_radius": round(r, 6)} if op == "fillet" else {"max_distance": round(r, 6)}))
 
         def attempt(r: float):
             mk = BRepFilletAPI_MakeFillet(self._s) if op == "fillet" else BRepFilletAPI_MakeChamfer(self._s)
+            bad = []
             for e in sel.items:
-                mk.Add(float(r), e)
+                try:
+                    mk.Add(float(r), e)
+                except OCC_ERRORS as x:  # this edge cannot take one at all (not between exactly two faces)
+                    bad.append((e, x))
+            if bad:
+                raise TuleError(f"cannot {op} {len(bad)} of the edges: {bad[0][1]}", op=op,
+                                edges=self._ids("edge", [e for e, _ in bad]),
+                                hint="leave these edges out (sel - part.edges[...]); an edge where more than two faces "
+                                     "meet comes from tools touching along it: overlap them a little instead")
             try:
                 mk.Build()
             except OCC_ERRORS:
@@ -449,6 +465,49 @@ class Shape:
             new_faces.extend(f for f in from_list(mk.Generated(e)) if kind_of(f) == "face")
         out = self._derive(res, groups)
         return out._with_roles({op: new_faces})
+
+    def _folding_arc(self, edges, size: float):
+        """(edge, arc radius) for a circular edge along a convex round smaller than ``size``.
+
+        Rolling a fillet that big around it makes a surface that folds over
+        itself; OpenCascade still returns a "valid" solid, with slivers that mesh open.
+        """
+        from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+        from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+        from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Plane
+        from OCP.TopAbs import TopAbs_IN, TopAbs_REVERSED
+
+        arcs = []
+        for e in edges:
+            c = BRepAdaptor_Curve(e)
+            if c.GetType() == GeomAbs_Circle and c.Circle().Radius() <= size * (1 + 1e-9):
+                arcs.append((e, c.Circle()))
+        if not arcs:
+            return None
+        faces_of: dict[int, list] = {}
+        want = ShapeSet(e for e, _ in arcs)
+        for f in subshapes(self._s, "face"):
+            for x in subshapes(f, "edge"):
+                if (i := want.index(x)) >= 0:
+                    faces_of.setdefault(i, []).append(f)
+        for i, (e, circ) in enumerate(arcs):
+            axis = circ.Axis().Direction()
+            for f in faces_of.get(i, ()):
+                s = BRepAdaptor_Surface(f)
+                if s.GetType() != GeomAbs_Plane:
+                    continue
+                n = s.Plane().Axis().Direction()
+                if abs(n.Dot(axis)) < 1 - 1e-6:
+                    continue
+                if f.Orientation() == TopAbs_REVERSED:
+                    n.Reverse()
+                r = circ.Radius()
+                c = circ.Location()
+                step = min(r, size) * 0.5
+                p = gp_Pnt(c.X() - n.X() * step, c.Y() - n.Y() * step, c.Z() - n.Z() * step)
+                if BRepClass3d_SolidClassifier(self._s, p, 1e-7).State() == TopAbs_IN:  # material at the center: convex
+                    return e, r
+        return None
 
     def shell(self, remove: Selection | None, thickness: float, inward: bool = True) -> "Shape":
         """Hollow the solid: remove the ``remove`` faces and keep walls of ``thickness``.

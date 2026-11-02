@@ -193,7 +193,10 @@ function request(file) {
     const promise = new Promise((resolve, reject) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected"));
       const id = ++rid;
-      pending.set(id, { resolve, reject });
+      // the machine gives up after 15 minutes; past that the answer was lost on the way
+      const timer = setTimeout(() => (pending.delete(id), reject(new Error("no answer from the machine; reload to try again"))), 960_000);
+      const done = (f) => (v) => (clearTimeout(timer), f(v));
+      pending.set(id, { resolve: done(resolve), reject: done(reject) });
       ws.send(JSON.stringify({ t: "mesh", rid: id, path: file.wire, hash: file.hash }));
     });
     promise.catch(() => meshes.delete(file.hash)); // retry later
@@ -616,12 +619,22 @@ function remember() {
 /** Something a table cell, chart point or document link names: a file of this entry, or another entry. */
 function linkable(value) {
   if (typeof value !== "string" || !value || value.length > 200) return false;
+  if (ownFile(value)) return true;
   const v = value.replace(/^outputs\//, "").replace(/\/$/, "");
   return state.outputs.some((o) => o.id === v && o.id !== state.selected);
+}
+/** A file of the shown entry that a value names (its name, or its path in the entry). */
+function ownFile(value) {
+  const o = state.outputs.find((x) => x.id === state.selected);
+  if (!o || !value.includes(".")) return null;
+  const v = value.replace(/^\.\//, "");
+  return [...o.docs, ...o.files].find((f) => f.file === v || f.file.split("/").pop() === v) ?? null;
 }
 function open(value) {
   const o = state.outputs.find((x) => x.id === state.selected);
   if (o && views(o).some((x) => x.id === value)) return selectView(value);
+  const f = ownFile(String(value));
+  if (f) return views(o).some((x) => x.id === f.file) ? selectView(f.file) : download(f); // a file to print: download it
   return select(String(value).replace(/^outputs\//, "").replace(/\/$/, ""));
 }
 
