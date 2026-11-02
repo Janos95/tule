@@ -183,3 +183,144 @@ def test_outputs_plate(outdir):
     for name, V, _, _ in objects(f"{folder}/print.3mf"):
         lo, hi = step[name]
         assert [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z] == pytest.approx([*V.min(0), *V.max(0)], abs=0.05)
+
+
+def test_copies_are_instances_of_one_object(tmp_path):
+    pin = cylinder(4, 30).named("pin")
+    path = export_3mf([box(20).named("cube"), ("pin", pin, {"copies": 4, "supports": True})], str(tmp_path / "p.3mf"), gap=3)
+    z = zipfile.ZipFile(path)
+    model = ET.fromstring(z.read("3D/3dmodel.model"))
+    assert [o.get("name") for o in model.iter(CORE + "object")] == ["cube", "pin"]  # one mesh per part
+    objs = objects(path)
+    assert [o[0] for o in objs] == ["cube", "pin", "pin", "pin", "pin"]  # a build item per copy
+    boxes = [(V.min(0), V.max(0)) for _, V, _, _ in objs]
+    assert footprints_apart(boxes, 3)
+    prusa = {o.find("metadata").get("value"): o for o in ET.fromstring(z.read("Metadata/Slic3r_PE_model.config")).iter("object")}
+    assert prusa["pin"].get("instances_count") == "4" and prusa["cube"].get("instances_count") == "1"
+    assert {m.get("key"): m.get("value") for m in prusa["pin"].findall("metadata")}["support_material"] == "1"
+    bambu = [{m.get("key"): m.get("value") for m in o.findall("metadata")} for o in ET.fromstring(z.read("Metadata/model_settings.config")).iter("object")]
+    assert "copies" not in str(bambu)
+    with pytest.raises(TuleError, match="copies are per part"):
+        export_3mf([pin], str(tmp_path / "a.3mf"), settings={"copies": 2})
+    with pytest.raises(TuleError, match="material is the whole plate's"):
+        export_3mf([("pin", pin, {"material": "PETG"})], str(tmp_path / "b.3mf"))
+    with pytest.raises(TuleError, match="copies need arrange=True"):
+        export_3mf([("pin", pin, {"copies": 2})], str(tmp_path / "c.3mf"), arrange=False)
+    with pytest.raises(TuleError, match="copies must be a whole number"):
+        export_3mf([("pin", pin, {"copies": 0})], str(tmp_path / "d.3mf"))
+    with pytest.raises(TuleError, match="unknown material") as e:
+        export_3mf([pin], str(tmp_path / "e.3mf"), settings={"material": "wood"})
+    assert "PETG" in e.value.hint
+
+
+def test_full_infill_gets_a_pattern_that_allows_it(tmp_path):
+    z = zipfile.ZipFile(export_3mf([("solid", box(10), {"infill": 100}), box(10).named("light")], str(tmp_path / "p.3mf")))
+    bambu = {o.find("metadata").get("value"): {m.get("key"): m.get("value") for m in o.findall("metadata")}
+             for o in ET.fromstring(z.read("Metadata/model_settings.config")).iter("object")}
+    prusa = {o.find("metadata").get("value"): {m.get("key"): m.get("value") for m in o.findall("metadata")}
+             for o in ET.fromstring(z.read("Metadata/Slic3r_PE_model.config")).iter("object")}
+    assert bambu["solid"]["sparse_infill_pattern"] == "zig-zag" and prusa["solid"]["fill_pattern"] == "rectilinear"
+    assert "sparse_infill_pattern" not in bambu["light"] and "fill_pattern" not in prusa["light"]
+
+
+def test_outputs_plate_copies(outdir):
+    folder = outputs.plate("print", [box(20).named("cube"), ("pin", cylinder(4, 30).named("pin", "#888"), {"copies": 3})],
+                           settings={"material": "PETG"})
+    meta = json.load(open(f"{folder}/output.json"))
+    assert [p["name"] for p in meta["parts"]] == ["print/cube", "print/pin ×3/1", "print/pin ×3/2", "print/pin ×3/3"]
+    assert {p["file"] for p in meta["parts"]} == {"cube.step", "pin.step"}  # a copy is its file placed again
+    assert sorted(f.name for f in (outdir / "print").iterdir()) == ["cube.step", "output.json", "pin.step", "print.3mf"]
+    assert meta["plate"] == {"file": "print.3mf", "parts": {"cube": 1, "pin": 3}}
+    assert meta["info"]["material"] == "PETG"
+    # each copy where the 3MF puts it
+    lo = import_step(f"{folder}/pin.step").bounds[0]
+    got = sorted((round(lo.x + (p.get("transform") or [0] * 8)[3], 3), round(lo.y + (p.get("transform") or [0] * 8)[7], 3))
+                 for p in meta["parts"] if p["file"] == "pin.step")
+    want = sorted((round(V[:, 0].min(), 3), round(V[:, 1].min(), 3)) for n, V, _, _ in objects(f"{folder}/print.3mf") if n == "pin")
+    assert np.allclose(got, want, atol=0.05)
+
+
+GCODE_TAIL = """G1 X10 Y10 E0.5
+M84
+; filament used [mm] = 1493.99, 12.01
+; filament used [cm3] = 3.59, 0.03
+; filament used [g] = 4.45, 0.04
+; filament cost = 0.00
+; total filament used [g] = 4.49
+; total filament cost = 0.00
+; estimated printing time (normal mode) = 1d 3h 13m 55s
+; estimated first layer printing time (normal mode) = 29s
+
+; prusaslicer_config = begin
+; filament_density = 1.24
+; layer_height = 0.2
+; prusaslicer_config = end
+"""
+
+
+def test_gcode_estimate_parsing():
+    from tule.io import _duration, _parse_gcode_estimate
+
+    est = _parse_gcode_estimate(GCODE_TAIL)
+    assert est == {"print_time_s": 86400 + 3 * 3600 + 13 * 60 + 55, "filament_g": 4.49, "filament_m": 1.506, "filament_cm3": 3.62}
+    # no grams (density 0): from the volume
+    est = _parse_gcode_estimate("; filament used [mm] = 1000\n; filament used [cm3] = 2.0\n; total filament used [g] = 0.00\n"
+                                "; estimated printing time (normal mode) = 13m 55s\n", density=1.27)
+    assert est["filament_g"] == pytest.approx(2.54) and est["print_time_s"] == 835
+    with pytest.raises(TuleError, match="no print time"):
+        _parse_gcode_estimate("G1 X0\n")
+    assert [_duration(s) for s in (20, 835, 3600, 11520, 97235)] == ["under 1 min", "14 min", "1 h 0 min", "3 h 12 min", "27 h 1 min"]
+
+
+def fake_slicer(tmp_path, monkeypatch, body):
+    """A stand-in ``prusa-slicer`` on PATH: ``body`` is Python with ``out`` (the --output path) and ``args``."""
+    import sys
+
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    exe = bin_ / "prusa-slicer"
+    exe.write_text(f"#!{sys.executable}\nimport sys, time\nargs = sys.argv[1:]\nout = args[args.index('--output') + 1]\n{body}\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_))
+
+
+def test_outputs_plate_estimate(outdir, tmp_path, monkeypatch):
+    seen = tmp_path / "seen.txt"
+    fake_slicer(tmp_path, monkeypatch, f"open({str(seen)!r}, 'w').write(' '.join(args) + open(args[args.index('--load') + 1]).read())\n"
+                                       f"open(out, 'w').write({GCODE_TAIL!r})")
+    folder = outputs.plate("print", [box(20)], settings={"infill": 20, "material": "PETG"}, estimate=True)
+    meta = json.load(open(f"{folder}/output.json"))
+    est = meta["plate"]["estimate"]
+    assert est["print_time_s"] == 98035 and est["filament_g"] == 4.49 and "PETG" in est["profile"]
+    assert meta["info"]["print time"] == "27 h 14 min" and meta["info"]["filament"] == "4.5 g (1.51 m)"
+    used = seen.read_text()  # the plate's 3MF on a generic profile with the plate's settings
+    assert "--export-gcode" in used and "print.3mf" in used
+    for line in ("nozzle_diameter = 0.4", "filament_density = 1.27", "fill_density = 20%", "fill_pattern = gyroid", "perimeters = 2"):
+        assert line in used
+
+
+def test_outputs_plate_estimate_errors(outdir, tmp_path, monkeypatch):
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda exe, *a, **k: None if "rusa" in exe else real_which(exe, *a, **k))
+    with pytest.raises(TuleError, match="needs PrusaSlicer") as e:
+        outputs.plate("print", [box(20)], estimate=True)
+    assert "apt-get install -y --no-install-recommends prusa-slicer" in e.value.hint
+    assert not (outdir / "print").exists()  # nothing written
+    monkeypatch.undo()
+    monkeypatch.setenv("TULE_OUTPUTS", str(outdir))
+    fake_slicer(tmp_path, monkeypatch, "print('10 => Processing triangulated mesh')\nprint('Objects could not fit on the bed', file=sys.stderr)\nsys.exit(1)")
+    with pytest.raises(TuleError, match="could not slice the plate: Objects could not fit on the bed;"):
+        outputs.plate("print", [box(20)], estimate=True)
+    (tmp_path / "bin" / "prusa-slicer").write_text(f"#!{__import__('sys').executable}\nimport time\ntime.sleep(30)\n")
+    monkeypatch.setattr("tule.io.SLICE_TIMEOUT", 1)
+    with pytest.raises(TuleError, match="took more than 1 s"):
+        outputs.plate("print", [box(20)], estimate=True)
+
+
+@pytest.mark.skipif(not __import__("shutil").which("prusa-slicer"), reason="PrusaSlicer's CLI is not installed")
+def test_outputs_plate_estimate_with_prusa_slicer(outdir):
+    folder = outputs.plate("print", [box(20).named("cube"), ("pin", cylinder(4, 30), {"copies": 2})], estimate=True)
+    est = json.load(open(f"{folder}/output.json"))["plate"]["estimate"]
+    assert 300 < est["print_time_s"] < 7200 and 3 < est["filament_g"] < 30 and est["filament_m"] > 1

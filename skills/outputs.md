@@ -1,6 +1,6 @@
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and other files (tables, charts, documents, images). `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it within a second.
+The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and other files. `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it at once.
 
 ```
 outputs/
@@ -8,14 +8,14 @@ outputs/
   gripper/         output.json base.step finger.step  an assembly: names, colors
   bracket-topopt/  output.json frame_0000.stl …       a sequence: frames with values, a slider and a plot
   bracket-loads/   output.json bracket.step           an overlay: colored faces, labels, arrows
-  print/           output.json lid.step print.3mf     a print plate: parts on the bed, a 3MF to slice
+  print/           output.json lid.step print.3mf     a print plate: one 3MF, every part (no STLs)
 ```
 
 Geometry: STEP (faces, names, colors and tags travel inside; prefer it) or STL (meshes).
 
 ## Writing them
 
-`tule.outputs` writes the folders atomically, so the viewer never sees half a file (one output per script under `tule build`; here several):
+`tule.outputs` writes folders atomically (one output per script under `tule build`; here several):
 
 ```python
 from tule import *
@@ -30,7 +30,7 @@ with outputs.sequence("grow", "Growing a block") as seq: # status "running" unti
 with outputs.sequence("tilt") as seq:  # motion: make parts once, move them per frame (.at, .rotate):
     for a in range(0, 91, 10):         # a frame then stores placements only
         seq.add([part, part.rotate(y=-a).at(40, 0, 5)], label=f"{a} deg", angle=a)
-outputs.plate("print", [part, box(10)], settings={"layer_height": 0.2, "walls": 3})  # print.3mf
+outputs.plate("print", [part, ("pin", box(10), {"copies": 4})], settings={"walls": 3})
 outputs.overlay("plate-loads", part, title="Load case 1",
                 faces={part.faces["load"]: {"role": "load", "label": "200 N"},
                        part.faces["fixed"]: {"role": "fixed", "label": "clamped"}},
@@ -59,7 +59,8 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Stress over the whole surface: `tule docs fea`.
 - **Info** (any kind): a flat object of facts (units in text: `"20.8 g"`), shown under the view.
-- **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end; `values` are plotted. A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
+- **Plates**: `"plate": {"parts": {"pin": 4}, "estimate": {"print_time_s", "filament_g", "filament_m"}}` (`estimate=True`).
+- **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end. A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images
 
@@ -86,6 +87,6 @@ tule screenshot -o /tmp/v.png --output bracket --labels      # f12 · load on ev
 tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
 ```
 
-Read the PNG. It also lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3`: the third).
+Read the PNG. It lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3`: the third).
 
 Outputs are not in git (`tule build` remakes them).
