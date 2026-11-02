@@ -108,6 +108,15 @@ def test_a_failure_keeps_the_end_of_its_output(project):
     build(project, "plate")
     rec = json.loads((project / "outputs" / ".build" / "plate.json").read_text())
     assert "ValueError: boom" in rec["failed"]["log"]
+    assert rec["failed"]["error"] == "ValueError: boom"  # what the viewer and --check lead with, not "exit status 1"
+
+
+def test_check_says_building_while_a_build_runs(project):
+    stage = project / "outputs" / ".build" / f"stage-plate-{os.getpid()}"  # a live process's stage folder
+    stage.mkdir(parents=True)
+    check = subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=project,
+                           capture_output=True, text=True).stdout
+    assert any(line.split()[:2] == ["plate", "building"] for line in check.splitlines()), check
 
 
 def test_undoing_a_breaking_change_clears_the_failure(project):

@@ -335,7 +335,8 @@ function fromRecords(list) {
 
 const isNum = (v) => v !== "" && Number.isFinite(Number(v));
 // float noise from computed tables (3.999999999999999 → 4); the exact value is in the cell's tooltip
-const tidy = (v) => (/\.\d{10,}/.test(v) ? String(Number(Number(v).toPrecision(10))) : v);
+// float noise shortened for reading (0.30000000000000004, 1.017777498e-13); the file keeps every digit
+const tidy = (v) => (/\.\d{10,}$/.test(v) ? String(Number(Number(v).toPrecision(10))) : /^-?\d\.\d{6,}e[-+]\d+$/.test(v) ? Number(v).toPrecision(4) : v);
 
 function table(into, { head, body }, c) {
   const numeric = head.map((_, i) => body.some((r) => (r[i] ?? "") !== "") && body.every((r) => (r[i] ?? "") === "" || isNum(r[i])));

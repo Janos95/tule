@@ -515,6 +515,29 @@ def build(root: str, names: list[str] | None = None, force: bool = False,
         lock.close()
 
 
+
+def running(root: str) -> dict[str, float]:
+    """Outputs a tule build is making now: {name: when its run started} (stage folders of a live process)."""
+    state = os.path.join(root, "outputs", STATE)
+    out = {}
+    try:
+        names = [n for n in os.listdir(state) if n.startswith("stage-")]
+    except OSError:
+        return out
+    for n in names:
+        name, _, pid = n[6:].rpartition("-")
+        try:
+            os.kill(int(pid), 0)
+        except PermissionError:  # alive, another user's
+            pass
+        except (ValueError, OSError):
+            continue
+        try:
+            out[name.replace("~", "/")] = os.stat(os.path.join(state, n)).st_mtime
+        except OSError:
+            pass
+    return out
+
 def status(root: str, hashes: Hashes | None = None) -> list[dict]:
     """Every script's output: up to date, stale (and why: something it read changed, or an
     output it reads is itself out of date), never built, or failed (with the end of its log)."""

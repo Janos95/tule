@@ -482,11 +482,15 @@ def _check(root: str, names: list[str] | None = None):
             cache = None
             return None
 
+    now = build.running(root)
     for r in build.status(root):
         if only is not None and r["name"] not in only:
             continue
         took = f"last run {r['seconds']:g} s" if r.get("seconds") is not None else ""
-        if r.get("failed"):
+        if r["name"] in now:
+            lines.append((r["name"], "building", f"started {time.strftime('%H:%M', time.localtime(now[r['name']]))}; "
+                          "tule build again waits for it", took))
+        elif r.get("failed"):
             last = (r.get("log") or "").strip().splitlines()[-1:]  # the exception, for a script that raised
             lines.append((r["name"], "failed", last[0] if last and r["failed"].startswith("exit status") else r["failed"], took))
         elif r.get("why"):

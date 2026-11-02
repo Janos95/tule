@@ -230,6 +230,8 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
     (always STL), such as a topology optimization result. ``info``: facts
     shown under the view (``{"mass": "20.8 g"}``).
     """
+    if isinstance(shape, Assembly):
+        raise TuleError(f"{name}: this is an assembly", op="outputs", hint=f'use outputs.assembly("{name}", …)')
     info = _info(info)
     folder = _folder(name)
     if isinstance(shape, Mesh):

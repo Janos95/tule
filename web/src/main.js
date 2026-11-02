@@ -348,7 +348,8 @@ function views(o) {
   if (o.files.length && !named) v.push({ id: "3d", label: "3D", type: "geometry" });
   // the file named after the output first (parts-list/parts-list.csv), then documents; beside a model,
   // files with no view of their own (an STL, a .3mf) are only in Download
-  const rank = (f) => (f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop() ? 0 : ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(f.type) + 1 || 9);
+  // (a README beside the data opens before a CSV that happens to share the folder's name)
+  const rank = (f) => (/^readme\.md$/i.test(f.file) ? 0 : f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop() ? 1 : ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(f.type) + 2 || 10);
   const docs = [...o.docs].sort((a, b) => rank(a) - rank(b));
   for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) {
     v.push({ id: f.file, label: f.file, type: f.type, f });
