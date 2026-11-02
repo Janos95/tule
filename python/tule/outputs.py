@@ -645,12 +645,16 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
 
 # ---------------------------------------------------------------- drawings
 
-def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=None, dims=(),
+def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=None, dims=(),
             title: str | None = None, info: dict | None = None, notes=None, tol: dict | None = None,
             revisions=None, callouts=None, sheet: str | None = None, scale=None, hidden: bool = True,
-            projection: str = "first", dxf: str | None = None, sheets=None, datums: dict | None = None) -> str:
+            projection: str = "first", dxf: str | None = None, sheets=None, datums: dict | None = None,
+            table=None) -> str:
     """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` (every sheet) and one
     ``.svg`` per sheet (``<name>.svg``, ``<name>-2.svg``, ...). Returns the folder.
+
+    ``item``: a part, or ``{"B-20": b20, "B-30": b30}``: each on its own sheets, titled by its
+    name; ``dims``, ``datums``, ``tol`` or ``info`` keyed by part name go to that part.
 
     Views (``front top right left bottom back iso``) are projected with hidden lines
     (dashed; ``hidden=False`` drops them) and placed by ``projection`` (``"first"``
@@ -664,18 +668,20 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=None, di
     end; a hole into a slit or pocket gets its depth ``↧``) / ``⌴ ⌀11 ↧6.5`` counterbore,
     ``⌵ ⌀12 × 90°`` countersink, ``4× slot 5.5 × 11.5 THRU`` (width × overall length). Each
     callout goes on the side where its leader crosses the fewest lines; leaders never cross
-    each other or a dimension line, and no text touches a line or another text.
+    each other or a dimension line, and no text touches a line or another text. A dimension's
+    text sits on its line or just past an arrow; crowded dimensions stack outward.
     ``callouts="top"`` or ``{"right": "top"}`` puts a view's callouts on that side;
     ``"none"`` leaves them to another view.
 
     ``dims`` adds yours: ``("top", p1, p2)`` measures two 3D points (or one-item
     selections) in that view; a fourth item ``{"along": "h" | "v" | "aligned",
-    "tol": "±0.05" | "basic", "text": "40", "offset": mm, "side": "top"}``. A feature picked
+    "tol": "±0.05" | "basic", "text": "40", "label": "ROOT", "offset": mm, "side": "top"}``
+    (``text`` replaces the value, ``label`` follows it: ``2.86 ROOT``). A feature picked
     by its faces or circular edges gets its own callout, in the view given or the best one:
     ``("right", part.faces.cylindrical(r=3.25), {"tol": "+0.1/0", "side": "top", "text":
     "M6×1-6H ↧12", "frame": "position ⌀0.1 M A B C"})`` (``text`` replaces the callout,
-    ``"\\n"`` between lines); on a slot ``"width": "+0.1/0"`` and ``"length": True`` dimension
-    it. A concave arc (pocket corner, fillet) gets ``R3 ↧14``, a boss ``⌀``/``R``. A planar
+    ``"\\n"`` between lines; ``label`` follows it); on a slot ``"width": "+0.1/0"`` and
+    ``"length": True`` dimension it. A concave arc (pocket corner, fillet) gets ``R3 ↧14``, a boss ``⌀``/``R``. A planar
     face takes ``{"frame": ["flatness 0.05", "parallel 0.05 A"]}``. ``datums={"A":
     part.faces.bottom(), "B": holes}`` draws datum feature symbols; frames name them.
 
@@ -691,21 +697,24 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=None, di
     Nothing is dated unless you say so: the same drawing writes the same bytes.
     ``revisions=[("A", "First issue"), ("B", "Slots 2 mm longer", "2026-11-02")]``
     draws a revision table; the last is the current rev. ``notes=["Break all edges
-    0.3", "Anodize clear, MIL-A-8625 Type II"]``: a numbered NOTES block.
+    0.3", "Anodize clear, MIL-A-8625 Type II"]``: a numbered NOTES block on sheet 1.
+    ``table=[{"Part": "B-20", "L": 20}, ...]`` (or lists, the header first) adds a last sheet
+    with the table; it, or several parts, takes the notes there.
 
     ``sheet``: ``"A4"`` to ``"A0"``; left out, the smallest of A4, A3, A2 that takes the views.
     ``scale``: left out, 1:1 when it fits (2:1 and up only for a small part), else the
     largest ISO reduction; ``"1.5:1"`` or any ratio when you need one, and the error for one
     that does not fit says what is too big and names the largest that does. ``sheets=[{"views":
     ("front", "top"), "sheet": "A3"}, {"views": (("front", point), "iso"), "callouts": "none"}]``
-    lays the drawing out over several sheets. ``dxf="top"`` also writes that
-    view at 1:1 as ``<name>.dxf`` for laser or waterjet cutting.
+    lays the drawing out over several sheets (for each part). ``dxf="top"`` also writes that
+    view at 1:1 as ``<name>.dxf`` (``<name>-<part>.dxf`` each) for laser or waterjet cutting.
     """
     from .drawing import write as write_drawing
 
-    info = _info(info)
+    each = isinstance(item, dict) and isinstance(info, dict) and info and set(info) <= set(item)
+    info = {k: _info(v) for k, v in info.items()} if each else _info(info)
     folder = _folder(name)
     write_drawing(folder, _slug(name.rsplit("/", 1)[-1]), item, views=views, dims=dims, title=title, info=info,
                   sheet=sheet, scale=scale, hidden=hidden, projection=projection, dxf_view=dxf, notes=notes,
-                  tol=tol, revisions=revisions, callouts=callouts, sheets=sheets, datums=datums)
+                  tol=tol, revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table)
     return folder

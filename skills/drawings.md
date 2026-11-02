@@ -30,8 +30,8 @@ outputs.drawing("plate", p, title="Bore plate",
     info={"number": "BP-1", "material": "6061-T6", "rev": "A"})
 ```
 
-- Linear: `(view, p1, p2[, opts])`, 3D points or one-item selections. Opts: `along` (`"h"`, `"v"`, `"aligned"`), `tol`, `text`, `offset` (mm), `side`.
-- A feature: `([view,] faces[, opts])`. Cylindrical faces or circular edges give a hole or slot its own callout, in `view` or the best one. Opts: `tol`, `side` (`"top"`, `"bottom"`, `"left"`, `"right"`), `text` (replaces it; `"\n"` between lines), `frame`. On a slot, `width` (a tolerance or `True`) dimensions across it and `length` along it. A concave arc (pocket corner, fillet) gets `4× R3 ↧14`; a boss gets `⌀`/`R`.
+- Linear: `(view, p1, p2[, opts])`, 3D points or one-item selections. Opts: `along` (`"h"`, `"v"`, `"aligned"`), `tol`, `text` (replaces the value), `label` (follows it: `2.86 ROOT`), `offset` (mm), `side`.
+- A feature: `([view,] faces[, opts])`. Cylindrical faces or circular edges give a hole or slot its own callout, in `view` or the best one. Opts: `tol`, `side` (`"top"`, `"bottom"`, `"left"`, `"right"`), `text` (replaces it; `"\n"` between lines), `label`, `frame`. On a slot, `width` (a tolerance or `True`) dimensions across it and `length` along it. A concave arc (pocket corner, fillet) gets `4× R3 ↧14`; a boss gets `⌀`/`R`.
 - A planar face (`faces.top()`, `.largest()`) takes only `frame`.
 - `frame`: a string or a list. Form: `flatness`, `straightness`, `circularity`, `cylindricity`. With datums: `parallel`, `perpendicular`, `angularity`, `position`, `concentricity`, `symmetry`, `runout`, `total runout`, `profile`. Write `⌀` for a cylindrical zone and `M`/`L` for MMC/LMC, e.g. `"position ⌀0.1 M A B C"`.
 - `datums={"A": faces}`: a planar face gets a datum triangle; a hole or bore hangs its tag under its callout. A frame must name defined datums.
@@ -56,6 +56,10 @@ outputs.drawing("block", part, title="Block",
 ```
 
 `sheets` takes a list of `{"views", "sheet", "scale", "callouts"}`. This gives one multi-page PDF titled by the drawing, with "A3 1/2" in each title block. `callouts`: a side for all, `{"top": "bottom"}` per view, or `"none"` (per view too) to leave a view's automatic callouts to another.
+
+## Several parts, a table
+
+`outputs.drawing("family", {"B-40": b40, "B-60": b60}, dims={"B-60": [...]}, table=[{"Part": "B-40", "L": 40}, ...])` draws each part on its own sheets, titled by its name; `dims`, `datums`, `tol`, `info` keyed by part name go to that part. `table` (dicts, or lists, header first) adds a last sheet; it takes the notes, as it does for several parts.
 
 ## Title block, notes, revisions
 
