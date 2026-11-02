@@ -188,7 +188,8 @@ class Selection:
         return len(self.items)
 
     def __iter__(self):
-        return iter(self.items)
+        """Each item as a selection of one (``for f in part.faces: f.id, f.info()``)."""
+        return (self._new([x]) for x in self.items)
 
     def __bool__(self) -> bool:
         return bool(self.items)
@@ -280,6 +281,14 @@ class Selection:
     def ids(self) -> list[int]:
         """Stable ids of the items in the owner (``f3`` is face id 3)."""
         return self.owner._ids(self.kind, self.items)
+
+    @property
+    def id(self) -> int:
+        """The id of a selection of one (``for f in part.faces: f.id``)."""
+        if len(self.items) != 1:
+            raise TuleError(f"id is one {self.kind}'s; this selection has {len(self.items)}", op="select",
+                            hint="ids lists them all; for f in part.faces gives one at a time")
+        return self.ids[0]
 
     def one(self):
         if len(self.items) != 1:
