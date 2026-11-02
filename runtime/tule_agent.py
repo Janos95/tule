@@ -52,6 +52,7 @@ import stat
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 import websockets
@@ -268,7 +269,7 @@ class Outputs:
         if not rel.startswith(tuple(r + "/" for r in self.ROOTS)):
             rel = "outputs/" + rel  # a page from before paths were relative to /workspace
         path = resolve(self.root, rel)  # as files.read: no "..", no symlinks out of /workspace
-        return self.cached(digest, lambda: encode_mesh(path))
+        return self.cached(digest, lambda: mesh_apart(path))
 
     def cached(self, key: str, make) -> bytes:
         if key in self.meshes:
@@ -278,6 +279,38 @@ class Outputs:
             self.meshes.pop(next(iter(self.meshes)))
         self.meshes[key] = data
         return data
+
+
+_pool = None
+_pool_lock = threading.Lock()
+MESH_SECONDS = 900
+
+
+def mesh_apart(path: str) -> bytes:
+    """encode_mesh in worker processes: a file that crashes OpenCascade (or never finishes)
+    fails that one request instead of taking the machine's agent down with it."""
+    global _pool
+    import concurrent.futures as cf
+    import multiprocessing as mp
+    from concurrent.futures.process import BrokenProcessPool
+
+    with _pool_lock:
+        if _pool is None:
+            _pool = cf.ProcessPoolExecutor(max_workers=2, mp_context=mp.get_context("spawn"))
+        pool = _pool
+    name = os.path.basename(path)
+    try:
+        return pool.submit(encode_mesh, path).result(timeout=MESH_SECONDS)
+    except (BrokenProcessPool, cf.TimeoutError) as e:
+        with _pool_lock:
+            if _pool is pool:
+                _pool = None
+        for p in list(getattr(pool, "_processes", {}).values()):  # a stuck one too
+            p.kill()
+        pool.shutdown(wait=False, cancel_futures=True)
+        if isinstance(e, cf.TimeoutError):
+            raise RuntimeError(f"{name} took over {MESH_SECONDS // 60} minutes to show; make it lighter (fewer faces, or STL)") from None
+        raise RuntimeError(f"reading {name} crashed OpenCascade (the machine is fine); check it with tule inspect, or write it again") from None
 
 
 def encode_mesh(path: str) -> bytes:
