@@ -133,7 +133,8 @@ def load_items(path: str) -> list[tuple[str, object]]:
     if ext == ".stl":
         return [(base, read_stl(path))]
     if ext not in (".step", ".stp"):
-        raise CliError(f"{path}: unsupported file type {ext or '(none)'}; use STEP or STL")
+        raise CliError(f"{path}: unsupported file type {ext or '(none)'}; use STEP, STL or a PDF"
+                       + ("; read an image directly" if ext in (".png", ".jpg", ".jpeg", ".svg") else ""))
     _need_tule()
     from tule import Assembly, import_step
 
@@ -516,6 +517,8 @@ def cmd_screenshot(args):
         argv += ["--frame", str(args.frame)] if args.frame is not None else []
         argv += ["--field", args.field] if args.field else []
         return remote(args, argv, None if args.o == "-" else args.o)
+    if args.output and not args.file and os.path.splitext(args.output)[1].lower() in (".pdf", ".png", ".jpg", ".jpeg", ".svg"):
+        args.file, args.output = os.path.join(outputs_root(), args.output), None  # --output drawing/drawing.pdf
     if args.file and args.file.lower().endswith(".pdf"):  # a drawing: its page as the sheet looks
         return _pdf_page(args)
     try:

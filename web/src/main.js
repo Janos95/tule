@@ -347,12 +347,12 @@ function views(o) {
   // (a set of parts with their drawings opens on the first drawing); data beside a model (motion.csv, plate.gcode)
   // and motions and plates open on the 3D
   const moving = o.meta?.kind === "sequence" || o.meta?.frames || o.meta?.plate;
-  const named = o.files.length && !moving && (o.docs.find((f) => ["document", "pdf", "dxf"].includes(f.type) && base(f.file) === o.name.split("/").pop()) ?? drawn(o)[0]);
+  const named = o.files.length && !moving && (o.docs.find((f) => readme(f) || (["document", "pdf", "dxf"].includes(f.type) && base(f.file) === o.name.split("/").pop())) ?? drawn(o)[0]);
   if (o.files.length && !named) v.push({ id: "3d", label: "3D", type: "geometry" });
-  // the file named after the output first (parts-list/parts-list.csv), then documents; beside a model,
-  // files with no view of their own (an STL, a .3mf) are only in Download
-  // (a README beside the data opens before a CSV that happens to share the folder's name)
-  const rank = (f) => (/^readme\.md$/i.test(f.file) ? 0 : f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop() ? 1 : ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(f.type) + 2 || 10);
+  // a README first; beside a model, files with no view of their own (an STL, a .3mf) are only in Download
+  // then by type, a document before a table; the one named after the output first among its type
+  const order = ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"];
+  const rank = (f) => (readme(f) ? 0 : 2 * ((order.indexOf(f.type) + 1) || 10) + (base(f.file) === o.name.split("/").pop() ? 0 : 1));
   const docs = o.docs.filter((f) => !sheetSvg(o, f)).sort((a, b) => rank(a) - rank(b));
   for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) {
     v.push({ id: f.file, label: f.file, type: f.type, f });
@@ -368,6 +368,8 @@ const viewOf = (o) => {
 };
 
 const base = (file) => file.replace(/\.[^.]*$/, "");
+/** The page to read first: README.md, START-HERE.md, 00-upload-these.md. */
+const readme = (f) => f.type === "document" && /^((\d+[-_ ]*)?(readme|start[-_ ]?here)\b|0+[-_ ])[^/]*\.md$/i.test(f.file);
 /** The drawings (PDFs) named like the entry's models: a set of parts, each with its drawing. */
 const drawn = (o) => o.docs.filter((d) => d.type === "pdf" && o.files.some((f) => base(f.file) === base(d.file)));
 
@@ -479,8 +481,12 @@ function renderList() {
 const groupOpen = new Map();
 const groupOf = (o) => (o.root === "outputs" && o.name.includes("/") ? o.name.split("/")[0] : null);
 
+// "01-printing" sorts before "02-checks" and shows as "printing": a number in front orders, it is not a name
+const shown = (n) => n.replace(/^\d+[-_. ]+(?=\S)/, "");
+
 function fill(list, entries) {
   list.textContent = "";
+  entries = [...entries].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   // each group's members right after its row, where the group first appears
   const order = [];
   for (const o of entries) {
@@ -500,7 +506,7 @@ function fill(list, entries) {
     h.className = "output group" + (open ? " open" : "");
     h.setAttribute("aria-expanded", String(open));
     h.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${ICONS.folder}</svg><span class="output-name"></span><small></small><svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>`;
-    h.children[1].textContent = group;
+    h.children[1].textContent = shown(group);
     const bad = members.filter((o) => ["error", "warning"].includes(fact(o)[1])).length;
     h.children[2].textContent = bad ? `${bad} to check` : String(members.length);
     if (bad) h.children[2].dataset.tone = "warning";
@@ -530,7 +536,7 @@ function entry(list, o, group = null) {
     const foldable = vs.length > 1 || tree;
     const open = foldable && selected && !folded.has(o.id);
     b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${iconOf(o)}</svg><span class="output-name"></span><small></small>${foldable ? '<svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>' : ""}`;
-    b.children[1].textContent = group ? o.name.slice(group.length + 1) : o.name;
+    b.children[1].textContent = shown(group ? o.name.slice(group.length + 1) : o.name);
     if (group) b.classList.add("in-group");
     b.children[2].textContent = text;
     if (tone) b.children[2].dataset.tone = tone;

@@ -198,7 +198,7 @@ Read the message, change the input, rerun (`tule docs occt`).
 
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output: geometry files, an optional `output.json`, other files. `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it at once.
+The viewer shows `/workspace/outputs/` (and `work/`, `inputs/`): a folder per output: geometry, an optional `output.json`, other files. `src/<name>.py` writes `outputs/<name>/`; the user sees it at once.
 
 ```
 outputs/
@@ -209,7 +209,7 @@ outputs/
   print/           output.json lid.step print.3mf     a print plate: one 3MF, every part (no STLs)
 ```
 
-Geometry: STEP (faces, names, colors, tags travel inside; prefer it) or STL (meshes).
+Geometry: STEP (faces, names, colors, tags travel inside; prefer it) or STL.
 
 ## Writing them
 
@@ -222,11 +222,8 @@ part = box(40, 20, 5).named("plate", "#4a8")
 part = part.tag("load", part.faces["top"]).tag("fixed", part.faces["left"])
 outputs.part("plate", part)                              # outputs/plate/plate.step
 outputs.assembly("stack", [part, box(10).at(0, 0, 5).named("block", "#d33")])
-with outputs.sequence("grow", "Growing a block") as seq: # status "running" until the block ends
-    for i in range(1, 4):
-        seq.add(box(10, 10, i * 5), label=f"step {i}", height=i * 5)
-with outputs.sequence("tilt") as seq:  # motion: make parts once, move them per frame (.at, .rotate):
-    for a in range(0, 91, 10):         # a frame then stores placements only
+with outputs.sequence("tilt") as seq:  # "running" until the block ends; motion: make parts once,
+    for a in range(0, 91, 10):         # move them per frame (.at, .rotate): a frame stores placements
         seq.add([part, part.rotate(y=-a).at(40, 0, 5)], label=f"{a} deg", angle=a)
 outputs.plate("print", [part, ("pin", box(10), {"copies": 4})], settings={"walls": 3})
 outputs.overlay("plate-loads", part, title="Load case 1",
@@ -236,6 +233,8 @@ outputs.overlay("plate-loads", part, title="Load case 1",
 ```
 
 Other tools write into `outputs.folder()` directly: temporary name, `os.replace`, `output.json` last.
+
+A long list: group from the start. `src/checks/fit.py` makes `outputs/checks/fit/`, folded under "checks"; a number in front orders, unshown (`src/01-print.py`: "print", first).
 
 ## `output.json`
 
@@ -276,7 +275,7 @@ with open(f"{d}/mass.vl.json", "w") as f:
                             "y": {"field": "mass_g", "type": "quantitative"}}}, f)
 ```
 
-No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it.
+No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it. In a folder, a `README.md` (or `00-…md`) opens first.
 
 ## Looking at outputs yourself
 
@@ -285,6 +284,6 @@ tule screenshot -o /tmp/v.png --output bracket --labels      # f12 · load on ev
 tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
 ```
 
-Read the PNG; it lists faces labeled, too small to label, or hidden. A sequence shows its last frame (`--frame 3`: the third).
+The PNG lists faces labeled, too small to label, or hidden. A sequence shows its last frame (`--frame 3`).
 
 Outputs are not in git (`tule build` remakes them).
