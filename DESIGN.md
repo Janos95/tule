@@ -602,9 +602,26 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   its motor plate drawings with reportlab, for tolerances, counterbore/slot
   callouts, notes and revision. Symbols Helvetica lacks (⌴ ⌵ ↧) are drawn as
   strokes. PDF, SVG and DXF are written by hand (no new dependencies) and
-  have no dates, so an unchanged part gives the same bytes. Not done: section
-  views, detail views, surface finish and GD&T symbols, hole tables, hole
-  patterns (bolt circles) found automatically, threads (an agent writes
+  have no dates, so an unchanged part gives the same bytes. Then QA r4-l2
+  (split-clamp shaft supports on A3) monkey-patched the private planner to
+  move a callout, saw `tol={"⌀5.5": ...}` land on unrelated holes of the
+  same size, leaders run through the view and cross, and a hole into the
+  clamp slit called THRU. So: a feature is picked by its faces in `dims`
+  (`("right", part.faces.cylindrical(r=2.75), {"tol", "side", "text"})`) and
+  gets its own callout; a `tol` key that would land on two different
+  features is an error pointing there; `callouts=` sets a side per view;
+  each callout picks the side whose leader crosses the fewest lines, and
+  leaders may not cross each other (`collisions` reports it). THRU is
+  decided by rays past each end of the hole (open at both ends, or the
+  depth). Sections: `("front", point)` in `views` cuts the part with a box
+  on the viewer's side, hatches the cut faces at 45°, titles it A-A and
+  draws the cut line with arrows on a view that sees the plane edge-on;
+  only features the plane cuts are called out there. A fixed scale that
+  does not fit names the largest ratio that does (1.5:1, 2.5:1, ...), the
+  largest ISO one, and the next sheet. The drawing docs moved to their own
+  topic (`tule docs drawings`). Not done: detail views, half and offset
+  sections, surface finish and GD&T symbols, hole tables, bolt circles
+  found automatically, threads found from the model (the agent writes
   `M5` as callout text).
 - Later: variants side by side.
 
