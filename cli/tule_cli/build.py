@@ -111,14 +111,25 @@ def orphans(root: str) -> list[str]:
     return sorted(n for n in names if n not in have)
 
 
-def env_stamp() -> dict:
-    try:
-        from importlib.metadata import version
+_LIB = None
 
-        tule = version("tule")
-    except Exception:
-        tule = "none"
-    return {"format": FORMAT, "tule": tule, "python": "%d.%d" % sys.version_info[:2]}
+
+def env_stamp() -> dict:
+    """What a build ran with: a fix in the tule library rebuilds what it made (its files' hash, not
+    its version number, which a new machine image need not change)."""
+    global _LIB
+    if _LIB is None:
+        try:
+            import importlib.util
+
+            d = os.path.dirname(importlib.util.find_spec("tule").origin)
+            h = hashlib.sha256()
+            for f in sorted(x for x in os.listdir(d) if x.endswith(".py")):
+                h.update(f.encode() + b"\0" + open(os.path.join(d, f), "rb").read())
+            _LIB = h.hexdigest()[:16]
+        except Exception:
+            _LIB = "none"
+    return {"format": FORMAT, "tule": _LIB, "python": "%d.%d" % sys.version_info[:2]}
 
 
 def stamp(path: str) -> list | None:
