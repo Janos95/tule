@@ -50,6 +50,44 @@ tule inspect outputs/bracket/bracket.step                 # tags: load f.., fixe
 
 Tell the user to check `bracket-loads` in the viewer; once confirmed, `tule save`, then optimize (`tule docs topopt`).
 
+## Motion study, checked
+
+"A pinion drives a wheel: does it run free?" Check every motion (and assembly) before presenting it.
+
+`src/gears-motion.py` makes each part once and moves it per frame:
+
+```python
+from tule import *
+
+pair = gear_pair(1.5, 20, 30, backlash=(0.05, 0.05))
+pinion = spur_gear(1.5, 20, 8, bore=6, backlash=0.05).named("pinion", "#4a8")
+wheel = spur_gear(1.5, 30, 8, bore=6, backlash=0.05).named("wheel", "#48d")
+shaft = cylinder(3, 20).at(0, 0, -6).named("shaft", "#aaa")
+plate = (box(70, 40, 4).at(-15, -20, -6) - cylinder(3, 20, center=True)).named("plate", "#888")
+with outputs.sequence("gears-motion", "One tooth of mesh") as seq:
+    for i in range(13):                       # a fraction of a tooth per frame
+        t = i * 360 / 20 / 12
+        seq.add([plate, shaft, pinion.rotate(z=t), pair.place(wheel, turn=t)], label=f"{t:.1f} deg", angle=t)
+```
+
+`src/gears-clearance.py` checks every frame of it:
+
+```python
+from tule import *
+
+r = clearance("outputs/gears-motion", contacts=[("shaft", "*"), ("pinion", "wheel")], below=0.5)
+print(r)                    # worst first: clashes, gaps under 0.5 mm, then the contacts you listed
+r.show("gears-clearance")   # the worst frame with its faces marked, and the table
+assert r.ok, r.clashes
+```
+
+```sh
+tule build                                               # gears-motion first: gears-clearance reads it
+tule screenshot -o /tmp/c.png --output gears-clearance   # read it
+```
+
+List what is meant to touch (meshing gears, a pin in its bore, a slider on its rail) in `contacts`. Fix every clash, then show the user `gears-motion` and the smallest gap.
+
 ## Run a study on a GPU
 
 1. `tule save`, then load the project on a GPU machine too (it starts from the latest save): `tule up --machine gpu-rtx4090`, or the connector's `machine_start` with `gpu-<type>`. It costs the user's RunPod balance: say so and stop it when done.

@@ -33,9 +33,10 @@ from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 
 
+from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS_Shape
 
-from ._occ import ShapeSet, from_list, kind_of, shape_list, static, subshapes
+from ._occ import ShapeSet, cast, from_list, kind_of, shape_list, static, subshapes
 from .errors import OCC_ERRORS, TuleError
 from .geom import Vec, VecLike, from_pnt, gdir, pnt, translation, vec, xyz_rotation
 from .selection import SELECTION_TYPES, Edges, Faces, Selection, Vertices
@@ -106,10 +107,24 @@ def _tag_aliases(*shapes: "Shape") -> dict:
     return out
 
 
+class _Moved:
+    """A moved shape's groups, moved when first read: a motion study's frames never read them."""
+
+    __slots__ = ("groups", "loc")
+
+    def __init__(self, groups, loc: TopLoc_Location):
+        if isinstance(groups, _Moved):  # moved again: one placement for both
+            groups, loc = groups.groups, loc.Multiplied(groups.loc)
+        self.groups, self.loc = groups, loc
+
+    def resolve(self) -> Groups:
+        return {k: tuple(cast(s.Moved(self.loc)) for s in v) for k, v in self.groups.items()}
+
+
 class Shape:
     """An immutable solid (or compound) with tags, provenance and metadata."""
 
-    __slots__ = ("_s", "_groups", "_alias", "name", "color", "_cache", "_sm")
+    __slots__ = ("_s", "_g", "_alias", "name", "color", "_cache", "_sm")
 
     def __init__(
         self,
@@ -121,7 +136,7 @@ class Shape:
         sm=None,
     ):
         self._s = shape
-        self._groups: Groups = dict(groups or {})
+        self._g = groups if isinstance(groups, _Moved) else dict(groups or {})
         self._alias: dict = dict(alias or {})
         self.name = name
         self.color = color
@@ -129,6 +144,12 @@ class Shape:
         self._sm = sm  # sheet metal: thickness, bend radius, K-factor (tule.sheetmetal)
 
     # ------------------------------------------------------------ basics
+    @property
+    def _groups(self) -> Groups:
+        if isinstance(self._g, _Moved):
+            self._g = self._g.resolve()
+        return self._g
+
     @property
     def wrapped(self) -> TopoDS_Shape:
         """The underlying OCCT shape."""
@@ -146,10 +167,10 @@ class Shape:
 
     def named(self, name: str, color: str | None = None) -> "Shape":
         """The same shape with a part name and (optionally) a color like ``"#4a8"``."""
-        return Shape(self._s, self._groups, self._alias, name, color or self.color, self._sm)
+        return Shape(self._s, self._g, self._alias, name, color or self.color, self._sm)
 
     def colored(self, color: str) -> "Shape":
-        return Shape(self._s, self._groups, self._alias, self.name, color, self._sm)
+        return Shape(self._s, self._g, self._alias, self.name, color, self._sm)
 
     def __repr__(self) -> str:
         n = f" {self.name!r}" if self.name else ""
@@ -340,9 +361,13 @@ class Shape:
 
     # ------------------------------------------------------------ transforms
     def _apply_trsf(self, t: gp_Trsf, copy: bool = False) -> "Shape":
-        b = BRepBuilderAPI_Transform(self._s, t, copy)
-        res = b.Shape()
-        out = self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
+        if copy:
+            b = BRepBuilderAPI_Transform(self._s, t, True)
+            res = b.Shape()
+            out = self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
+        else:  # a rigid move: the same solid, placed (as BRepBuilderAPI_Transform does), its groups when read
+            loc = TopLoc_Location(t)
+            out = self._derive(self._s.Moved(loc), _Moved(self._g, loc))
         if self._sm is not None:
             from .sheetmetal import moved
 
@@ -613,13 +638,15 @@ class Shape:
 
     def distance(self, other: "Shape") -> float:
         """The smallest gap to ``other``; 0 when they touch or overlap."""
-        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+        return self.closest(other)[0]
 
-        d = BRepExtrema_DistShapeShape(self._s, other._s)
-        d.Perform()
-        if not d.IsDone():
-            raise TuleError("could not measure the distance", op="distance")
-        return 0.0 if d.InnerSolution() else max(0.0, d.Value())
+    def closest(self, other: "Shape") -> tuple[float, Vec, Vec]:
+        """``(gap, point on self, point on other)``: the closest points. Touching or overlapping: 0 and
+        a point where they meet (inside both when one holds the other)."""
+        from .clearance import _extrema
+
+        gap, p, q = _extrema(self._s, other._s, threads=True)
+        return gap, Vec(*p), Vec(*q)
 
     @property
     def center_of_mass(self) -> Vec:

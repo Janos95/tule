@@ -6,10 +6,10 @@
 from tule import *
 
 plate = rect(80, 40, center=True).round(5).extrude(6)
-plate = plate.tag("mount", plate.faces["bottom"])        # tags survive later operations
+plate = plate.tag("mount", plate.faces["bottom"])      # tags survive later operations
 boss = circle(9).extrude(12).at(0, 0, 6)
-part = (plate | boss).fillet(boss.edges["bottom"], 2)    # the boss's edge, found after the union
-part -= cylinder(3.2, 50, center=True)                   # through hole
+part = (plate | boss).fillet(boss.edges["bottom"], 2)  # the boss's edge, found after the union
+part -= cylinder(3.2, 50, center=True)                 # through hole
 part = part.tag("load", part.faces.top()).named("bracket", "#4a8")
 print(part, part.tags, part.size, round(part.mass(0.0027), 1), "g")
 outputs.part("bracket", part)
@@ -29,7 +29,8 @@ outputs.part("bracket", part)
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)`.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
-- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching). `asm.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`, `asm.gaps(below=0.5)` closer ones: run them on every frame of a motion study (gears: step by a fraction of a tooth, or every frame checks the same mesh phase).
+- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching), `a.closest(b)`: `(gap, pa, pb)`.
+- Clearance: `r = clearance(frames, contacts=[("pin", "link")])`: an assembly or each pose of a motion (Assemblies, or their `outputs.sequence`); every overlap or gap under `below=0.5` mm at its worst frame, exact, in seconds. `print(r)`, `r.show("arm-clearance")`, `assert r.ok`. Gears: step a fraction of a tooth, or each frame checks the same mesh phase.
 - Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference, then `pair.place(gear2, angle=)` meshes gear 2 at `pair.distance`. Bevel: `pair = bevel_pair(module, z1, z2, width, shaft_angle=90)` meshes `pair.gear1`, `pair.gear2`; `pair.place(bevel_gear(..., mating_teeth=z1), turn=)`.
 - Sheet metal (flanges, flats): `tule docs sheetmetal`.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
@@ -42,16 +43,16 @@ Select with queries on the current shape, never by index:
 from tule import *
 
 part = box(60, 40, 20, center=True)
-part = part.fillet(part.edges.parallel(Z), 4)                 # the four vertical edges
+part = part.fillet(part.edges.parallel(Z), 4)  # the four vertical edges
 part -= cylinder(3, 50, center=True).at(20, 10, 0)
-top = part.faces.planar().normal(+Z)                          # planar faces facing up
-hole = part.faces.cylindrical(r=3)                            # by radius
-rim = part.edges.circles(r=3).top()                           # the hole's top edge
-print(top.ids, hole.info())                                   # stable ids (f12 in the viewer) and facts
-part = part.chamfer(rim, 0.5)                                 # ids change: select again after each operation
+top = part.faces.planar().normal(+Z)           # planar faces facing up
+hole = part.faces.cylindrical(r=3)             # by radius
+rim = part.edges.circles(r=3).top()            # the hole's top edge
+print(top.ids, hole.info())                    # stable ids (f12 in the viewer) and facts
+part = part.chamfer(rim, 0.5)                  # ids change: select again after each operation
 ```
 
-Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`, `top()`/`bottom()` (along an axis), `within(lo, hi)`, `nearest(point)`, `sort_by(axis)`, `filter(fn)`; edges also `lines()`, `circles(r=)`, `parallel(axis)`, `perpendicular(axis)`, `on(faces)`, `longest()`. Combine with `| & -`. Seam edges are never selected. `part.face(12)` is face `f12` as shown by `tule screenshot --labels` and `tule inspect`.
+Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`, `top()`/`bottom()` (along an axis), `within(lo, hi)`, `nearest(point)`, `sort_by(axis)`, `filter(fn)`; edges also `lines()`, `circles(r=)`, `parallel(axis)`, `perpendicular(axis)`, `on(faces)`, `longest()`. Combine with `| & -`. Seam edges are never selected. `part.face(12)` is `f12` in `tule screenshot --labels` and `tule inspect`.
 
 ## Roles and tags
 
@@ -73,7 +74,7 @@ part = box(20, 20, 4)
 try:
     part = part.fillet(part.edges.parallel(Z), 15)
 except TuleError as e:
-    print(e)                                                  # …; largest radius that works ≈ 9.99
+    print(e)    # …; largest radius that works ≈ 9.99
     part = part.fillet(part.edges.parallel(Z), 0.9 * e.data["max_radius"])
 ```
 
