@@ -14,6 +14,8 @@
 //   POST /api/projects/<name>/join            a join token for a machine started elsewhere
 //   POST /api/projects/<name>/snapshot        save /workspace now
 //   POST /api/projects/<name>/restore         {"id": "..."}
+//   POST /api/projects/<name>/save            {"machine", "message"}: commit, merge other saves, push
+//   POST /api/projects/<name>/forget          {"machine"}: drop a stopped copy and its unsaved work
 //   GET  /api/projects/<name>/snapshots       newest first; /snapshots/<id> is a manifest
 //   GET  /api/projects/<name>/blobs/<sha256>  a chunk of a snapshot (the viewer's history)
 //   GET  /api/projects/<name>/outputs         the outputs index
@@ -338,7 +340,7 @@ async function projectRows(env: Env, user: User): Promise<ProjectRow[]> {
       const s = await ops.projectStub(env, p.id).status();
       const machines = (s.machines as MachineRow[]).map((m) => {
         const sp = m.computer ? specs.get(m.computer) : undefined;
-        return { ...m, os: sp?.os ? String(sp.os) : undefined, gpus: Array.isArray(sp?.gpus) ? sp.gpus.map(String) : [] };
+        return { ...m, os: sp?.os ? String(sp.os) : undefined, gpus: Array.isArray(sp?.gpus) ? sp.gpus.filter((g): g is string => typeof g === "string") : [] };
       });
       return { ...p, machines };
     }),
@@ -486,6 +488,9 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (path === "/authorize") return authorize(req, env, url, user);
   if (path.startsWith("/api/")) {
     if (!user) return error("not signed in", 401, "run tule login (or send an API key as 'Authorization: Bearer tule_...')");
+    // SameSite=Lax still sends the session cookie from sibling subdomains: a browser's POST or
+    // WebSocket must come from Tule's own pages (the CLI sends no Origin)
+    if ((req.method !== "GET" || req.headers.has("Upgrade")) && !sameOrigin(req, url)) return error("that request did not come from Tule", 403);
     return userApi(req, env, url, user, origin);
   }
   if (path === "/") {

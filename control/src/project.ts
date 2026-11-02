@@ -99,9 +99,12 @@ export const gitKey = (p: string, id: string) => `projects/${p}/git/${id}.bundle
 export const lfsKey = (p: string, oid: string) => `projects/${p}/lfs/${oid}`;
 type Result = Record<string, unknown>;
 
+/** r[k] for an own key only: names come from requests, and "__proto__" or "constructor" are no machine. */
+const own = <T>(r: Record<string, T>, k: string): T | undefined => (Object.hasOwn(r, k) ? r[k] : undefined);
+
 /** The slot a machine name runs in. */
 export function slotOf(machine: string): { id: string; kind: Kind } {
-  if (MACHINES[machine]) return { id: "cloud", kind: "cloud" };
+  if (own(MACHINES, machine)) return { id: "cloud", kind: "cloud" };
   if (machine.startsWith("gpu-")) return { id: machine, kind: "gpu" };
   if (machine === "joined" || machine === "external") return { id: "joined", kind: "joined" };
   return { id: machine, kind: "computer" };
@@ -199,7 +202,7 @@ export class Project extends DurableObject<Env> {
   /** The slot a request means: the one named, else the only connected one (else an error that lists them). */
   pick(slot?: string): { slot: string } | { error: string; hint?: string } {
     if (slot) {
-      const s = this.machines[slot] ? slot : this.machines[slotOf(slot).id] ? slotOf(slot).id : "";
+      const s = own(this.machines, slot) ? slot : own(this.machines, slotOf(slot).id) ? slotOf(slot).id : "";
       if (!s) return { error: `the project is not loaded on ${slot}`, hint: `loaded on: ${this.onNames() || "nothing"}` };
       return { slot: s };
     }
@@ -342,11 +345,11 @@ export class Project extends DurableObject<Env> {
     const owner = this.state.owner ? await this.accounts().user(this.state.owner) : null;
     if (owner?.guest && machine !== "cpu-1") return { error: `guests can use cpu-1 machines only`, hint: "sign in for bigger machines and GPUs" };
     if (machine.startsWith("gpu-")) return this.upGpu(machine, origin);
-    if (!MACHINES[machine] && this.state.owner) {
+    if (!own(MACHINES, machine) && this.state.owner) {
       const h = await this.accounts().host(this.state.owner, machine);
       if (h) return this.upHost(h, origin);
     }
-    const instance = MACHINES[machine];
+    const instance = own(MACHINES, machine);
     if (!instance)
       return { error: `unknown machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(MACHINES).join(", ")}, gpu-<type> (${Object.keys(GPUS).map((g) => `gpu-${g}`).join(", ")}), or one of your computers (tule hosts)` };
     const c = this.ctx.container;
@@ -427,7 +430,7 @@ export class Project extends DurableObject<Env> {
 
   /** A GPU machine: a pod on the owner's RunPod account running the CUDA image, which dials in like any machine. */
   async upGpu(machine: string, origin: string): Promise<Result> {
-    const gpu = GPUS[machine.slice(4)];
+    const gpu = own(GPUS, machine.slice(4));
     if (!gpu) return { error: `unknown GPU machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(GPUS).map((g) => `gpu-${g}`).join(", ")}` };
     if (!this.state.owner) return { error: "this project has no owner" };
     const key = await this.accounts().runpodKey(this.state.owner);
@@ -689,7 +692,7 @@ export class Project extends DurableObject<Env> {
   /** The slot a viewer looks at: its pick, else the most recently ready connected one, else the newest copy with outputs. */
   viewSlot(ws?: WebSocket): string | undefined {
     const picked = (ws?.deserializeAttachment() as { m?: string } | null)?.m;
-    if (picked && this.machines[picked]) return picked;
+    if (picked && own(this.machines, picked)) return picked;
     const live = this.connected()[0];
     if (live) return live.id;
     return Object.values(this.machines)
@@ -724,7 +727,7 @@ export class Project extends DurableObject<Env> {
     } else if (what === "view") {
       this.ctx.acceptWebSocket(server, ["view"]);
       const m = url.searchParams.get("machine");
-      server.serializeAttachment({ m: m && this.machines[m] ? m : undefined });
+      server.serializeAttachment({ m: m && own(this.machines, m) ? m : undefined });
       await this.sendView(server, await this.status());
     } else {
       return new Response("not found\n", { status: 404 });
@@ -761,7 +764,7 @@ export class Project extends DurableObject<Env> {
         return;
       }
       if (m.t === "pick") {
-        const slot = typeof m.machine === "string" && this.machines[m.machine] ? m.machine : undefined;
+        const slot = typeof m.machine === "string" && own(this.machines, m.machine) ? m.machine : undefined;
         ws.serializeAttachment({ m: slot });
         await this.sendView(ws, await this.status());
         return;

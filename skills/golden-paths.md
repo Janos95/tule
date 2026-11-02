@@ -52,7 +52,7 @@ Tell the user to check `bracket-loads` in the viewer; once confirmed, `tule save
 
 ## Run a study on a GPU
 
-1. Switch the project to a GPU machine: connector `machines.resize` to `gpu-<type>` (e.g. `gpu-rtx4090`), or `tule up --machine gpu-rtx4090`. It costs the user's RunPod balance: say so and stop it when done.
+1. `tule save`, then load the project on a GPU machine too (it starts from the latest save): `tule up --machine gpu-rtx4090`, or the connector's `machine_start` with `gpu-<type>`. It costs the user's RunPod balance: say so and stop it when done.
 2. Check it: `nvidia-smi` and `python -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"`.
 3. Write the study so it also runs on CPU (CuPy if there is a GPU, NumPy otherwise), and report progress as a sequence output. `src/plate-study.py`:
 
@@ -80,4 +80,4 @@ nohup tule build plate-study > study.log 2>&1 &
 tail -f study.log                                        # the viewer plots stress and mass per frame
 ```
 
-4. When it is done: commit, `tule up --machine cpu-1` (or `tule down`) so the GPU stops billing, and summarize the result with numbers.
+4. When it is done: `tule save` on it, `tule down --machine gpu-rtx4090` so the GPU stops billing, and summarize the result with numbers.

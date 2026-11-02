@@ -5,7 +5,7 @@ and carries everything over it:
 
 - SSH: the Durable Object opens a stream per `tule proxy` client; the agent
   pipes it to the local sshd (127.0.0.1:22).
-- Outputs: it watches /workspace/outputs and sends an index when it changes;
+- Outputs: it watches /workspace/outputs, work/ and inputs/ and sends an index when they change;
   the viewer asks for meshes by file and content hash, which the agent
   tessellates (cached by hash).
 - Config: SSH authorized keys and the project's SSH host key come from the
@@ -47,6 +47,7 @@ import json
 import os
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -56,7 +57,7 @@ import websockets
 
 import saves
 from annotations import REQUESTS as ANNOTATION_REQUESTS
-from files import REQUESTS as FILE_REQUESTS
+from files import REQUESTS as FILE_REQUESTS, resolve
 from workspace import Api, Workspace
 
 VERSION = 1
@@ -98,7 +99,7 @@ class Outputs:
         self.build_hashes = None  # tule_cli.build.Hashes, kept so files are hashed once
 
     def _walk(self, top: str, out: list, keep=lambda rel: False):
-        """(path, size, mtime) of the files under top, without hidden ones unless keep(rel)."""
+        """(path, size, mtime) of the regular files under top, without hidden ones unless keep(rel)."""
         for d, dirs, files in os.walk(os.path.join(self.root, top)):
             rd = os.path.relpath(d, self.root)
             dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "__pycache__" or keep(os.path.join(rd, x)))
@@ -108,16 +109,18 @@ class Outputs:
                     continue
                 try:
                     st = os.stat(os.path.join(self.root, rel))
-                except FileNotFoundError:
+                except OSError:  # gone, a symlink loop, unreadable
                     continue
-                out.append((rel, st.st_size, st.st_mtime_ns))
+                if stat.S_ISREG(st.st_mode):  # not a FIFO or a link to /dev/zero: hashing would never end
+                    out.append((rel, st.st_size, st.st_mtime_ns))
 
     def _stamp(self):
         out: list = []
         build = os.path.join("outputs", ".build")
+        running = self._running()
 
         def keep(rel: str) -> bool:
-            """In outputs/.build: the records (freshness) and what tule build is making right now
+            """In outputs/.build: the records (freshness) and what a running tule build is making
             (a sequence grows there until the script ends); not the hash cache, lock or results."""
             if rel == build:
                 return True
@@ -125,7 +128,7 @@ class Outputs:
                 return False
             sub = rel[len(build) + 1:]
             if sub.startswith("stage-"):
-                return True
+                return sub.split(os.sep, 1)[0] in running
             return os.sep not in sub and sub.endswith(".json") and not sub.startswith(("hashes", "result-"))
 
         self._walk("outputs", out, keep)
@@ -160,6 +163,7 @@ class Outputs:
         path is relative to /workspace; file to the entry's folder."""
         groups: dict[tuple, dict] = {}
         staged: dict[str, dict] = {}
+        running = self._running()
         for rel, size, mtime in self.stamp or ():
             root, _, rest = rel.partition(os.sep)
             if root not in self.ROOTS:
@@ -169,7 +173,7 @@ class Outputs:
             if root == "outputs" and top == ".build":  # .build/stage-<name>-<pid>/<name>/<file>
                 stage, _, rest = rest.partition(os.sep)
                 top, _, rest = rest.partition(os.sep)
-                if not stage.startswith("stage-") or not rest:
+                if stage not in running or not rest:
                     continue
                 into = staged
             elif top.startswith("."):
@@ -185,16 +189,36 @@ class Outputs:
                 continue
             try:
                 digest = self._hash(rel, size, mtime)
-            except FileNotFoundError:
+            except OSError:
                 continue
             g["files"].append({"path": rel.replace(os.sep, "/"), "file": (rest or top).replace(os.sep, "/"), "hash": digest, "size": size})
         for (_, name), g in staged.items():  # shown instead of the last built one once it has something to show
             if any(f["file"].lower().endswith(GEOMETRY) for f in g["files"]):
                 groups[("outputs", name)] = {**g, "building": True}
-        self._freshness(groups)
+        self.hashes = {r: self.hashes[r] for r, _, _ in self.stamp or () if r in self.hashes}  # of files there are now
+        self._freshness(groups, set(running.values()))
         return [g for g in groups.values() if g["files"] or g.get("error") or g.get("build")]
 
-    def _freshness(self, groups: dict):
+    def _running(self) -> dict[str, str]:
+        """tule build's staging folders whose build is still running: {"stage-<name>-<pid>": name}
+        (one left by a killed build would otherwise show "building" for ever)."""
+        out = {}
+        try:
+            stages = [n for n in os.listdir(os.path.join(self.root, "outputs", ".build")) if n.startswith("stage-")]
+        except OSError:
+            return out
+        for n in stages:
+            name, _, pid = n[6:].rpartition("-")
+            try:
+                os.kill(int(pid), 0)
+            except PermissionError:  # alive, another user's
+                pass
+            except (ValueError, OSError):
+                continue
+            out[n] = name
+        return out
+
+    def _freshness(self, groups: dict, running: set):
         """Adds tule build's view of each output (build: {state, why?, error?, log?}) and marks
         agent work in work/ whose sources changed (file basedOn: {sources, changed})."""
         try:
@@ -211,11 +235,6 @@ class Outputs:
         except Exception as e:
             log("freshness:", repr(e))
             return
-        stage = os.path.join(self.root, "outputs", ".build")
-        try:
-            running = {n[6:].rsplit("-", 1)[0] for n in os.listdir(stage) if n.startswith("stage-")}  # stage-<name>-<pid>
-        except OSError:
-            running = set()
         for r in rows:
             g = groups.get(("outputs", r["name"]))
             state = "building" if r["name"] in running else "failed" if r.get("failed") else "stale" if r.get("why") else "ok"
@@ -226,9 +245,8 @@ class Outputs:
             g["build"] = {"state": state, "script": f"src/{r['name']}.py",
                           **{k: r[k] for k in ("why", "log") if r.get(k)}, **({"error": r["failed"]} if r.get("failed") else {})}
         for n in notes:
-            parts = n["path"].split("/")
-            name = parts[1] if len(parts) > 2 else os.path.splitext(parts[1])[0]
-            g = groups.get(("work", name))
+            top = n["path"].split("/")[1:2]  # work/<top>…, as index() groups it
+            g = top and (groups.get(("work", top[0])) or groups.get(("work", os.path.splitext(top[0])[0])))
             if not g:
                 continue
             for f in g["files"]:
@@ -238,9 +256,7 @@ class Outputs:
     def mesh(self, rel: str, digest: str) -> bytes:
         if not rel.startswith(tuple(r + "/" for r in self.ROOTS)):
             rel = "outputs/" + rel  # a page from before paths were relative to /workspace
-        path = os.path.normpath(os.path.join(self.root, rel))
-        if not any(path.startswith(os.path.join(self.root, r) + os.sep) for r in self.ROOTS):
-            raise ValueError(f"{rel}: not in outputs/, work/ or inputs/")
+        path = resolve(self.root, rel)  # as files.read: no "..", no symlinks out of /workspace
         return self.cached(digest, lambda: encode_mesh(path))
 
     def cached(self, key: str, make) -> bytes:
@@ -662,9 +678,12 @@ class Agent:
             await asyncio.sleep(0.2)
         os.makedirs(OUTPUTS, exist_ok=True)
         while True:
-            if await asyncio.to_thread(self.outputs.changed):
-                index = await asyncio.to_thread(self.outputs.index)
-                await self.send({"t": "outputs", "outputs": index})
+            try:
+                if await asyncio.to_thread(self.outputs.changed):
+                    index = await asyncio.to_thread(self.outputs.index)
+                    await self.send({"t": "outputs", "outputs": index})
+            except Exception as e:  # a bad file must not end the index for good; the next change retries
+                log("outputs index:", repr(e))
             await asyncio.sleep(0.5)
 
 

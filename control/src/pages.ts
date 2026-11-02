@@ -43,7 +43,7 @@ label{display:flex;flex-direction:column;gap:4px;font-size:14px}
 .stack{display:flex;flex-direction:column;gap:12px;max-width:520px}.row{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.row>label{flex:1;min-width:200px}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted);font-weight:500}
 .card{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--panel)}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--idle);margin-right:6px}.dot.running{background:var(--ok-fill)}.dot.starting{background:var(--warn-fill)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--idle);margin-right:6px}.dot.running{background:var(--ok-fill)}.dot.starting{background:var(--warn-fill)}.dot.failed{background:var(--danger)}
 .plist{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .pgroup{border-bottom:1px solid var(--line)}
 .prow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;padding:12px 8px;color:inherit;text-decoration:none}
@@ -131,7 +131,7 @@ export function landing(_origin: string, note = ""): Response {
 }
 
 /** A copy of the project on a machine (project.ts machineStatus). */
-export type MachineRow = { id: string; kind: string; size: string; state: string; unsaved: { files: number; commits: number } | null; gpu?: string; computer?: string; os?: string; gpus?: string[] };
+export type MachineRow = { id: string; kind: string; size: string; state: string; unsaved: { files: number; commits: number } | null; gpu?: string; computer?: string; os?: string; gpus?: string[]; lastError?: string };
 export type ProjectRow = ProjectRef & { machines: MachineRow[] };
 
 /** The last row of a list: "+ New …", which turns into a one-line field in place.
@@ -156,12 +156,20 @@ const ICONS: Record<string, string> = {
 };
 const icon = (name: string) => new Html(`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
 
-/** "RTX 4090", "2× RTX 4090": a GPU's short name, muted after the machine's name. */
+/** "RTX 4090", "2× RTX 4090, RTX 3090": GPUs by their short names, counted. */
+function gpuNames(names: unknown[]): string {
+  const n = new Map<string, number>();
+  for (const x of names) {
+    const g = typeof x === "string" ? x.replace(/^NVIDIA (GeForce )?/, "") : "";
+    if (g) n.set(g, (n.get(g) ?? 0) + 1);
+  }
+  return [...n].map(([g, k]) => (k > 1 ? `${k}× ${g}` : g)).join(", ");
+}
+
+/** A machine's GPUs, muted after its name. */
 function gpuTag(names: string[]): Html | string {
-  const short = names.map((n) => n.replace(/^NVIDIA (GeForce )?/, ""));
-  if (!short.length) return "";
-  const same = short.every((n) => n === short[0]);
-  return html`<span class="pgpu">${same && short.length > 1 ? `${short.length}× ${short[0]}` : short.join(", ")}</span>`;
+  const g = gpuNames(names);
+  return g ? html`<span class="pgpu">${g}</span>` : "";
 }
 
 /** Where a copy runs: an icon (Tule's cloud, a RunPod pod, a machine that joined with
@@ -171,14 +179,15 @@ function machineLabel(m: MachineRow): Html {
   if (m.kind === "gpu") return html`${icon("gpu")}RunPod${gpuTag([GPUS[m.id.slice(4)] ?? m.id.slice(4)])}`;
   if (m.kind === "joined") return html`${icon("plug")}other machine`;
   const os = (m.os ?? "").toLowerCase();
-  const kind = os.startsWith("darwin") ? "apple" : /microsoft|wsl/.test(os) ? "windows" : os.startsWith("linux") ? "server" : "desktop";
+  const kind = os.startsWith("darwin") ? "apple" : /^windows|microsoft|wsl/.test(os) ? "windows" : os.startsWith("linux") ? "server" : "desktop";
   return html`${icon(kind)}${m.computer ?? m.id}${gpuTag(m.gpus ?? [])}`;
 }
 
 const isDirty = (m: MachineRow) => !!m.unsaved && m.unsaved.files + m.unsaved.commits > 0;
 
-/** "running", "starting", "running · unsaved", "stopped · unsaved". */
+/** "running", "starting", "running · unsaved", "stopped · unsaved", "failed to start". */
 function machineState(m: MachineRow): Html {
+  if (m.state === "stopped" && m.lastError) return html`<span class="dot failed"></span><span title="${m.lastError}">failed to start</span>`;
   const tail = m.state !== "starting" && isDirty(m) ? html` · <span class="unsaved">unsaved</span>` : "";
   return html`<span class="dot ${m.state}"></span>${m.state}${tail}`;
 }
@@ -196,7 +205,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
           (p) => html`<div class="pgroup"><a class="prow" href="/p/${p.name}">
             <span class="pname">${p.name}</span>
             <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>
-            ${p.machines.filter((m) => m.state !== "stopped" || isDirty(m)).map(
+            ${p.machines.map(
               (m) => html`<a class="prow sub" href="/p/${p.name}?machine=${encodeURIComponent(m.id)}">
               <span class="pmachine">${machineLabel(m)}</span><span class="pstate">${machineState(m)}</span></a>`,
             )}</div>`,
@@ -269,8 +278,9 @@ export function settingsPage(user: User, d: SettingsData): Response {
   const u = d.usage;
   const rp = d.runpod;
   const spec = (s: unknown) => {
-    const x = (s ?? {}) as { cpus?: number; memoryGb?: number; gpus?: string[]; arch?: string };
-    return [x.cpus ? `${x.cpus} cores` : "", x.memoryGb ? `${x.memoryGb} GB` : "", ...(x.gpus ?? []), x.arch ?? ""].filter(Boolean).join(" · ");
+    const x = (s ?? {}) as { cpus?: number; memoryGb?: number; gpus?: unknown; arch?: string };
+    const gpus = Array.isArray(x.gpus) ? gpuNames(x.gpus) : "";
+    return [x.cpus ? `${x.cpus} cores` : "", x.memoryGb ? `${x.memoryGb} GB` : "", gpus, x.arch ?? ""].filter(Boolean).join(" · ");
   };
   const install = (key: string) => `curl -fsSL ${d.origin}/install.sh | sh -s -- ${key}`;
   const gpu = u.gpuHours ? ` · ${u.gpuHours} h this month${u.gpuCost ? ` (about $${u.gpuCost.toFixed(2)})` : ""}` : "";

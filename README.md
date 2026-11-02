@@ -16,8 +16,8 @@ By hand:
 ```sh
 curl -fsSL https://tule.janosmeny.com/cli.sh | sh    # installs the CLI; approve the sign-in in the browser
 tule new bracket && tule up -p bracket
-tule ssh -p bracket -- python - < examples/bracket.py
-tule open -p bracket                  # the viewer shows outputs/bracket
+tule build -p bracket                 # runs the template's src/part.py on the machine
+tule open -p bracket                  # the viewer shows outputs/part
 tule save -p bracket -m "First bracket"   # commit and push the project's git history
 ```
 

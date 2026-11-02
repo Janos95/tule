@@ -85,7 +85,8 @@ Tule does not run or bill for an agent. Users bring their own.
    project for a camera bracket"); both call the same control plane.
 
 Then the agent works: it loads the project on a machine, connects over SSH,
-models, writes results to `outputs/`, and the user watches in the viewer.
+writes scripts in `src/`, builds `outputs/` with `tule build`, and the user
+watches in the viewer.
 
 ## Architecture
 
@@ -108,7 +109,7 @@ models, writes results to `outputs/`, and the user watches in the viewer.
                                      └───────────────▲─────────────────────────┘
                                                      │ WSS, dialed OUT by the machine
                                   ┌──────────────────┴───────────────────┐
-                                  │ project machine (one at a time)      │
+                                  │ machines (several per project)       │
                                   │  tule-agent · sshd · /workspace      │
                                   │  Python, OCP/OCCT, tule, numpy/scipy │
                                   │  backend: Cloudflare Containers (CPU)│
@@ -217,10 +218,11 @@ where it runs:
    only new bytes move), and tells the viewer when `outputs/` changes.
 4. On stop it takes a final snapshot.
 
-**Switching machines** (`tule up --gpu rtx4090` or the `machines.resize`
-tool): the Project Durable Object asks the current machine to snapshot and
-stop, provisions the new one, and routes SSH there once its agent dials in.
-The agent sees one project whose machine got bigger.
+**Another machine** (`tule up --machine gpu-rtx4090`, the `machine_start`
+tool) loads the project there too, with its own copy (see "Several machines
+per project, saves in git"). Resizing the Tule cloud machine (`cpu-1/2/4`):
+the Project Durable Object asks it to snapshot and stop, starts the new
+size, and that copy resumes there.
 
 **Shutdown and budgets:** the Durable Object stops a machine after an idle
 timeout (no SSH sessions, no running processes it was told about). Spending
@@ -276,7 +278,7 @@ machine is rebuilt from the image every boot.
   saves in git"). Snapshots catch everything git does not, so nothing is lost
   even if the agent never saves.
 - **`tule.toml`:** extra packages to install at boot (the heavy stack is in
-  the image), entry point, parameters.
+  the image).
 - **New projects** start from a template: `AGENTS.md`/`CLAUDE.md` with the
   agent instructions, `tule.toml`, `src/part.py`, empty `outputs/`.
 
@@ -336,6 +338,12 @@ There are two separate kinds of saving:
   copy has unsaved work (what `tule save` does; a conflict is left to the
   agent). There is no view of main
   alone: outputs come from a running copy.
+- **Why per project** (decided 2026-11-01): machines per user with projects
+  mounted onto them were considered (instant switching, cross-project work,
+  one GPU pod). Per project keeps parallel agents apart, gives each project
+  a clean environment (`tule.toml`) and simple sharing, and a cached cold
+  start is ~1 s anyway. Cross-project reuse would come as read-only mounts
+  of another project's save.
 - **Hosting:** Tule hosts the repositories so one connector is still all a
   user sets up. Pushing to (or mirroring on) GitHub can come later.
 - **Open:** a merged `tule.toml` (packages) may be a combination neither
@@ -409,12 +417,12 @@ outputs/
 #### Project layout, builds and output types (2026-11-02)
 
 Built (2026-11-02): the layout, `tule build`, the template (`src/part.py`),
-the output types below, freshness in the viewer, and `tule based-on`. Not
-yet: 3MF/OBJ/glTF in 3D (listed as downloads for now), 2D drawings.
-Outputs can be out of step with the code that makes them (edit a
-script and forget to run it; a save merges code nobody ran), and nothing
-says so. The plan: a fixed layout, one build command that knows what made
-every output, and a viewer for every kind of output.
+the output types below, failed builds in the viewer, and `tule based-on`.
+Not yet: 3MF/OBJ/glTF in 3D (listed as downloads for now), 2D drawings.
+Outputs can be out of step with the code that makes them (edit a script and
+forget to run it; a save merges code nobody ran), and nothing said so. Hence
+a fixed layout, one build command that knows what made every output, and a
+view for every kind of output.
 
 **Layout.** Files are sorted by role, not by type:
 
@@ -434,8 +442,8 @@ outputs/   made by scripts only, never edited by hand, not in git
 - Choices are code, not data: a wall thickness, a safety factor, which load
   case to run live in the scripts (or `lib/params.py`). `inputs/` holds only
   facts nobody here chose.
-- The template starts with `src/` and `outputs/`; the others appear when
-  needed. `main.py` becomes `src/<example>.py`.
+- The template starts with `src/part.py` (it was `main.py`); the other
+  folders appear when needed.
 
 **Scripts are functions.** A script reads inputs, code and other outputs, and
 writes only its own output folder. An assembly is a script that writes
@@ -462,8 +470,10 @@ rest:
 - the record (`outputs/.build/<name>.json`: what was read and its hashes) is
   kept apart from the output, so the agent can tell an output is stale
   without running anything: `tule build --check` lists what is out of date
-  or failed (with the reason and how long its last run took) and work to
-  check again, or says everything is up to date;
+  or failed (with the reason and how long its last run took), outputs whose
+  script is gone, and work to check again, or says everything is up to date;
+  a project is the folder with `tule.toml` and `src/` (or a machine's
+  /workspace), since any repository may have a `src/`;
 - a failed script keeps its last output and records the error and the end
   of its output (the traceback from the script's own frames); one build
   runs at a time per project;
@@ -505,10 +515,11 @@ which, and `output.json` only adds meaning (titles, units, colors):
 | geometry | STEP, STL, 3MF, OBJ, glTF | 3D: a part, or an assembly when there are several files |
 | sequence | numbered geometry files | 3D with a slider and a plot of the values |
 | overlay | geometry plus per-face values | 3D colored by value, with a legend |
-| table | CSV | a sortable table (BOM, results, supplier lists) |
+| table | CSV, TSV, a JSON list of records | a sortable table (BOM, results, supplier lists) |
 | chart | `*.vl.json` (Vega-Lite) | the chart, drawn by Tule |
 | document | Markdown, PDF | the rendered page (reports, datasheets, notes) |
 | image | PNG, JPG, SVG | the image |
+| text | TXT, logs, code, TOML, YAML | the text |
 | anything else | any file | listed with a download, never hidden |
 
 **In the viewer** (built): the sidebar lists outputs, then work, then inputs,
@@ -534,10 +545,8 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
 - **Links between views:** a table column or chart field that names an
   output (`part: bracket-v3`) links to it, so clicking a BOM row or a point
   on a Pareto chart selects that part in 3D.
-- **Inputs use the same views:** a supplier STEP opens in 3D, a datasheet
-  PDF as a page.
-- **Freshness is shown everywhere:** a stale output or a possibly stale agent
-  result says what changed ("based on an older bracket").
+- **Inputs and work use the same views:** a supplier STEP opens in 3D, a
+  datasheet PDF as a page, a JSON list of supplier quotes as a table.
 - Later: 2D drawings (DXF), per-vertex results (stress), variants side by
   side.
 
@@ -572,7 +581,7 @@ request `id`.
 - **Keys:** the CLI makes its own key (`~/.config/tule/id_ed25519`) and adds
   it to the project the first time; `tule keys add` adds others.
 - **Outputs:** the agent polls `outputs/`, `work/`, `inputs/`, `src/` and `lib/`
-  (0.5 s; the last two only for freshness), hashes changed files and sends
+  (0.5 s; the last two only for build state), hashes changed files and sends
   the index; the Durable Object stores the last index and broadcasts it
   to viewers. A viewer asks for a file by path and hash; the agent
   tessellates it (`import_step` + `tessellate`, cached by hash) and answers
@@ -668,7 +677,7 @@ tule new bracket               # create a project from the template
 tule up [--machine gpu-rtx4090] # load the project on a machine (others keep running)
 tule save [-m "what changed"]  # commit, merge the latest save, push it
 tule ssh [cmd]                 # shell or command on the machine (also: plain ssh via ProxyCommand)
-tule run [file]                # run the entry point on the machine, stream output
+tule build [names] [--check]   # run the scripts in src/ whose inputs changed; --check: what needs it
 tule sync [--pull]             # copy /workspace to or from a local folder
 tule screenshot -o view.png [--output bracket] [--labels] [--view iso]
 tule open                      # open the viewer for this project
@@ -702,8 +711,8 @@ later. Content:
 - setup: `tule login`, SSH key, connect, machines and GPUs;
 - the modeling API and its style, selection, tags, parameters;
 - the workspace and `outputs/` conventions;
-- the loop: edit → run → write outputs → `tule screenshot` → inspect →
-  iterate, branches for variants;
+- the loop: edit a script → `tule build` → `tule screenshot` → inspect →
+  iterate; the project layout, work done by hand, variants;
 - topology optimization: loads, fixed faces;
 - OCCT pitfalls (fillets, tolerances, sewing) and how errors read;
 - golden paths: tested end-to-end examples ("bracket from load cases",
@@ -815,8 +824,10 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 - **Tags:** `plate.tag("load", plate.faces["top"])`, `part.faces["load"]`;
   they flow through every operation, are written into STEP files, and are
   what the analysis libraries read.
-- **Parameters:** `param("wall", 2.0, min=1.0, max=5.0, unit="mm")`, set from
-  `tule.toml` or `tule run --param wall=2.5`.
+- **Parameters** are plain variables at the top of a script, or in
+  `lib/params.py` when scripts share them: choices are code (see "Project
+  layout, builds and output types"). A variant is a script that calls a
+  shared function with other values.
 
 ### Errors and caching
 
@@ -926,5 +937,3 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
-| Project layout and outputs | `inputs/`, `src/`, `lib/`, `work/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; work done by hand lives in `work/`, records what it was based on (`tule based-on`), is flagged to check again and never re-run automatically; every file in an output has a view (table, Vega-Lite chart, document, image, download), not HTML; the agent keeps outputs current (`tule build`, `--check`, subsets; nothing rebuilds by itself); the viewer shows failed builds, not staleness, and saves from its footer (2026-11-02; see "Project layout, builds and output types") |
-| Machines | per project, several at once (2026-11-01): each with its own autosaved copy, saving and merging through git (see "Several machines per project, saves in git"); one Tule cloud machine per project. Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's save. The projects list shows each machine under its project: an icon and where it runs (Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token). |

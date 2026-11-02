@@ -18,7 +18,7 @@ outputs.part("bracket", part)
 ## Style
 
 - Every operation returns a new value; nothing is modified in place. Units are yours (mm by convention).
-- Parameters are plain Python variables at the top of the script; derive everything else from them.
+- Parameters are plain Python variables at the top of the script (shared ones in `lib/params.py`); derive everything else from them.
 - `from tule import *` gives everything below; `help(box)` documents each call.
 
 ## Building blocks

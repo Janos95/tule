@@ -1636,7 +1636,7 @@ main {
 .output-fold { flex: none; width: 13px; height: 13px; margin-left: -2px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
 .output.open .output-fold { transform: rotate(90deg); }
 
-/* ---------------------------------------------------------------- under the selected entry: freshness, views */
+/* ---------------------------------------------------------------- under the selected entry: its views, an assembly's parts */
 
 .under { margin: 2px 0 8px 15px; padding-left: 6px; border-left: 2px solid var(--line); }
 .under #parts { margin: 0 0 2px 14px; padding: 0; border-left: 0; }
@@ -1665,7 +1665,7 @@ main {
 .page-file small { color: var(--muted); }
 .page-missing { color: var(--muted); }
 
-.table-wrap { overflow: auto; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+.table-wrap { overflow: auto; max-width: 100%; max-height: 75vh; border: 1px solid var(--line); border-radius: 8px; }
 table.data { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 table.data th, table.data td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
 table.data tbody tr:last-child td { border-bottom: 0; }

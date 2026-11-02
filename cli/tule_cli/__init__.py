@@ -443,20 +443,26 @@ def _maybe_stale(root: str):
                   f"redo it, or if it still holds: tule based-on {r['path']}", file=sys.stderr)
 
 
-def _check(root: str):
+def _check(root: str, names: list[str] | None = None):
     """What needs updating: outputs that are out of date or failed (with the reason and how long
-    the last run took), and work in work/ to check again. Prints a line when all is current."""
+    the last run took), outputs whose script is gone, and work in work/ to check again (all of
+    it, or just the named outputs). Prints a line when all is current."""
     from . import build
 
+    only = set(build.select(build.targets(root), names)) if names else None
     lines = []
     for r in build.status(root):
+        if only is not None and r["name"] not in only:
+            continue
         took = f"last run {r['seconds']:g} s" if r.get("seconds") is not None else ""
         if r.get("failed"):
-            last = (r.get("log") or "").strip().splitlines()[-1:] or [r["failed"]]
-            lines.append((r["name"], "failed", last[0], took))
+            last = (r.get("log") or "").strip().splitlines()[-1:]  # the exception, for a script that raised
+            lines.append((r["name"], "failed", last[0] if last and r["failed"].startswith("exit status") else r["failed"], took))
         elif r.get("why"):
             lines.append((r["name"], "out of date", r["why"], took))
-    for w in build.based_on_status(root):
+    for n in [] if only is not None else build.orphans(root):
+        lines.append((n, "no script", f"src/{n}.py is gone: delete outputs/{n} if it is not needed", ""))
+    for w in [] if only is not None else build.based_on_status(root):
         if w["changed"]:
             lines.append((w["path"], "check again", f"{', '.join(w['changed'])} changed", ""))
     if not lines:
@@ -477,7 +483,7 @@ def cmd_build(args):
                          + (["--dependents"] if args.dependents else []) + [x for n in args.skip for x in ("--skip", n)])
     try:
         if args.check:
-            return _check(root)
+            return _check(root, args.names)
         done = build.build(root, args.names or None, force=args.force, dependents=args.dependents, skip=args.skip)
     except build.BuildError as e:
         raise CliError(str(e)) from None

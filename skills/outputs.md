@@ -1,6 +1,6 @@
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and any other files (tables, charts, documents, images: see below). `tule build` makes them: `src/<name>.py` writes `outputs/<name>/`, and the user sees it within a second. Other files go into `outputs.folder()`.
+The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and any other files (tables, charts, documents, images: see below). `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it within a second.
 
 ```
 outputs/
@@ -14,7 +14,7 @@ Geometry: STEP (faces, names, colors and tags travel inside; prefer it: the view
 
 ## Writing them
 
-`tule.outputs` writes the folders atomically (temporary name, then rename; `output.json` last), so the viewer never sees half a file:
+`tule.outputs` writes the folders atomically, so the viewer never sees half a file (one output per script under `tule build`; here several):
 
 ```python
 from tule import *
@@ -36,7 +36,7 @@ outputs.overlay("plate-walls", part, title="Wall thickness",    # numbers on fac
 outputs.part("plate-info", part, info={"mass": "10.8 g"})       # facts, any kind
 ```
 
-Any tool may write the files directly instead (a solver's STL frames): temporary name, then `os.replace`; `output.json` last.
+Any tool may write the files directly into `outputs.folder()` instead (a solver's STL frames): temporary name, then `os.replace`; `output.json` last.
 
 ## `output.json`
 
@@ -62,7 +62,7 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place); PDF, text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place); PDF, text, images; anything else: a download.
 
 ```python
 import json

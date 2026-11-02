@@ -38,7 +38,7 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS
 from tule import *
 
-loose = import_step("outputs/bracket/bracket.step")      # your supplier file
+loose = import_step("outputs/bracket/bracket.step")      # your file in inputs/
 sew = BRepBuilderAPI_Sewing(1e-3)                         # close gaps up to 0.001 mm
 sew.Add(loose.wrapped)
 sew.Perform()

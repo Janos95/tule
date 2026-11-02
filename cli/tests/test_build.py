@@ -33,6 +33,7 @@ def build(root, *args):
 def project(tmp_path):
     for d in ("src", "lib", "inputs"):
         (tmp_path / d).mkdir()
+    (tmp_path / "tule.toml").write_text("")
     (tmp_path / "lib" / "params.py").write_text("WALL = 6\n")
     (tmp_path / "src" / "plate.py").write_text(PLATE)
     (tmp_path / "src" / "bom.py").write_text(BOM)
@@ -176,3 +177,109 @@ def test_check_lists_what_needs_updating(project):
     out = check()
     assert "plate  out of date  lib/params.py changed  (last run" in out
     assert "bom    out of date  outputs/plate is out of date" in out
+
+
+def test_skip_leaves_what_it_reads_as_is_and_force_runs_only_the_named(project):
+    build(project)
+    (project / "lib" / "params.py").write_text("WALL = 7\n")
+    (project / "inputs" / "prices.csv").write_text("plate,13.00\n")
+    code, err = build(project, "--skip", "plate")
+    assert code == 0, err
+    assert "bom: built" in err and "plate: building" not in err  # bom reads the plate as it is
+    code, err = build(project, "src/bom.py", "--force")  # a path works too
+    assert "bom: building (forced)" in err and "plate: building (forced)" not in err
+
+
+def test_outputs_that_read_each_other_fail(project):
+    one = 'from tule import outputs\nopen("outputs/{}/x.txt").read()\nopen(outputs.folder() + "/x.txt", "w").write("x")\n'
+    (project / "src" / "a.py").write_text(one.format("b"))
+    (project / "src" / "b.py").write_text(one.format("a"))
+    code, err = build(project, "a", "b")
+    assert code == 1 and "outputs/a and outputs/b read each other (a → b → a)" in err
+
+    # a read b, now b reads a: the old record is no reason to fail
+    (project / "src" / "a.py").write_text('from tule import outputs\nopen(outputs.folder() + "/x.txt", "w").write("x")\n')
+    (project / "src" / "b.py").write_text('from tule import outputs\nopen(outputs.folder() + "/x.txt", "w").write("x")\n')
+    build(project, "a", "b")
+    (project / "src" / "a.py").write_text(one.format("b"))
+    build(project, "a")
+    (project / "src" / "a.py").write_text('from tule import outputs\nopen(outputs.folder() + "/x.txt", "w").write("y")\n')
+    (project / "src" / "b.py").write_text(one.format("a"))
+    code, err = build(project, "a", "b")
+    assert code == 0, err
+
+
+def test_a_file_changed_while_the_script_ran_stays_out_of_date(project, tmp_path_factory):
+    flag = tmp_path_factory.mktemp("flags")
+    (project / "src" / "slow.py").write_text(f"""import os, time
+from tule import outputs
+open("inputs/prices.csv").read()
+open({str(flag / 'started')!r}, "w").close()
+while not os.path.exists({str(flag / 'go')!r}):
+    time.sleep(0.05)
+open(outputs.folder() + "/x.txt", "w").write("x")
+""")
+    env = {k: v for k, v in os.environ.items() if k not in ("TULE_WORKSPACE", "TULE_OUTPUTS")}
+    p = subprocess.Popen([sys.executable, "-m", "tule_cli", "build", "slow"], cwd=project, env=env,
+                         stderr=subprocess.DEVNULL)
+    for _ in range(600):
+        if (flag / "started").exists():
+            break
+        import time
+        time.sleep(0.05)
+    (project / "inputs" / "prices.csv").write_text("plate,99.00\n")
+    (flag / "go").touch()
+    assert p.wait(timeout=120) == 0
+    err = build(project, "slow")[1]
+    assert "slow: building (inputs/prices.csv changed)" in err
+
+
+def test_a_killed_build_leaves_nothing_behind(project):
+    build(project, "plate")
+    (project / "outputs" / ".build" / "stage-plate-99999" / "plate").mkdir(parents=True)
+    build(project, "plate")
+    assert not [n for n in os.listdir(project / "outputs" / ".build") if n.startswith("stage-")]
+
+
+def test_based_on_ignores_what_is_not_a_file_in_the_project(project):
+    import signal
+
+    from tule_cli import build as b
+
+    (project / "work").mkdir()
+    (project / "work" / "notes.md").write_text("ok\n")
+    (project / "inputs" / "pipe").mkdir()
+    os.mkfifo(project / "inputs" / "pipe" / "fifo")  # reading it would never end
+    signal.alarm(30)
+    try:
+        b.based_on(str(project), "work/notes.md", ["inputs/pipe"])
+        notes = json.loads((project / "work" / ".based-on.json").read_text())
+        notes["work/notes.md"].update({"/": "x", "../..": "x"})  # edited by hand
+        notes["../outside"] = {"inputs": "x"}
+        (project / "work" / ".based-on.json").write_text(json.dumps(notes))
+        assert b.based_on_status(str(project)) == [{"path": "work/notes.md", "sources": ["inputs/pipe"], "changed": []}]
+    finally:
+        signal.alarm(0)
+    with pytest.raises(b.BuildError, match="not in the project"):
+        b.based_on(str(project), "work/notes.md", ["../.."])
+
+
+def test_check_names_and_scripts_that_are_gone(project):
+    def check(*names):
+        return subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check", *names], cwd=project,
+                              capture_output=True, text=True).stdout
+
+    build(project)
+    (project / "lib" / "params.py").write_text("WALL = 7\n")
+    assert "bom" not in check("plate") and "plate" in check("plate")
+    (project / "src" / "bom.py").rename(project / "src" / "cost.py")
+    assert "no script    src/bom.py is gone: delete outputs/bom" in check()
+
+
+def test_a_repo_with_src_is_not_a_project_without_tule_toml(project):
+    from tule_cli.build import find_root
+
+    assert find_root(str(project / "src")) == str(project)
+    (project / "tule.toml").unlink()
+    assert find_root(str(project / "src")) is None
+

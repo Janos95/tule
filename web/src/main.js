@@ -346,7 +346,7 @@ function iconOf(o) {
 const changed = (o) => o.docs.filter((f) => f.basedOn?.changed?.length);
 const building = (o) => o.building || o.build?.state === "building";
 
-/** One short fact for a row, and how to color it: "out of date", "11 errors", "31 frames". */
+/** One short fact for a row, and how to color it: "failed", "11 errors", "31 frames". */
 function fact(o) {
   if (o.error || o.build?.state === "failed") return ["failed", "error"];
   if (building(o)) return ["building", "live"];
@@ -481,6 +481,7 @@ function select(id) {
 
 /** Shows one of the selected entry's views: "3d", one of its files, or "log". */
 function selectView(id) {
+  state.wanted = state.selected; // the URL names the entry with the view
   state.view = id;
   remember();
   renderList();
@@ -518,17 +519,30 @@ function clearStage() {
   $("counts").textContent = "";
 }
 
-let pageKey = null;
+const WHOLE = 1 << 30; // read the whole file: the agent refuses one larger than it can send rather than cut it short
+let pageKey = null; // what the page shows (entry, view, content)
+let pageRun = null; // the render in flight or done; a newer one replaces it
 let pageCleanup = null;
-const reads = new Map(); // hash -> Promise<ArrayBuffer>: a file is read from the machine once
+const reads = new Map(); // hash -> Promise<ArrayBuffer>: a small file is read from the machine once
 function readFile(f) {
   if (!reads.has(f.hash)) {
-    const p = req("read", { path: f.path, max: 30 << 20 }, 300_000);
+    const p = req("read", { path: f.path, max: WHOLE }, 300_000).then((buf) => {
+      if (buf.byteLength > 8 << 20) reads.delete(f.hash); // a big one each time it is shown
+      return buf;
+    });
     p.catch(() => reads.delete(f.hash));
     if (reads.size > 64) reads.delete(reads.keys().next().value);
     reads.set(f.hash, p);
   }
   return reads.get(f.hash);
+}
+/** Leaves the page: its chart views and object URLs go with it. */
+function closePage() {
+  $("stage").classList.remove("paged");
+  pageKey = pageRun = null;
+  pageCleanup?.();
+  pageCleanup = null;
+  $("page").textContent = "";
 }
 /** A view that is not 3D: the page over the stage. */
 async function showPage(o, v) {
@@ -539,9 +553,10 @@ async function showPage(o, v) {
     annotate?.reset();
     clearStage();
   }
-  offerDownload(v?.f ? [v.f] : []);
   if (key === pageKey) return;
+  offerDownload(v?.f ? [v.f] : []);
   pageKey = key;
+  const run = (pageRun = {});
   pageCleanup?.();
   pageCleanup = null;
   const page = $("page");
@@ -562,8 +577,8 @@ async function showPage(o, v) {
       open,
       download,
     });
+    if (pageRun !== run) return cleanup();
     setStatus("");
-    if (pageKey !== key) return cleanup();
     pageCleanup = cleanup;
   }
   page.replaceChildren(body);
@@ -572,9 +587,7 @@ async function showPage(o, v) {
 async function show() {
   const o = state.outputs.find((x) => x.id === state.selected);
   if (!o) {
-    $("stage").classList.remove("paged");
-    pageKey = null;
-    $("page").textContent = "";
+    closePage();
     clearStage();
     state.shown = null;
     offerDownload([]);
@@ -583,8 +596,7 @@ async function show() {
   const v = viewOf(o);
   if (v?.type !== "geometry") return showPage(o, v);
   if (state.shown === "page") state.shown = null;
-  $("stage").classList.remove("paged");
-  pageKey = null;
+  closePage();
   const kind = kindOf(o);
   $("caption").hidden = kind === "overlay" || !o.meta?.title;
   $("caption").textContent = o.meta?.title ?? "";
@@ -730,7 +742,7 @@ function offerDownload(list) {
 async function download(f) {
   $("download-menu").hidden = true;
   try {
-    save(await req("read", { path: f.path, max: 30 << 20 }, 300_000), f.file.split("/").pop());
+    save(await req("read", { path: f.path, max: WHOLE }, 300_000), f.file.split("/").pop());
   } catch (e) {
     flash(`Cannot download ${f.file}: ${e.message}`);
   }

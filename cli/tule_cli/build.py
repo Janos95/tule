@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -49,13 +50,14 @@ def log(msg: str):
 
 
 def find_root(start: str | None = None) -> str | None:
-    """The project folder: $TULE_WORKSPACE, else the nearest folder up from here that has src/."""
+    """The project folder: $TULE_WORKSPACE (a machine's /workspace), else the nearest folder
+    up from here with tule.toml and src/ (any repo has a src/, so that alone is not enough)."""
     env = os.environ.get("TULE_WORKSPACE")
     if env and os.path.isdir(os.path.join(env, "src")):
-        return env
+        return os.path.abspath(env)
     d = os.path.abspath(start or os.getcwd())
     while True:
-        if os.path.isdir(os.path.join(d, "src")):
+        if os.path.isfile(os.path.join(d, "tule.toml")) and os.path.isdir(os.path.join(d, "src")):
             return d
         up = os.path.dirname(d)
         if up == d:
@@ -68,6 +70,15 @@ def targets(root: str) -> list[str]:
     return sorted(f[:-3] for f in os.listdir(src) if f.endswith(".py") and not f.startswith(("_", ".")))
 
 
+def orphans(root: str) -> list[str]:
+    """Outputs whose script is gone (deleted or renamed): left for the agent to remove."""
+    out = os.path.join(root, "outputs")
+    have = set(targets(root))
+    names = os.listdir(out) if os.path.isdir(out) else []
+    return sorted(n for n in names if n not in have and not n.startswith(".")
+                  and os.path.isdir(os.path.join(out, n)))
+
+
 def env_stamp() -> dict:
     try:
         from importlib.metadata import version
@@ -76,6 +87,15 @@ def env_stamp() -> dict:
     except Exception:
         tule = "none"
     return {"format": FORMAT, "tule": tule, "python": "%d.%d" % sys.version_info[:2]}
+
+
+def stamp(path: str) -> list | None:
+    """A file's (size, mtime), to tell it changed while a script ran; None for a folder or nothing."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return None if os.path.isdir(path) else [st.st_size, st.st_mtime_ns]
 
 
 class Hashes:
@@ -91,15 +111,18 @@ class Hashes:
             self.cache = {}
 
     def of(self, rel: str) -> str:
-        """A file's hash; "dir:" plus a hash of the names for a folder; "missing" when absent."""
+        """A file's hash; "dir:" plus a hash of the names for a folder; "missing" when absent
+        (or not a file: a FIFO or a device would never end)."""
         p = os.path.join(self.root, rel)
         try:
             st = os.stat(p)
         except OSError:
             return "missing"
-        if os.path.isdir(p):
+        if stat.S_ISDIR(st.st_mode):
             names = sorted(n for n in os.listdir(p) if not n.startswith(".") and n != "__pycache__")
             return "dir:" + hashlib.sha256("\n".join(names).encode()).hexdigest()[:24]
+        if not stat.S_ISREG(st.st_mode):
+            return "missing"
         key = [st.st_size, st.st_mtime_ns]
         hit = self.cache.get(rel)
         if hit and hit[0] == key:
@@ -168,15 +191,16 @@ def why_stale(root: str, name: str, hashes: Hashes, env: dict) -> str | None:
 
 
 class Build:
-    def __init__(self, root: str, force: bool = False, skip: set[str] | None = None):
+    def __init__(self, root: str):
         self.root = root
-        self.force = force
-        self.skip = skip or set()
+        self.force: set[str] = set()  # run even if up to date
+        self.skip: set[str] = set()  # left as they are
         self.all = targets(root)
         self.env = env_stamp()
         self.hashes = Hashes(root)
         self.done: dict[str, str] = {}  # name -> "built" | "up to date" | "failed" | "skipped"
-        self.stack: list[str] = []
+        self.stack: list[str] = []  # being checked or run
+        self.running: list[str] = []  # being run (and building what they need first)
 
     def deps(self, name: str) -> list[str]:
         """The outputs it read last time (built first, so a changed one is seen)."""
@@ -206,32 +230,33 @@ class Build:
         if name in self.skip:  # its last output stays, stale or not
             self.done[name] = "skipped"
             return
-        if name in self.stack:
-            raise BuildError(f"{' → '.join(self.stack + [name])}: these outputs read each other")
         self.stack.append(name)
         try:
-            for d in self.deps(name):
-                self.ensure(d)
-            why = "forced" if self.force else why_stale(self.root, name, self.hashes, self.env)
+            for d in self.deps(name):  # what it read last time (it may read other things now)
+                if d not in self.stack:
+                    self.ensure(d)
+            if name in self.done:  # built meanwhile: something checked above needed it
+                return
+            why = "forced" if name in self.force else why_stale(self.root, name, self.hashes, self.env)
             if why is None:
                 self.done[name] = "up to date"
                 rec = read_record(self.root, name)
                 if rec and rec.pop("failed", None):  # back to what last built: the failure is moot
                     write_record(self.root, name, rec)
                 return
-            asked: set[str] = set()
-            while True:
-                needs = self.run(name, why)
-                if not needs:
-                    break
-                for n in needs:
-                    self.ensure(n)
-                bad = [n for n in needs if self.done.get(n) == "failed" or n in asked]
-                if bad:
-                    self.fail(name, f"needs outputs/{bad[0]}, which " + ("failed" if self.done.get(bad[0]) == "failed" else "did not get built"))
-                    break
-                asked.update(needs)
-                why = f"{', '.join(needs)} built"
+            self.running.append(name)
+            try:
+                while needs := self.run(name, why):
+                    for n in needs:
+                        if n in self.running:
+                            loop = " → ".join(self.running[self.running.index(n):] + [n])
+                            return self.fail(name, f"outputs/{n} and outputs/{name} read each other ({loop})")
+                        self.ensure(n)
+                    failed = [n for n in needs if self.done[n] == "failed"]
+                    if failed:
+                        return self.fail(name, f"needs outputs/{failed[0]}, which failed")
+            finally:
+                self.running.pop()
         finally:
             self.stack.pop()
 
@@ -243,7 +268,7 @@ class Build:
         shutil.rmtree(stage, ignore_errors=True)
         os.makedirs(stage)
         result = os.path.join(state, f"result-{name}-{os.getpid()}.json")
-        pending = [t for t in self.all if self.done.get(t) not in ("built", "up to date")]
+        pending = [t for t in self.all if self.done.get(t) not in ("built", "up to date", "skipped")]
         log(f"{name}: building ({why})")
         t0 = time.time()
         env = dict(os.environ, TULE_OUTPUTS=stage, TULE_BUILD_TARGET=name, TULE_BUILD_ROOT=self.root,
@@ -263,7 +288,7 @@ class Build:
             except (OSError, ValueError):
                 res = {}
             if res.get("needs"):
-                return [n for n in res["needs"] if n in self.all]
+                return res["needs"]
             problems = res.get("refused") or []
             made = sorted(os.listdir(stage))
             if code == 0 and not problems:
@@ -274,10 +299,13 @@ class Build:
             if code != 0 or problems:
                 for p in problems[:5]:
                     log(f"{name}: {p}")
-                self.fail(name, f"exit status {code}" if code else problems[0], "\n".join(tail))
+                error = f"killed by signal {-code}" if code < 0 else f"exit status {code}" if code else problems[0]
+                self.fail(name, error, "\n".join(tail))
                 return []
+            # a file changed while the script ran is recorded as changed: the output may have the old one
+            moved = {rel for rel, st in res.get("reads", {}).items() if stamp(os.path.join(self.root, rel)) != st}
             self.publish(name, os.path.join(stage, name))
-            reads = {rel: self.hashes.of(rel) for rel in sorted(set(res.get("reads", [])))}
+            reads = {rel: "changed while it ran" if rel in moved else self.hashes.of(rel) for rel in sorted(res.get("reads", {}))}
             write_record(self.root, name, {"target": name, "script": f"src/{name}.py", "env": self.env,
                                            "reads": reads, "built": int(time.time() * 1000),
                                            "seconds": round(time.time() - t0, 2)})
@@ -310,11 +338,12 @@ class Build:
 
 
 def select(all_names: list[str], patterns: list[str]) -> list[str]:
-    """Script names matching names or patterns (plate-*); an error for one that matches nothing."""
+    """Script names matching names or patterns (plate-*, src/plate.py); an error for one that matches nothing."""
     import fnmatch
 
     out: list[str] = []
     for p in patterns:
+        p = os.path.basename(p.rstrip("/")).removesuffix(".py")
         hit = [n for n in all_names if fnmatch.fnmatchcase(n, p)]
         if not hit:
             raise BuildError(f"no src/{p}.py; scripts: {', '.join(all_names)}")
@@ -325,22 +354,31 @@ def select(all_names: list[str], patterns: list[str]) -> list[str]:
 def build(root: str, names: list[str] | None = None, force: bool = False,
           dependents: bool = False, skip: list[str] | None = None) -> dict:
     """Builds the named outputs (patterns allowed; all when none) and what they read; with
-    dependents, also what reads them; never the ones in skip."""
-    os.makedirs(os.path.join(root, "outputs", STATE), exist_ok=True)
-    lock = open(os.path.join(root, "outputs", STATE, "lock"), "w")
+    dependents, also what reads them; never the ones in skip. force runs the named ones (not
+    what they read) even if they are up to date."""
+    state = os.path.join(root, "outputs", STATE)
+    os.makedirs(state, exist_ok=True)
+    lock = open(os.path.join(state, "lock"), "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         log("another tule build is running here; waiting for it")
         fcntl.flock(lock, fcntl.LOCK_EX)
     try:
-        b = Build(root, force)
+        for n in os.listdir(state):  # left by a build that was killed (the viewer would show it building)
+            if n.startswith(("stage-", "old-")):
+                shutil.rmtree(os.path.join(state, n), ignore_errors=True)
+            elif n.startswith("result-"):
+                os.unlink(os.path.join(state, n))
+        b = Build(root)
         if not b.all:
             raise BuildError("nothing to build: src/ has no scripts (src/<name>.py makes outputs/<name>/)")
         b.skip = set(select(b.all, skip or []))
         wanted = select(b.all, names) if names else list(b.all)
         if dependents:
             wanted += b.readers(wanted)
+        if force:
+            b.force = set(wanted)
         for n in wanted:
             b.ensure(n)
         b.hashes.save()
@@ -372,7 +410,7 @@ def status(root: str, hashes: Hashes | None = None) -> list[dict]:
         w = upstream(n)
         row = {"name": n, "state": "up to date" if w is None else "stale", **({"why": w} if w else {})}
         rec = recs[n]
-        if w and rec.get("failed") and (rec.get("built") or 0) < rec["failed"]["at"]:
+        if w and rec.get("failed"):  # (a build that succeeds or finds it up to date drops it)
             row["failed"] = rec["failed"]["error"]
             if rec["failed"].get("log"):
                 row["log"] = rec["failed"]["log"]
@@ -404,21 +442,34 @@ def fingerprint(root: str, rel: str, hashes: Hashes) -> str:
     return "tree:" + hashlib.sha256("\n".join(lines).encode()).hexdigest()[:32]
 
 
+def _inside(root: str, rel) -> bool:
+    """Whether rel is a path in the project (symlinks resolved), not the project itself."""
+    if not isinstance(rel, str):
+        return False
+    real = os.path.realpath(root)
+    return os.path.realpath(os.path.join(root, rel)).startswith(real + os.sep)
+
+
 def _clean(root: str, rel: str) -> str:
     """A path the user typed (absolute, ./x, x/) as a path relative to the project."""
-    p = os.path.abspath(os.path.join(root, rel))
-    if not (p == root or p.startswith(root + os.sep)):
+    root = os.path.abspath(root)
+    r = os.path.relpath(os.path.abspath(os.path.join(root, rel)), root).replace(os.sep, "/")
+    if r != "." and not _inside(root, r):
         raise BuildError(f"{rel}: not in the project ({root})")
-    return os.path.relpath(p, root).replace(os.sep, "/")
+    return r
 
 
 def read_based_on(root: str) -> dict[str, dict[str, str]]:
+    """work/.based-on.json, without entries outside the project (it is in git: anyone can edit it)."""
     try:
         with open(os.path.join(root, BASED_ON)) as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return {r: {x: fp for x, fp in srcs.items() if _inside(root, x) and isinstance(fp, str)}
+            for r, srcs in data.items() if r.startswith("work/") and _inside(root, r) and isinstance(srcs, dict)}
 
 
 def based_on(root: str, result: str, sources: list[str] | None = None, hashes: Hashes | None = None) -> dict[str, str]:
@@ -438,11 +489,12 @@ def based_on(root: str, result: str, sources: list[str] | None = None, hashes: H
         if not srcs:
             raise BuildError(f"{result} has no sources recorded yet: tule based-on {result} outputs/<name> …")
     for x in srcs:
-        if x == result or x == BASED_ON or x.startswith("outputs/.build"):
+        if x in (".", result, BASED_ON) or result.startswith(x + "/") or x.startswith("outputs/.build"):
             raise BuildError(f"{x}: not something work can be based on")
         if not os.path.exists(os.path.join(root, x)):
-            raise BuildError(f"no {x}")
+            raise BuildError(f"no {x}" + ("" if sources else f"; name what it is based on now: tule based-on {result} <sources>"))
     notes[result] = {x: fingerprint(root, x, h) for x in srcs}
+    notes = {r: v for r, v in notes.items() if os.path.exists(os.path.join(root, r))}  # results deleted since
     os.makedirs(os.path.join(root, "work"), exist_ok=True)
     tmp = os.path.join(root, BASED_ON + ".tmp")
     with open(tmp, "w") as f:
@@ -457,7 +509,7 @@ def based_on_status(root: str, hashes: Hashes | None = None) -> list[dict]:
     h = hashes or Hashes(root)
     out = []
     for result, srcs in sorted(read_based_on(root).items()):
-        if not isinstance(srcs, dict) or not os.path.exists(os.path.join(root, result)):
+        if not os.path.exists(os.path.join(root, result)):
             continue
         changed = [x for x, fp in srcs.items() if fingerprint(root, x, h) != fp]
         out.append({"path": result, "sources": sorted(srcs), "changed": changed})
@@ -475,7 +527,7 @@ def _run_script(script: str):
     name = os.environ["TULE_BUILD_TARGET"]
     stage = os.environ["TULE_OUTPUTS"]
     pending = set(json.loads(os.environ.get("TULE_BUILD_PENDING", "[]"))) - {name}
-    reads: set[str] = set()
+    reads: dict[str, list | None] = {}  # path -> its stamp when first read
     needs: list[str] = []
     refused: list[str] = []
     allowed = (stage + os.sep, os.path.realpath(stage) + os.sep)
@@ -510,7 +562,8 @@ def _run_script(script: str):
             if first:
                 needs.extend(first)
                 raise BuildError("lists outputs/: the other outputs are built first")
-        reads.add(r)
+        if r not in reads:
+            reads[r] = stamp(os.path.join(root, r))
 
     def write(path):
         try:
@@ -558,11 +611,11 @@ def _run_script(script: str):
 
     def report(code: int):
         with open(os.environ["TULE_BUILD_RESULT"], "w") as f:
-            json.dump({"reads": sorted(reads), "needs": needs, "refused": refused}, f)
+            json.dump({"reads": reads, "needs": needs, "refused": refused}, f)
         sys.stdout.flush()
         os._exit(NEEDS if needs else code)
 
-    reads.add(script)
+    reads[script] = stamp(os.path.join(root, script))
     sys.path[:0] = [root, os.path.join(root, os.path.dirname(script))]
     sys.argv = [script]
     sys.addaudithook(hook)

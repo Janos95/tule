@@ -57,12 +57,15 @@ export const size = (n) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).to
 export async function render(into, file, ctx) {
   const urls = [];
   const views = [];
+  let done = false; // a chart may still ask for an image after its page is gone
   const c = { ...ctx, url: async (f) => {
     const u = URL.createObjectURL(new Blob([await ctx.read(f)], { type: MIME[f.file.split(".").pop().toLowerCase()] ?? "" }));
-    urls.push(u);
+    if (done) URL.revokeObjectURL(u);
+    else urls.push(u);
     return u;
   }, views };
   const cleanup = () => {
+    done = true;
     urls.forEach((u) => URL.revokeObjectURL(u));
     views.forEach((v) => v.finalize());
   };
@@ -76,17 +79,24 @@ export async function render(into, file, ctx) {
   return cleanup;
 }
 
+/** Text in a pre; a huge file shows its first megabyte so the page stays responsive. */
+const MAX_TEXT = 1 << 20;
+function plain(into, s) {
+  into.append(el("pre", "page-text", s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) : s));
+  if (s.length > MAX_TEXT) into.append(el("p", "page-note", "The first megabyte; download the file for the rest."));
+}
+
 async function draw(into, f, c) {
   const type = typeOf(f.file);
   if (type === "table") return table(into, parseCsv(text(await c.read(f)), /\.tsv$/i.test(f.file) ? "\t" : ","), c);
   if (type === "data") {
     const data = JSON.parse(text(await c.read(f)));
     if (records(data)) return table(into, fromRecords(data), c);
-    return into.append(el("pre", "page-text", JSON.stringify(data, null, 2)));
+    return plain(into, JSON.stringify(data, null, 2));
   }
   if (type === "chart") return chart(into, JSON.parse(text(await c.read(f))), c);
   if (type === "document") return markdown(into, text(await c.read(f)), c);
-  if (type === "text") return into.append(el("pre", "page-text", text(await c.read(f))));
+  if (type === "text") return plain(into, text(await c.read(f)));
   if (type === "image") {
     const img = el("img", "page-image");
     img.alt = f.file;
@@ -226,7 +236,10 @@ function theme() {
 /** A file next to this one, by the name a spec or document uses ("bom.csv", "./bom.csv"); null otherwise. */
 function sibling(c, name) {
   if (typeof name !== "string" || /^[a-z][a-z0-9+.-]*:|^\/|\.\./i.test(name)) return null;
-  const n = name.replace(/^\.\//, "");
+  let n = name.replace(/^\.\//, "");
+  try {
+    n = decodeURIComponent(n); // Markdown writes "my part.png" as my%20part.png
+  } catch {}
   return c.files.find((f) => f.file === n) ?? null;
 }
 
@@ -242,13 +255,20 @@ async function chart(into, spec, c) {
   const parsed = vega.parse(isVega ? spec : vl.compile(spec).spec, isVega ? theme() : undefined, { ast: true });
   // data and images come only from files next to the chart
   const loader = vega.loader();
+  const refused = []; // vega logs a failed load and draws the chart without it: say so instead
   const only = (uri) => {
     const f = sibling(c, uri);
-    if (!f) throw new Error(`${uri}: a chart reads only files next to it in this output (${c.files.map((x) => x.file).join(", ")})`);
-    return f;
+    if (f) return f;
+    refused.push(new Error(`${uri}: a chart reads only files next to it in this output (${c.files.map((x) => x.file).join(", ")})`));
+    throw refused.at(-1);
   };
   loader.load = async (uri) => text(await c.read(only(uri)));
-  loader.sanitize = async (uri) => ({ href: await c.url(only(uri)) });
+  // an image mark's picture; never an href (a page of the viewer's origin): marks link by the names in their data
+  loader.sanitize = async (uri, opt) => {
+    const f = only(uri);
+    if (opt?.context === "href" || typeOf(f.file) !== "image") throw new Error(`${uri}: a chart shows only images next to it`);
+    return { href: await c.url(f) };
+  };
   const view = new vega.View(parsed, { loader, renderer: "svg", container: box, hover: true, expr: expressionInterpreter });
   c.views.push(view);
   view.addEventListener("click", (_, item) => {
@@ -256,6 +276,7 @@ async function chart(into, spec, c) {
     if (hit !== undefined) c.open(hit);
   });
   await view.runAsync();
+  if (refused.length) throw refused[0];
 }
 
 // ---------------------------------------------------------------- documents
@@ -266,12 +287,16 @@ async function markdown(into, src, c) {
     const { default: MarkdownIt } = await import("markdown-it");
     md = new MarkdownIt({ html: false, linkify: true }); // no HTML: a document is text, links and pictures
   }
+  // parsed inert, and no picture keeps its src: nothing is fetched from the network
+  const tpl = document.createElement("template");
+  tpl.innerHTML = md.render(src);
+  const pics = [...tpl.content.querySelectorAll("img")].map((img) => [img, img.getAttribute("src")]);
+  pics.forEach(([img]) => img.removeAttribute("src"));
   const doc = el("article", "page-doc");
-  doc.innerHTML = md.render(src);
+  doc.append(tpl.content);
   into.append(doc);
-  // a picture of a file next to it: an image, or a chart or table drawn in place
-  for (const img of [...doc.querySelectorAll("img")]) {
-    const name = img.getAttribute("src");
+  // a picture of a file next to it: an image, a chart or table drawn in place, else a link to its view
+  for (const [img, name] of pics) {
     const f = sibling(c, name);
     if (!f) {
       img.replaceWith(el("span", "page-missing", `[${img.alt || name}]`));
@@ -279,10 +304,19 @@ async function markdown(into, src, c) {
     }
     const type = typeOf(f.file);
     if (type === "image") img.src = await c.url(f);
-    else {
+    else if (type === "chart" || type === "table" || type === "data") {
       const box = el("div", "page-embed");
       img.replaceWith(box);
-      await draw(box, f, c);
+      try {
+        await draw(box, f, c);
+      } catch (e) {
+        box.replaceChildren(el("p", "page-error", `Cannot show ${f.file}: ${e.message}`));
+      }
+    } else {
+      const b = el("button", "link", img.alt || f.file); // a document is not drawn inside another (or itself)
+      b.type = "button";
+      b.addEventListener("click", () => c.open(f.file));
+      img.replaceWith(b);
     }
   }
   for (const a of doc.querySelectorAll("a[href]")) {
