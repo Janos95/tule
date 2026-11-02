@@ -127,5 +127,14 @@ def shape_list(items: Iterable) -> _ListOfShape:
 
 
 def from_list(lst) -> list:
-    """An OCCT list of shapes as a Python list of downcast shapes."""
+    """An OCCT list of shapes as a Python list of downcast shapes.
+
+    Making a Python iterator over an OCCT list costs milliseconds (OCP 8), and
+    history lookups return mostly empty or one-element lists, so those skip it.
+    """
+    n = lst.Size()
+    if n == 0:
+        return []
+    if n <= 2:
+        return [cast(lst.First())] if n == 1 else [cast(lst.First()), cast(lst.Last())]
     return [cast(s) for s in lst]

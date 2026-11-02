@@ -14,6 +14,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 from . import drawing, outputs, topopt
 from .assembly import Assembly
 from .errors import TuleError
+from .gears import GearPair, gear_pair, internal_gear, spur_gear
 from .geom import ORIGIN, Vec, X, Y, Z
 from .io import Mesh, export_gltf, export_step, export_stl, import_step, tessellate
 from .primitives import box, cone, cube, cylinder, polyhedron, sphere, torus, wedge
@@ -25,9 +26,10 @@ from .sweeps import extrude, loft, revolve
 __version__ = "0.1.0"
 
 __all__ = [
-    "Assembly", "Edges", "Faces", "Mesh", "ORIGIN", "Profile", "Selection", "Shape", "TuleError",
-    "Vec", "Vertices", "X", "Y", "Z", "box", "circle", "cone", "cube", "cylinder", "difference", "drawing",
-    "ellipse", "export_gltf", "export_step", "export_stl", "extrude", "import_step", "intersection",
-    "loft", "outputs", "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "slot", "text",
-    "sphere", "tessellate", "topopt", "torus", "union", "wedge",
+    "Assembly", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN", "Profile", "Selection", "Shape",
+    "TuleError", "Vec", "Vertices", "X", "Y", "Z", "box", "circle", "cone", "cube", "cylinder",
+    "difference", "drawing", "ellipse", "export_gltf", "export_step", "export_stl", "extrude",
+    "gear_pair", "import_step", "internal_gear", "intersection", "loft", "outputs", "polygon",
+    "polyhedron", "rect", "regular_polygon", "revolve", "slot", "sphere", "spur_gear", "tessellate",
+    "text", "topopt", "torus", "union", "wedge",
 ]

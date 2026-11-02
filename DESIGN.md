@@ -843,6 +843,18 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 - Features: `fillet`, `chamfer`, `shell`, `offset`, `draft`, `split`,
   `linear_pattern`, `polar_pattern`.
 - Parts: `named(name, color)`, `Assembly(*children)`.
+- Gears (2026-11-02): `spur_gear`, `internal_gear`, `gear_pair`. In a QA
+  run an agent sampled involutes into polygons by hand: a 20-tooth pinion
+  had 1263 faces, each gear was 20–24 MB of STEP, meshing stalled and every
+  gearing check was its own code. Now the teeth are what a DIN 867 rack
+  cuts: one B-spline per involute flank (within 0.0001 module), the rack
+  tip's trochoid as root fillet (undercut where a real gear is), four faces
+  per tooth (`flanks`, `tips`, `roots`), under 1 MB for 40 teeth.
+  `gear_pair` gives the center distance (with profile shift), the contact
+  ratio and `place` (gear 2 turned to mesh), and raises when the pair
+  interferes (checked by turning it through a pitch) or the contact ratio
+  is under 1.2, with a profile shift that works as the hint. Not built:
+  helical and bevel gears, racks.
 - Measure: `volume`, `area`, `bounds`, `center_of_mass`, `inertia`,
   `mass(material)`, `distance`.
 - I/O: `export_step` (names, colors, tags), `export_stl`, `export_3mf`,

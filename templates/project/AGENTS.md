@@ -112,7 +112,7 @@ The machine stops after 30 minutes without SSH sessions or traffic; a job runnin
 
 # Modeling with `tule`
 
-`tule` is a thin Python layer over OpenCascade: immutable values, operators, selection queries, and tags that survive every operation.
+`tule` is a thin Python layer over OpenCascade: immutable values, selection queries, tags that survive every operation.
 
 ```python
 from tule import *
@@ -129,24 +129,25 @@ outputs.part("bracket", part)
 
 ## Style
 
-- Every operation returns a new value; nothing is modified in place. Units are yours (mm by convention).
-- Parameters are plain Python variables at the top of the script (shared ones in `lib/params.py`); derive everything else from them.
+- Every operation returns a new value; nothing changes in place. Units: mm by convention.
+- Parameters are variables at the top of the script (shared ones in `lib/params.py`); derive the rest.
 - `from tule import *` gives everything below; `help(box)` documents each call.
 
 ## Building blocks
 
 - Solids: `box(x, y, z, center=)`, `cube`, `cylinder(r, h, center=)`, `cone(r, h, r2)`, `sphere(r)`, `torus(R, r)`, `wedge`, `polyhedron(points, faces)`.
-- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner). `text("MK4", size, bold=, align=)` for lettering (extrude it, or cut it to engrave). Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
-- Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x is the radius, y becomes z), `loft([p1, p2], heights=[0, 30])`.
+- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner), `text("MK4", size, bold=)` (extrude or engrave it). Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
+- Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`.
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)` for many.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
 - Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (the gap; 0 if touching). `assembly.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`: run it on every frame of a motion study.
+- Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference, then `pair.place(gear2, angle=)` meshes gear 2 at `pair.distance`.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
 ## Selecting faces and edges
 
-Select with queries on the current shape, never by index guesses:
+Select with queries on the current shape, never by guessed index:
 
 ```python
 from tule import *
@@ -166,7 +167,7 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 
 ## Roles and tags
 
-- **Roles**: primitives and features name their faces: `box(...).faces["top"]` (`top bottom left right front back`), `cylinder(...).faces["side"]`, extrusions `top/bottom/side`, `fillet`, `chamfer`, shell `inner`. A role resolves through later operations when you select on the feature itself: `part.fillet(boss.edges["bottom"], 2)`. After a Boolean, `part.faces["top"]` is not defined.
+- **Roles**: primitives and features name faces: `box(...).faces["top"]` (`top bottom left right front back`), `side`, `fillet`, `chamfer`, shell `inner`. A role resolves through later operations when you select on the feature: `part.fillet(boss.edges["bottom"], 2)`. After a Boolean, `part.faces["top"]` is not defined.
 - **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation, are written into STEP files, show in the viewer (`f12 · load`) and are what analysis (`tule.topopt`) reads. Tag loads, fixed and mating faces.
 
 ## Drawings
@@ -198,7 +199,7 @@ except TuleError as e:
     part = part.fillet(part.edges.parallel(Z), 0.9 * e.data["max_radius"])
 ```
 
-Read the message, change the input, rerun. See `tule docs occt` for what usually goes wrong.
+Read the message, change the input, rerun (`tule docs occt`).
 
 ---
 
