@@ -67,66 +67,22 @@ class Assembly:
         raise TuleError(f"no part named {key!r}", op="assembly", hint=f"parts: {names}")
 
     def clashes(self, ignore=(), min_volume: float = 1e-3) -> list[tuple[str, str, float]]:
-        """Parts that overlap: ``[(a, b, overlap volume in mm³)]``, largest first (for every frame of a
-        motion study). Touching is not a clash; ``ignore`` lists pairs of names to skip (a press-fit pin
-        in its bore): ``ignore=[("pin", "proximal")]``."""
-        from OCP.Bnd import Bnd_Box
-        from OCP.BRepBndLib import BRepBndLib
+        """Parts that overlap: ``[(a, b, overlap volume in mm³)]``, largest first. Touching is not a
+        clash; ``ignore`` lists pairs of names to skip (a press-fit pin in its bore):
+        ``ignore=[("pin", "proximal")]``. Through a motion: ``tule.clearance``."""
+        from .clearance import _check
 
-        from ._occ import static
-
-        parts = self.parts()
-        skip = {frozenset(p) for p in ignore}
-        boxes = []
-        for _, s in parts:
-            b = Bnd_Box()
-            static(BRepBndLib, "Add")(s.wrapped, b, True)
-            boxes.append(b)
-        out = []
-        for i in range(len(parts)):
-            for j in range(i + 1, len(parts)):
-                (pa, a), (pb, b) = parts[i], parts[j]
-                if boxes[i].IsOut(boxes[j]):
-                    continue
-                if frozenset((pa, pb)) in skip or frozenset((pa.rsplit("/", 1)[-1], pb.rsplit("/", 1)[-1])) in skip:
-                    continue
-                try:
-                    v = (a & b).volume
-                except TuleError:
-                    v = float("nan") if a.distance(b) == 0 else 0.0  # the Boolean failed: they touch or overlap
-                if v != v or v > min_volume:
-                    out.append((pa, pb, v))
-        return sorted(out, key=lambda t: -(t[2] if t[2] == t[2] else float("inf")))
+        r = _check(self, ignore, below=0, gaps=False, min_volume=min_volume)
+        return [(p.a, p.b, p.overlap) for p in r.pairs if p.overlapping]
 
     def gaps(self, below: float = 1.0, ignore=()) -> list[tuple[str, str, float]]:
         """Parts closer than ``below`` mm: ``[(a, b, gap in mm)]``, smallest first (0: touching or
-        overlapping; ``clashes`` says by how much). Run it on every frame of a motion study for the
-        running clearance; ``ignore`` as for ``clashes``."""
-        from OCP.Bnd import Bnd_Box
-        from OCP.BRepBndLib import BRepBndLib
+        overlapping; ``clashes`` says by how much). ``ignore`` as for ``clashes``; through a motion:
+        ``tule.clearance``."""
+        from .clearance import _check
 
-        from ._occ import static
-
-        parts = self.parts()
-        skip = {frozenset(p) for p in ignore}
-        boxes = []
-        for _, s in parts:
-            b = Bnd_Box()
-            static(BRepBndLib, "Add")(s.wrapped, b, True)
-            b.Enlarge(below / 2)
-            boxes.append(b)
-        out = []
-        for i in range(len(parts)):
-            for j in range(i + 1, len(parts)):
-                (pa, a), (pb, b) = parts[i], parts[j]
-                if boxes[i].IsOut(boxes[j]):
-                    continue
-                if frozenset((pa, pb)) in skip or frozenset((pa.rsplit("/", 1)[-1], pb.rsplit("/", 1)[-1])) in skip:
-                    continue
-                d = a.distance(b)
-                if d < below:
-                    out.append((pa, pb, d))
-        return sorted(out, key=lambda t: t[2])
+        r = _check(self, ignore, below=below, volumes=False)
+        return sorted(((p.a, p.b, p.gap) for p in r.pairs if p.gap < below), key=lambda t: t[2])
 
     def _map(self, fn) -> "Assembly":
         return Assembly(*[c._map(fn) if isinstance(c, Assembly) else fn(c) for c in self.children], name=self.name)

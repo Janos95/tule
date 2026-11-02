@@ -14,6 +14,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 from . import drawing, fea, outputs, topopt
 from .assembly import Assembly
 from .bevel import BevelPair, bevel_gear, bevel_pair
+from .clearance import Clearance, clearance
 from .errors import TuleError
 from .gears import CycloidalDrive, GearPair, cycloidal_disc, cycloidal_drive, gear_pair, internal_gear, spur_gear
 from .geom import ORIGIN, Vec, X, Y, Z
@@ -28,11 +29,11 @@ from .sweeps import extrude, loft, pipe, revolve, sweep
 __version__ = "0.1.0"
 
 __all__ = [
-    "Assembly", "Bend", "BevelPair", "CycloidalDrive", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN", "Profile",
-    "Selection", "Shape", "TuleError", "Vec", "Vertices", "X", "Y", "Z", "bevel_gear", "bevel_pair", "box", "circle",
-    "cone", "cube", "cylinder", "cycloidal_disc", "cycloidal_drive", "difference", "drawing", "ellipse", "export_3mf",
-    "export_dxf", "export_gltf", "export_step", "export_stl", "extrude", "fea", "gear_pair", "import_step",
-    "internal_gear", "intersection", "loft", "outputs", "pipe", "sweep", "polygon", "polyhedron", "rect",
+    "Assembly", "Bend", "BevelPair", "Clearance", "CycloidalDrive", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN",
+    "Profile", "Selection", "Shape", "TuleError", "Vec", "Vertices", "X", "Y", "Z", "bevel_gear", "bevel_pair", "box",
+    "circle", "clearance", "cone", "cube", "cylinder", "cycloidal_disc", "cycloidal_drive", "difference", "drawing",
+    "ellipse", "export_3mf", "export_dxf", "export_gltf", "export_step", "export_stl", "extrude", "fea", "gear_pair",
+    "import_step", "internal_gear", "intersection", "loft", "outputs", "pipe", "sweep", "polygon", "polyhedron", "rect",
     "regular_polygon", "revolve", "SheetMetal", "sheet", "slot", "sphere", "spline", "spur_gear", "tessellate", "text",
     "topopt", "torus", "union", "wedge",
 ]
