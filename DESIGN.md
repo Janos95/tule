@@ -431,7 +431,8 @@ inputs/    from outside the project: supplier STEP, scans, datasheets,
            catalogs, customer load cases (read-only to scripts; big files
            in LFS); never out of date
 src/       scripts; src/<name>.py makes outputs/<name>/ (a part, an
-           assembly, a BOM, an FEA run: all alike)
+           assembly, a BOM, an FEA run: all alike); one level of folders
+           groups them (src/checks/fit.py makes outputs/checks/fit/)
 lib/       shared code the scripts import; makes no outputs
 work/      done by hand (the agent or the user) from the design: supplier
            quotes, part comparisons, reviews; in git, read by scripts,
@@ -444,6 +445,12 @@ outputs/   made by scripts only, never edited by hand, not in git
   facts nobody here chose.
 - The template starts with `src/part.py` (it was `main.py`); the other
   folders appear when needed.
+- **Groups** (2026-11-02): QA runs with 10 to 30 outputs (revisions,
+  alternatives, fit checks) had no way to tidy the list, and agents deleted
+  scripts or nested outputs the viewer could not show. A folder in `src/` is
+  a group: its outputs sit in `outputs/<group>/`, and the viewer shows the
+  group as one folded row (open when it holds the selected output). One level
+  only; the output inside may be called by its short name (`outputs.part("fit", …)`).
 
 **Scripts are functions.** A script reads inputs, code and other outputs, and
 writes only its own output folder. An assembly is a script that writes

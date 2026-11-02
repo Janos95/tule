@@ -136,8 +136,9 @@ async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[]
 //   GET  /cache[?name=<script>]    {entries: [{name, key, record, files, machine, at}]}, newest first
 //   POST /cache                    {name, key, record, files}; the newest KEEP per script are kept
 
-const cacheKey = (id: string, name: string, key: string) => `projects/${id}/cache/${name}/${key}.json`;
-const SCRIPT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+// a script in a group (src/checks/fit.py) is "checks/fit", stored as checks~fit
+const cacheKey = (id: string, name: string, key: string) => `projects/${id}/cache/${name.replace("/", "~")}/${key}.json`;
+const SCRIPT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}(\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$/;
 const KEEP = 5;
 const MAX_ENTRY = 4 << 20;
 
@@ -160,7 +161,7 @@ async function cacheRoute(req: Request, env: Env, id: string, machine: string, u
     if (!chunks.every((h) => typeof h === "string" && HASH.test(h))) return error("each file is {chunks: [sha256 hex, ...], size}", 400);
     const at = Date.now();
     await env.WORKSPACES.put(cacheKey(id, name, key), JSON.stringify({ name, key, record, files, machine, at }));
-    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name}/` });
+    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name.replace("/", "~")}/` });
     const old = l.objects.sort((x, y) => y.uploaded.getTime() - x.uploaded.getTime()).slice(KEEP);
     if (old.length) await env.WORKSPACES.delete(old.map((o) => o.key));
     return json({ stored: key });
@@ -171,7 +172,7 @@ async function cacheRoute(req: Request, env: Env, id: string, machine: string, u
   const keys: string[] = [];
   let cursor: string | undefined;
   do {
-    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name ? name + "/" : ""}`, cursor, limit: 1000 });
+    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name ? name.replace("/", "~") + "/" : ""}`, cursor, limit: 1000 });
     keys.push(...l.objects.map((o) => o.key));
     cursor = l.truncated ? l.cursor : undefined;
   } while (cursor && keys.length < 2000);

@@ -403,9 +403,47 @@ function renderList() {
   }
 }
 
+// groups (src/checks/fit.py makes outputs/checks/fit): folded unless they hold the selected output or the user opened them
+const groupOpen = new Map();
+const groupOf = (o) => (o.root === "outputs" && o.name.includes("/") ? o.name.split("/")[0] : null);
+
 function fill(list, entries) {
   list.textContent = "";
+  // each group's members right after its row, where the group first appears
+  const order = [];
   for (const o of entries) {
+    const g = groupOf(o);
+    if (!g) order.push(o);
+    else if (!order.some((x) => x.group === g)) order.push({ group: g, members: entries.filter((x) => groupOf(x) === g) });
+  }
+  for (const row of order) {
+    if (!row.group) {
+      entry(list, row);
+      continue;
+    }
+    const { group, members } = row;
+    const open = groupOpen.get(group) ?? members.some((o) => o.id === state.selected);
+    const h = document.createElement("button");
+    h.type = "button";
+    h.className = "output group" + (open ? " open" : "");
+    h.setAttribute("aria-expanded", String(open));
+    h.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${ICONS.folder}</svg><span class="output-name"></span><small></small><svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>`;
+    h.children[1].textContent = group;
+    const bad = members.filter((o) => ["error", "warning"].includes(fact(o)[1])).length;
+    h.children[2].textContent = bad ? `${bad} to check` : String(members.length);
+    if (bad) h.children[2].dataset.tone = "warning";
+    h.title = `src/${group}/: ${members.length} output${members.length === 1 ? "" : "s"}`;
+    h.addEventListener("click", () => {
+      groupOpen.set(group, !open);
+      renderList();
+    });
+    list.append(h);
+    if (open) for (const o of members) entry(list, o, group);
+  }
+}
+
+function entry(list, o, group = null) {
+  {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "output";
@@ -420,7 +458,8 @@ function fill(list, entries) {
     const foldable = vs.length > 1 || tree;
     const open = foldable && selected && !folded.has(o.id);
     b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${iconOf(o)}</svg><span class="output-name"></span><small></small>${foldable ? '<svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>' : ""}`;
-    b.children[1].textContent = o.name;
+    b.children[1].textContent = group ? o.name.slice(group.length + 1) : o.name;
+    if (group) b.classList.add("in-group");
     b.children[2].textContent = text;
     if (tone) b.children[2].dataset.tone = tone;
     if (foldable) {
@@ -439,7 +478,7 @@ function fill(list, entries) {
       select(o.id);
     });
     list.append(b);
-    if (!selected) continue;
+    if (!selected) return;
     const under = document.createElement("div");
     under.className = "under";
     if (open) {

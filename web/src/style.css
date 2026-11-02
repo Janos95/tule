@@ -1635,6 +1635,8 @@ main {
 
 .output-fold { flex: none; width: 13px; height: 13px; margin-left: -2px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
 .output.open .output-fold { transform: rotate(90deg); }
+.output.in-group { padding-left: 24px; }
+.output.in-group + .under { margin-left: 31px; }
 
 /* ---------------------------------------------------------------- under the selected entry: its views, an assembly's parts */
 

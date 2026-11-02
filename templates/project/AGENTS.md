@@ -54,7 +54,8 @@ Faces are named `f<id>` the same way in the viewer, in screenshots and in `part.
 
 ```
 inputs/    from outside: supplier STEP, scans, datasheets, customer specs; scripts only read it
-src/       src/<name>.py makes outputs/<name>/: a part, an assembly, a BOM, a study
+src/       src/<name>.py makes outputs/<name>/: a part, an assembly, a BOM, a study;
+           a folder is a group in the viewer: src/checks/fit.py makes outputs/checks/fit/
 lib/       code and parameters the scripts share (from lib.params import WALL)
 work/      done by hand from the design: supplier quotes, part comparisons, reviews
 outputs/   made by tule build; never edit it by hand

@@ -359,3 +359,25 @@ def test_builds_without_the_control_plane(project, tmp_path_factory):
     m.write_text(json.dumps({"url": "http://127.0.0.1:9", "project": "p_test", "token": "t"}))
     code, err = build(project, machine=m)
     assert code == 0 and "2 built" in err and err.count("build cache") == 1
+
+
+def test_groups_in_src(project):
+    """src/checks/fit.py makes outputs/checks/fit/ (a group in the viewer) and can read other outputs."""
+    (project / "src" / "checks").mkdir()
+    (project / "src" / "checks" / "fit.py").write_text(
+        'from tule import import_step, outputs\n'
+        'p = import_step("outputs/plate/plate.step")\n'
+        'outputs.part("fit", p.at(0, 0, 10))\n')
+    code, err = build(project, "checks/*")
+    assert code == 0, err
+    assert err.index("plate: built") < err.index("checks/fit: built")
+    assert (project / "outputs" / "checks" / "fit" / "fit.step").exists()
+    assert (project / "outputs" / ".build" / "checks~fit.json").exists()
+    def check():
+        return subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=project,
+                              capture_output=True, text=True).stdout
+
+    (project / "lib" / "params.py").write_text("WALL = 8\n")  # what it read changed: it is stale
+    assert "checks/fit" in check()
+    (project / "src" / "checks" / "fit.py").rename(project / "src" / "checks" / "gone.py")
+    assert "delete outputs/checks/fit" in check()  # its script is gone

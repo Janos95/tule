@@ -70,18 +70,45 @@ def find_root(start: str | None = None) -> str | None:
         d = up
 
 
-def targets(root: str) -> list[str]:
+def _scripts(d: str) -> list[str]:
+    return [f[:-3] for f in os.listdir(d) if f.endswith(".py") and not f.startswith(("_", ".")) and os.path.isfile(os.path.join(d, f))]
+
+
+def groups(root: str) -> list[str]:
+    """Folders in src/: src/checks/fit.py makes outputs/checks/fit/, shown in a group "checks"."""
     src = os.path.join(root, "src")
-    return sorted(f[:-3] for f in os.listdir(src) if f.endswith(".py") and not f.startswith(("_", ".")))
+    try:
+        return sorted(f for f in os.listdir(src) if not f.startswith(("_", ".")) and os.path.isdir(os.path.join(src, f)))
+    except OSError:
+        return []
+
+
+def targets(root: str) -> list[str]:
+    """Script names: "bracket" for src/bracket.py, "checks/fit" for src/checks/fit.py."""
+    src = os.path.join(root, "src")
+    return sorted(_scripts(src) + [f"{g}/{n}" for g in groups(root) for n in _scripts(os.path.join(src, g))])
+
+
+def key(name: str) -> str:
+    """A name as one file name (records, staging folders): checks/fit → checks~fit."""
+    return name.replace("/", "~")
 
 
 def orphans(root: str) -> list[str]:
     """Outputs whose script is gone (deleted or renamed): left for the agent to remove."""
     out = os.path.join(root, "outputs")
     have = set(targets(root))
-    names = os.listdir(out) if os.path.isdir(out) else []
-    return sorted(n for n in names if n not in have and not n.startswith(".")
-                  and os.path.isdir(os.path.join(out, n)))
+    gs = set(groups(root))
+    names = []
+    for n in os.listdir(out) if os.path.isdir(out) else []:
+        if n.startswith(".") or not os.path.isdir(os.path.join(out, n)):
+            continue
+        if n in gs:
+            names += [f"{n}/{m}" for m in os.listdir(os.path.join(out, n))
+                      if not m.startswith(".") and os.path.isdir(os.path.join(out, n, m))]
+        else:
+            names.append(n)
+    return sorted(n for n in names if n not in have)
 
 
 def env_stamp() -> dict:
@@ -151,7 +178,7 @@ class Hashes:
 
 
 def record_path(root: str, name: str) -> str:
-    return os.path.join(root, "outputs", STATE, f"{name}.json")
+    return os.path.join(root, "outputs", STATE, f"{key(name)}.json")
 
 
 def read_record(root: str, name: str) -> dict | None:
@@ -169,10 +196,12 @@ def write_record(root: str, name: str, rec: dict):
     os.replace(p + ".tmp", p)
 
 
-def output_of(rel: str) -> str | None:
-    """outputs/<name>/… → name (None for other paths)."""
+def output_of(rel: str, root: str) -> str | None:
+    """outputs/<name>/… → name, outputs/<group>/<name>/… → group/name (None for other paths)."""
     parts = rel.split("/")
     if len(parts) >= 2 and parts[0] == "outputs" and not parts[1].startswith("."):
+        if len(parts) >= 3 and os.path.isdir(os.path.join(root, "src", parts[1])):
+            return f"{parts[1]}/{parts[2]}"
         return parts[1]
     return None
 
@@ -213,7 +242,7 @@ class Build:
         rec = read_record(self.root, name) or {}
         seen = []
         for rel in rec.get("reads", {}):
-            o = output_of(rel)
+            o = output_of(rel, self.root)
             if o and o != name and o in self.all and o not in seen:
                 seen.append(o)
         return seen
@@ -274,10 +303,10 @@ class Build:
         """Runs src/<name>.py once; returns the outputs it needs first (empty when it finished)."""
         outputs = os.path.join(self.root, "outputs")
         state = os.path.join(outputs, STATE)
-        stage = os.path.join(state, f"stage-{name}-{os.getpid()}")
+        stage = os.path.join(state, f"stage-{key(name)}-{os.getpid()}")
         shutil.rmtree(stage, ignore_errors=True)
         os.makedirs(stage)
-        result = os.path.join(state, f"result-{name}-{os.getpid()}.json")
+        result = os.path.join(state, f"result-{key(name)}-{os.getpid()}.json")
         pending = [t for t in self.all if self.done.get(t) not in ("built", "fetched", "up to date", "skipped")]
         log(f"{name}: building again, now that {', '.join(f'outputs/{n}' for n in after)} is built" if after else f"{name}: building ({why})")
         t0 = time.time()
@@ -301,6 +330,8 @@ class Build:
                 return res["needs"]
             problems = res.get("refused") or []
             made = sorted(os.listdir(stage))
+            if "/" in name and made == [name.split("/")[0]]:  # a group's folder: what is in it
+                made = [f"{made[0]}/{m}" for m in sorted(os.listdir(os.path.join(stage, made[0])))]
             if code == 0 and not problems:
                 if made != [name]:
                     problems = [f"wrote {', '.join('outputs/' + m for m in made)}; src/{name}.py may write only outputs/{name}/"
@@ -349,15 +380,15 @@ class Build:
             reads = rec.get("reads")
             if rec.get("env") != self.env or not isinstance(reads, dict):
                 continue
-            if any(self.hashes.of(rel) != h for rel, h in reads.items() if not output_of(rel)):
+            if any(self.hashes.of(rel) != h for rel, h in reads.items() if not output_of(rel, self.root)):
                 continue  # a script, module or input differs: no need to look at outputs
             for rel in reads:
-                o = output_of(rel)
+                o = output_of(rel, self.root)
                 if o and o != name and o in self.all and o not in self.stack:
                     self.ensure(o)
             if any(self.hashes.of(rel) != h for rel, h in reads.items()):
                 continue
-            stage = os.path.join(self.root, "outputs", STATE, f"stage-{name}-{os.getpid()}")
+            stage = os.path.join(self.root, "outputs", STATE, f"stage-{key(name)}-{os.getpid()}")
             shutil.rmtree(stage, ignore_errors=True)
             t0 = time.time()
             try:
@@ -379,7 +410,8 @@ class Build:
     def publish(self, name: str, new: str):
         """Swaps the staged folder in (the old one is out of the way for a moment only)."""
         dest = os.path.join(self.root, "outputs", name)
-        old = os.path.join(self.root, "outputs", STATE, f"old-{name}-{os.getpid()}")
+        old = os.path.join(self.root, "outputs", STATE, f"old-{key(name)}-{os.getpid()}")
+        os.makedirs(os.path.dirname(dest), exist_ok=True)  # a group's folder
         if os.path.lexists(dest):
             os.replace(dest, old)
         os.replace(new, dest)
@@ -400,7 +432,7 @@ def select(all_names: list[str], patterns: list[str]) -> list[str]:
 
     out: list[str] = []
     for p in patterns:
-        p = os.path.basename(p.rstrip("/")).removesuffix(".py")
+        p = p.rstrip("/").removeprefix("./").removeprefix("src/").removeprefix("outputs/").removesuffix(".py")
         hit = [n for n in all_names if fnmatch.fnmatchcase(n, p)]
         if not hit:
             raise BuildError(f"no src/{p}.py; scripts: {', '.join(all_names)}")
@@ -459,7 +491,7 @@ def status(root: str, hashes: Hashes | None = None) -> list[dict]:
         if why[n] is not None:
             return why[n]
         for rel in recs[n].get("reads", {}):
-            o = output_of(rel)
+            o = output_of(rel, root)
             if o in why and o != n and o not in seen and upstream(o, seen + (n,)) is not None:
                 return f"outputs/{o} is out of date"
         return None
@@ -503,11 +535,11 @@ def cached_on(root: str, name: str, cache, hashes: Hashes | None = None) -> str 
         return None
 
     def same_upstream(rel: str, x: str, seen: tuple) -> bool:
-        o = output_of(rel)
+        o = output_of(rel, root)
         if not o or o in seen:
             return False
         up = match(o, seen)
-        f = (up or {}).get("files", {}).get(rel.split("/", 2)[2] if rel.count("/") >= 2 else "")
+        f = (up or {}).get("files", {}).get(rel[len(f"outputs/{o}/"):])
         # a file under 16 MiB is one chunk, whose sha256 starts like the build's hash
         return bool(f) and len(f.get("chunks", [])) == 1 and f["chunks"][0][:32] == x
 
@@ -643,7 +675,7 @@ def _run_script(script: str):
         r = rel_of(path)
         if r is None:
             return
-        o = output_of(r)
+        o = output_of(r, root)
         if o == name:
             refused.append(f"reads its own output ({r}); a script makes its output from inputs and code")
             raise BuildError(refused[-1])

@@ -164,6 +164,11 @@ class Outputs:
         groups: dict[tuple, dict] = {}
         staged: dict[str, dict] = {}
         running = self._running()
+        src = os.path.join(self.root, "src")
+        try:  # folders in src/ are groups: src/checks/fit.py makes outputs/checks/fit/
+            sections = {f for f in os.listdir(src) if not f.startswith((".", "_")) and os.path.isdir(os.path.join(src, f))}
+        except OSError:
+            sections = set()
         for rel, size, mtime in self.stamp or ():
             root, _, rest = rel.partition(os.sep)
             if root not in self.ROOTS:
@@ -178,6 +183,11 @@ class Outputs:
                 into = staged
             elif top.startswith("."):
                 continue
+            if root == "outputs" and top in sections and rest:
+                sub, _, rest = rest.partition(os.sep)
+                if not rest or sub.startswith("."):
+                    continue
+                top = f"{top}/{sub}"
             name = top if rest else os.path.splitext(top)[0]
             g = into.setdefault((key, name), {"name": name, "root": root, "files": [], "meta": None})
             if root == "outputs" and rest == "output.json":
@@ -215,7 +225,7 @@ class Outputs:
                 pass
             except (ValueError, OSError):
                 continue
-            out[n] = name
+            out[n] = name.replace("~", "/")  # tule build's key for checks/fit
         return out
 
     def _freshness(self, groups: dict, running: set):

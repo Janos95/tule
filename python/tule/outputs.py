@@ -91,9 +91,19 @@ def _slug(name: str) -> str:
     return s
 
 
+def _output_name(name: str) -> str:
+    """An output's name: "bracket", or "checks/fit" in a group (made by src/checks/fit.py)."""
+    parts = name.strip().strip("/").split("/")
+    if len(parts) > 2:
+        raise TuleError(f"invalid output name {name!r}", op="outputs", hint="one group at most: 'checks/fit'")
+    return "/".join(_slug(p) for p in parts)
+
+
 def _folder(name: str) -> str:
-    slug = _slug(name)
+    slug = _output_name(name)
     target = os.environ.get("TULE_BUILD_TARGET")
+    if target and "/" in target and slug == target.rsplit("/", 1)[1]:
+        slug = target  # src/checks/fit.py may call its output "fit"
     if target and slug != target:
         raise TuleError(f"src/{target}.py writes only outputs/{target}/, not outputs/{slug}/", op="outputs",
                         hint=f"name the output {target!r}, or make {slug!r} in its own script, src/{slug}.py")
@@ -172,7 +182,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
     info = _info(info)
     folder = _folder(name)
     if isinstance(shape, Mesh):
-        fname = f"{_slug(name)}.stl"
+        fname = f"{_slug(name.rsplit('/', 1)[-1])}.stl"
         P, I = _mesh_arrays(shape)
         write_stl_mesh(os.path.join(folder, fname), P, I)
         meta: dict[str, Any] = {"kind": "part", "file": fname}
@@ -183,7 +193,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
         _write_json(folder, meta)
         return folder
     fmt = fmt or "step"
-    fname = f"{_slug(name)}.{fmt}"  # named after the output, so its path stays put when the label changes
+    fname = f"{_slug(name.rsplit('/', 1)[-1])}.{fmt}"  # named after the output, so its path stays put when the label changes
     _write_geometry(os.path.join(folder, fname), shape)
     meta = {"kind": "part", "file": fname}
     if title:
@@ -347,7 +357,7 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
         scale = {k: (float(v) if k in ("min", "max") else str(v)) for k, v in scale.items() if v is not None}
     entries = _face_entries(part, faces)
     folder = _folder(name)
-    fname = f"{_slug(name)}.step"
+    fname = f"{_slug(name.rsplit('/', 1)[-1])}.step"
     _write_geometry(os.path.join(folder, fname), part)
     meta: dict[str, Any] = {"kind": "overlay", "file": fname}
     if title:
