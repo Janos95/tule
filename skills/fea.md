@@ -28,12 +28,14 @@ Read both PNGs. In the viewer, buttons switch fields, hovering shows the value, 
 - **99.5th percentile**: 0.5 % of the surface area is above it. It holds steady as the mesh changes: judge a design by it. Red on the scale starts there.
 - `r.safety_factor` = yield / peak. Printed plastics: aim for 2 to 4 on the percentile. A peak at a sharp corner wants a fillet.
 - **Reactions** must balance the loads. If not, a support is missing or a load sits on fixed faces.
-- **Convergence**: run again with `dofs` doubled; if the percentile or max displacement moves over 5 %, double again.
+- `r.warnings`: red flags (printed too): an unconverged solve, a singular peak, a point load, a poorly gripped support. Resolve them before trusting the numbers.
+- **Convergence**: `fea.converge(part, ...)` takes `static`'s arguments, solves at three budgets up to `dofs` and prints the spread; `.converged`, `.result`.
 
 ## Inputs
 
 - `fixed`: a tag, a selection (`part.faces.cylindrical(r=2.6)`), or a list. Clamped; `fea.fix("base", "z")` holds z only.
-- `loads`: `fea.force(faces, (fx, fy, fz))` total N by area; `fea.pressure(faces, p)` MPa into the faces; `fea.moment(faces, (mx, my, mz))` N·mm about their centroid.
+- `loads`: `fea.force(faces, (fx, fy, fz))` total N by area (`at=(x, y, z), r=4`: only within r of the point); `fea.pressure(faces, p)` MPa into the faces; `fea.moment(faces, (mx, my, mz))` N·mm about their centroid; `fea.bearing(bore, (fx, fy, 0))` a pin's cosine pressure on the half it pushes (`fea.force` on a whole bore pulls its far side too).
+- `balanced=True` instead of `fixed`: a free part whose loads balance (a link pulled at both ends).
 - `accel`: mm/s² on the part's own mass. `fea.g` = 9810.
 - Materials: `"PLA"`, `"PETG"`, `"ABS"`, `"nylon PA12"`, `"aluminium 6061-T6"`, `"steel S235"`, `"stainless 304"` (aliases `"aluminum"`, `"steel"`), or `fea.Material("PC", E=2400, nu=0.37, density=1.2, yield_strength=60)`.
 
