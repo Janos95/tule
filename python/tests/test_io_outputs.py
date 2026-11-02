@@ -202,3 +202,16 @@ def test_picture(tmp_path):
 
     p = outputs.picture(Assembly(box(10).named("a", "#4a8"), box(5).at(12, 0, 0)), tmp_path / "s.png", view="top", size=400)
     assert Image.open(p).width == 400
+
+
+def test_step_keeps_tags_on_left_handed_faces(tmp_path):
+    # an extruded circle has a left-handed surface; the writer rebuilds it and used to drop nearby tags
+    plate = rect(80, 40, center=True).round(5).extrude(6)
+    part = (plate | circle(9).extrude(12).at(0, 0, 6)).mirror(1, 0, 0)
+    part = part.tag("load", part.faces.top())
+    path = str(tmp_path / "u.step")
+    part.export_step(path)
+    back = import_step(path)
+    assert back.tags == ["load"] and back.faces["load"].info()[0]["center"][2] == pytest.approx(18)
+    flat = lambda s: [v for f in s.faces.info() for v in f["center"]]  # the same faces, in the same order
+    assert flat(back) == pytest.approx(flat(part), abs=1e-6)

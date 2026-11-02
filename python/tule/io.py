@@ -29,6 +29,8 @@ from OCP.TDocStd import TDocStd_Document
 from OCP.TopAbs import TopAbs_REVERSED
 from OCP.TopLoc import TopLoc_Location
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy, BRepBuilderAPI_Transform
+from OCP.BRepTools import BRepTools_Modifier
+from OCP.ShapeCustom import ShapeCustom_DirectModification
 from OCP.XCAFApp import XCAFApp_Application
 from OCP.XCAFDoc import XCAFDoc_ColorGen, XCAFDoc_ColorSurf, XCAFDoc_DocumentTool
 
@@ -172,7 +174,11 @@ def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False
                 return other_label, loc  # another instance of the same part
         if same:  # the same solid under another name (e.g. a moved copy) is a part of its own
             target_shape = BRepBuilderAPI_Copy(target_shape).Shape()
-    label = st.AddShape(target_shape, False)
+    # The writer turns left-handed surfaces (an extruded circle, a mirror) right-handed and loses the
+    # names of the faces it rebuilds: do it here and carry the tags across.
+    direct = BRepTools_Modifier(target_shape, ShapeCustom_DirectModification())
+    final = direct.ModifiedShape(target_shape) if direct.IsDone() else target_shape
+    label = st.AddShape(final, False)
     if instances is not None:
         instances.append((proto, name, label))
     _set_name(label, name)
@@ -202,6 +208,11 @@ def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False
             if i < 0:
                 continue
             target = proto_subs[kind][i]
+        if final is not target_shape:
+            try:
+                target = direct.ModifiedShape(target)
+            except Exception:  # pragma: no cover - not a sub-shape of the part
+                continue
         sub = st.AddSubShape(label, target)
         if not sub.IsNull():
             _set_name(sub, "tag:" + ",".join(sorted(set(names))))
