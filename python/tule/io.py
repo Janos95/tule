@@ -629,7 +629,11 @@ def _slicer_keys(s: dict) -> tuple[list, list]:
     return bambu, prusa
 
 
-def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float) -> tuple[np.ndarray, np.ndarray]:
+def _g3(p) -> str:
+    return "(" + ", ".join(f"{v:.3g}" for v in p) + ")"
+
+
+def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float, origin=(0, 0, 0)) -> tuple[np.ndarray, np.ndarray]:
     """A watertight triangle mesh of a solid: the faces' triangulations welded along their edges."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
@@ -656,8 +660,15 @@ def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float) ->
     rev = e[:, 1] * len(V) + e[:, 0]
     if len(np.unique(key)) != len(key) or not np.isin(key, rev).all():
         open_ = int((~np.isin(key, rev)).sum())
-        raise TuleError(f"part {name!r} does not make a closed mesh ({open_} open edges)", op="export_3mf",
-                        hint="pass a closed solid (not a face or an open shell); if it is one, try tolerance=0.01")
+        shared = len(key) - len(np.unique(key))
+        if open_:
+            raise TuleError(f"part {name!r} does not make a closed mesh ({open_} open edges)", op="export_3mf",
+                            hint="pass a closed solid (not a face or an open shell); if it is one, try tolerance=0.01")
+        _, inv, count = np.unique(key, return_inverse=True, return_counts=True)
+        at = V[np.bincount(e[count[inv.ravel()] > 1].ravel()).argmax()]  # the pinch: on most doubled edges
+        raise TuleError(f"part {name!r} touches itself along {shared} edges (near {_g3(at + origin)}): "
+                        "two faces meet at a line or point, so the mesh is not a clean solid", op="export_3mf",
+                        hint="a hole or slot just touching another face is the usual cause: move or resize it by 0.05 mm")
     tri = V[F]
     vol = np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])).sum() / 6
     if vol < 0:
@@ -728,9 +739,9 @@ def _shelves(sizes, width: float, gap: float):
 
 
 def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
-           printer: str | None = None) -> list[tuple[str, "Shape", dict, int, int]]:
+           printer: str | None = None) -> list[tuple[str, "Shape", dict, int, int, tuple]]:
     """Parts laid out on the bed (origin at its front left corner), each dropped to z = 0:
-    (name, shape, settings, copy, copies), one entry per copy (copy 1 to copies, next to each other).
+    (name, shape, settings, copy, copies, shift), one entry per copy (copy 1 to copies, next to each other).
     ``printer``: whose bed it is, for the errors."""
     listed = _plate_items(items)
     if not arrange and any(n > 1 for *_, n in listed):
@@ -785,7 +796,7 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
                             op="export_3mf", hint="arrange=True lays them out")
         x0, y0 = (W - lw) / 2, (D - ld) / 2
         targets = [(x0 + lo.x - lo_x, y0 + lo.y - lo_y) for lo, _ in boxes]
-    return [(name, s.at(tx - lo.x, ty - lo.y, -lo.z), st, k, n)
+    return [(name, s.at(tx - lo.x, ty - lo.y, -lo.z), st, k, n, (tx - lo.x, ty - lo.y, -lo.z))
             for (name, s, st), (lo, _), (tx, ty), (k, n) in zip(parts, boxes, targets, which)]
 
 
@@ -820,8 +831,8 @@ def _write_3mf(placed, path: str, base: dict, tolerance: float = 0.02, angular: 
              f' <metadata name="Title">{_xml_text(os.path.splitext(os.path.basename(path))[0])}</metadata>',
              " <resources>"]
     objects: dict[str, list] = {}  # name: its copies, (shape, settings) each
-    for name, shape, own, _, _ in placed:
-        objects.setdefault(name, []).append((shape, own))
+    for name, shape, own, _, _, shift in placed:
+        objects.setdefault(name, []).append((shape, own, shift))
     colors = [parse_color(c[0][0].color) for c in objects.values()]
     palette = sorted({color_hex(c) for c in colors if c})
     if palette:
@@ -831,10 +842,11 @@ def _write_3mf(placed, path: str, base: dict, tolerance: float = 0.02, angular: 
     build, bambu_cfg, prusa_cfg = [], ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"], ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"]
     for k, ((name, copies), rgb) in enumerate(zip(objects.items(), colors)):
         oid = k + 2
-        shape, own = copies[0]
+        shape, own, shift = copies[0]
         lo, hi = shape.bounds
         cx, cy = (lo.x + hi.x) / 2, (lo.y + hi.y) / 2
-        V, F = _closed_mesh(shape.at(-cx, -cy, 0), name, tolerance, angular)  # the object's mesh about its own middle
+        back = np.subtract((cx, cy, 0), shift)  # errors name a spot in the part's own coordinates
+        V, F = _closed_mesh(shape.at(-cx, -cy, 0), name, tolerance, angular, back)  # the object's mesh about its own middle
         mat = f' pid="1" pindex="{palette.index(color_hex(rgb))}"' if rgb else ""
         model.append(f'  <object id="{oid}" type="model" name={quoteattr(name)}{mat}>')
         model.append("   <mesh>\n    <vertices>")
@@ -842,7 +854,7 @@ def _write_3mf(placed, path: str, base: dict, tolerance: float = 0.02, angular: 
         model.append("    </vertices>\n    <triangles>")
         model += [f'     <triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in F.tolist()]
         model.append("    </triangles>\n   </mesh>\n  </object>")
-        for c, _ in copies:  # a copy: the same object placed again (an instance in the slicers)
+        for c, *_ in copies:  # a copy: the same object placed again (an instance in the slicers)
             lo, hi = c.bounds
             build.append(f'  <item objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 {(lo.x + hi.x) / 2:.6g} {(lo.y + hi.y) / 2:.6g} 0"/>')
         bk, pk = _slicer_keys({**base, **own})

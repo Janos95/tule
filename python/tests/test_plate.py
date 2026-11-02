@@ -368,3 +368,9 @@ def test_material_slows_the_flow():
     pla = _slicer_config({"material": "PLA"}, (250, 210), PRINTERS["prusa-mk4"])
     petg = _slicer_config({"material": "PETG"}, (250, 210), PRINTERS["prusa-mk4"])
     assert pla["max_volumetric_speed"] == 15 and 9 <= petg["max_volumetric_speed"] <= 10.5
+
+
+def test_self_touching_part_says_where(tmp_path):
+    part = box(10, 10, 10) - cylinder(2, 30, center=True).translate(8, 5, 0)  # the hole just touches x=10
+    with pytest.raises(TuleError, match=r"touches itself .*near \(10, 5, 10\)"):
+        export_3mf([("lug", part)], str(tmp_path / "p.3mf"))

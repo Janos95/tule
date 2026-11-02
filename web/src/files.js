@@ -393,6 +393,9 @@ function table(into, { head, body }, c) {
           a.rel = "noopener noreferrer";
           td.className = "";
           td.append(a);
+        } else if (td.className === "long") {
+          td.append(el("div", "clamp", v)); // three lines at most, so a wide table stays readable; all of it on hover
+          td.title = v;
         } else td.textContent = numeric[i] ? tidy(v) : v;
         if (td.textContent !== v) td.title = v;
         row.append(td);

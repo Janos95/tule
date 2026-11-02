@@ -1695,13 +1695,14 @@ main {
 .page-file small { color: var(--muted); }
 .page-missing { color: var(--muted); }
 
-.table-wrap { overflow: auto; max-width: 100%; max-height: 75vh; border: 1px solid var(--line); border-radius: 8px; }
+.table-wrap { overflow: auto; max-width: 100%; max-height: calc(100vh - 110px); border: 1px solid var(--line); border-radius: 8px; }
 table.data { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
 table.data th, table.data td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
 table.data tbody tr:last-child td { border-bottom: 0; }
 table.data th { position: sticky; top: 0; background: var(--panel); font-weight: 500; }
 table.data .num { text-align: right; }
-table.data td.long { white-space: normal; min-width: 14em; max-width: 36em; }
+table.data td.long { white-space: normal; min-width: 14em; max-width: 30em; }
+table.data td.long .clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
 .page-body:has(> .table-wrap) { max-width: none; }
 table.data th button { all: unset; cursor: pointer; color: var(--muted); font-size: 12px; }
 table.data th button:hover { color: var(--text); }

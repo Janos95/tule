@@ -352,11 +352,11 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     for k, v in base.items():
         shown[k.replace("_", " ")] = (False if k == "brim" and not v else f"{v:g} mm" if k in ("layer_height", "brim")
                                       else f"{v:g} %" if k == "infill" else v)
-    own = list(dict.fromkeys(n for n, _, o, _, _ in placed if o))
+    own = list(dict.fromkeys(n for n, _, o, *_ in placed if o))
     if own:
         shown["own settings"] = ", ".join(own)
     summary: dict[str, Any] = {"file": os.path.basename(path), "parts": {}}
-    for n, *_, copies in placed:
+    for n, _, _, _, copies, _ in placed:
         summary["parts"][n] = copies
     if printer:
         est = _slice_estimate(path, base, bed, printer=printer[1])
@@ -371,7 +371,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
         shown["estimate"] = f"{printer[1].label}, PrusaSlicer"
     # the view: each part's file once, its copies placed again ("pin ×4/2")
     entries, files, used = [], {}, set()
-    for n, shp, _, k, copies in placed:
+    for n, shp, _, k, copies, _ in placed:
         if n not in files:
             base_name = _slug(n.replace("/", "_"))
             fname, i = f"{base_name}.step", 2

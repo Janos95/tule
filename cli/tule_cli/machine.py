@@ -61,9 +61,12 @@ def _newest_mtime(path: str) -> float:
 def find_output(name: str | None, path: str | None) -> str:
     """A file or output folder: FILE as given, --output NAME in the outputs folder, or the newest output."""
     if path:
-        if not os.path.exists(path):
+        if os.path.exists(path):
+            return path
+        if os.sep not in path.rstrip(os.sep):  # tule screenshot motion: an output's name
+            name = path.rstrip(os.sep)
+        else:
             raise CliError(f"{path}: no such file or folder")
-        return path
     root = outputs_root()
     if name:
         for cand in [os.path.join(root, name)] + [os.path.join(root, name + ext) for ext in GEOMETRY]:
@@ -802,6 +805,21 @@ def reference(name: str) -> str | None:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _no_member(owner: str, name: str) -> str:
+    import difflib
+    import importlib
+
+    tule = importlib.import_module("tule")
+    obj = tule
+    for part in owner.removeprefix("tule.").split("."):
+        obj = getattr(obj, part, None) or importlib.import_module("tule." + part)
+    have = [n for n in dir(obj) if not n.startswith("_")
+            and (getattr(getattr(obj, n), "__module__", None) or "tule").startswith("tule")]
+    close = difflib.get_close_matches(name, have, n=3, cutoff=0.6)
+    return (f"{owner} has no {name!r}" + (f"; close: {', '.join(close)}" if close else "")
+            + f" (tule docs {owner} lists what it has)")
+
+
 def cmd_docs(args):
     d = skills_dir()
     names = topics(d)
@@ -813,6 +831,8 @@ def cmd_docs(args):
         return
     if args.topic not in names:
         ref = reference(args.topic)
+        if ref is None and "." in args.topic and reference(args.topic.rsplit(".", 1)[0]) is not None:
+            raise CliError(_no_member(*args.topic.rsplit(".", 1)))
         if ref is None:
             raise CliError(f"no topic {args.topic!r}; topics: {', '.join(names)}, or a library name (tule docs Shape.fillet)")
         sys.stdout.write(ref)

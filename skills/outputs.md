@@ -34,7 +34,7 @@ outputs.overlay("plate-loads", part, title="Load case 1",
                 arrows=[{"at": (20, 10, 5), "dir": (0, 0, -1), "label": "200 N"}])
 ```
 
-Other tools write into `outputs.folder()` directly: temporary name, `os.replace`, `output.json` last.
+Other tools write into `outputs.folder()` directly (`output.json` last).
 
 A long list: group from the start. `src/checks/fit.py` makes `outputs/checks/fit/`, folded under "checks"; a number in front orders, unshown (`src/01-print.py`: "print", first).
 
@@ -55,9 +55,9 @@ Optional: without it one file is a part, numbered files a sequence, several file
  "info": {"material": "aluminium 6061", "mass": "20.8 g"}}
 ```
 
-- **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
+- **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid`, …) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Stress over the whole surface: `tule docs fea`.
-- **Info** (any kind): a flat object of facts (units in text: `"20.8 g"`), shown under the view.
+- **Info** (any kind): flat facts, rounded (`"20.8 g"`), shown under the view.
 - **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", "filament_g", …}}` (`estimate=True` or the user's printer, `estimate="bambu-p1s"`: `tule docs outputs.plate`).
 - **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
@@ -77,7 +77,7 @@ with open(f"{d}/mass.vl.json", "w") as f:
                             "y": {"field": "mass_g", "type": "quantitative"}}}, f)
 ```
 
-No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it. In a folder, a `README.md` (or `00-…md`) opens first.
+No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it. In a folder, a `README.md` (or `00-…md`) opens first. Write for the user: rounded numbers, no Python reprs.
 
 ## Looking at outputs yourself
 

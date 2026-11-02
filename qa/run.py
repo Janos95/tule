@@ -642,9 +642,9 @@ def cmd_wait(a):
     st = state(run)
     if st["busy"]:
         n = st["turn"]
-        raw = run / f"turn-{n}.jsonl"
+        raw, msg = run / f"turn-{n}.jsonl", run / f"turn-{n}.msg"  # .msg is written when the turn starts
         s = summarize(raw)
-        print(f"still working on turn {n} ({round((time.time() - (raw.stat().st_ctime if raw.exists() else time.time())) / 60)} min so far, "
+        print(f"still working on turn {n} ({round((time.time() - (msg.stat().st_mtime if msg.exists() else time.time())) / 60)} min so far, "
               f"{s['commands']} commands, tools: {', '.join(s['tools']) or 'none'}); wait again")
         return
     n = st["turn"]
