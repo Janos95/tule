@@ -244,3 +244,10 @@ def test_sequence_writes_a_part_made_again_each_frame_once(outdir):
     assert files == ["horn.step"]
     frames = json.load(open(outdir / "winding" / "output.json"))["frames"]
     assert len({json.dumps(f["parts"][0]["transform"]) for f in frames[1:]}) == 4
+
+
+def test_an_empty_part_is_refused_by_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("TULE_WORKSPACE", str(tmp_path))
+    empty = (box(1, 1, 1) & box(1, 1, 1).at(5, 0, 0)).named("sheath")
+    with pytest.raises(TuleError, match="sheath is empty"):
+        outputs.assembly("hand", Assembly(box(2, 2, 2).named("palm"), empty))

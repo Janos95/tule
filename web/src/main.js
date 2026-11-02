@@ -367,7 +367,8 @@ const viewOf = (o) => {
 function kindOf(o) {
   if (o.meta?.kind) return o.meta.kind;
   if (o.files.length === 1) return "part";
-  if (o.files.length > 2 && o.files.every((f) => /\d+\.[a-z]+$/i.test(f.file))) return "sequence";
+  // frames written by hand: frame_001.step, 0001.stl (not numbered parts: R11-001.step, R11-002.step)
+  if (o.files.length > 2 && o.files.every((f) => /^(frame[-_ ]?)?\d+\.[a-z]+$/i.test(f.file))) return "sequence";
   return "assembly";
 }
 
@@ -421,7 +422,7 @@ function fact(o) {
     const roles = new Map();
     for (const f of faces) if (f?.role) roles.set(String(f.role), (roles.get(String(f.role)) ?? 0) + 1);
     if (roles.size) return [[...roles].map(([r, n]) => `${n} ${r}`).join(" · "), ""];
-    if (o.meta?.arrows?.length) return [plural(o.meta.arrows.length, "load"), ""];
+    if (o.meta?.arrows?.length) return [plural(o.meta.arrows.length, "arrow"), ""];
     if (faces.some((f) => Number.isFinite(f?.value))) return [o.meta?.scale?.label ?? "values", ""];
     return ["ok", "ok"];
   }
@@ -452,7 +453,9 @@ function renderList() {
   const recent = all.filter((o) => o.root === "outputs").sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0));
   const newest = recent.find((o) => o.files.length) ?? recent[0];
   if (state.wanted == null && newest) state.wanted = newest.id; // once: the view doesn't jump while the agent works
-  state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (newest?.id ?? all[0]?.id ?? null);
+  // a link may name work/ or inputs/ entries without their folder (?o=shopping for work/shopping)
+  const wanted = [state.wanted, `work/${state.wanted}`, `inputs/${state.wanted}`].find((id) => all.some((o) => o.id === id));
+  state.selected = wanted ?? newest?.id ?? all[0]?.id ?? null;
   const outs = all.filter((o) => o.root === "outputs");
   partsTree.remove(); // shown only under the entry that has parts (below)
   $("outputs-empty").hidden = outs.length > 0;
@@ -716,7 +719,15 @@ async function showPage(o, v) {
   if (!v) {
     body.append(Object.assign(document.createElement("p"), { className: "page-empty", textContent: o.build?.state === "stale" && o.build.why === "never built" ? `Not built yet: tule build ${o.name}` : o.build ? "Nothing to show yet." : "Empty." }));
   } else if (v.type === "log") {
-    body.append(Object.assign(document.createElement("pre"), { className: "page-text", textContent: o.build.log }));
+    // the error and the script line first, in plain words; the traceback folded under it (without its ^^^^ marker lines)
+    const log = o.build.log.split("\n").filter((l) => !/^\s*[~^]+\s*$/.test(l)).join("\n");
+    const at = [...log.matchAll(/File "(?:\/workspace\/)?((?:src|lib)\/[^"]+)", line (\d+)/g)].pop();
+    const error = o.build.error ?? lastLine(log);
+    if (error) body.append(Object.assign(document.createElement("p"), { className: "page-error", textContent: error + (at ? `  (${at[1]}, line ${at[2]})` : "") }));
+    const more = document.createElement("details");
+    more.open = !error;
+    more.append(Object.assign(document.createElement("summary"), { textContent: "Build log" }), Object.assign(document.createElement("pre"), { className: "page-text", textContent: log }));
+    body.append(more);
   } else {
     setStatus("Loading…");
     const cleanup = await renderFile(body, v.f, {

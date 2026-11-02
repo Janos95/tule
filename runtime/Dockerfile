@@ -17,11 +17,13 @@ RUN printf 'user-agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 
 # OCP links against VTK libraries at import (vtk is its only heavy dependency)
 COPY runtime/prune_vtk.sh /tmp/prune_vtk.sh
-RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh lxml networkx pymupdf \
+RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh lxml networkx pymupdf ezdxf \
  && sh /tmp/prune_vtk.sh && rm /tmp/prune_vtk.sh
 
 COPY python /opt/tule/python
-RUN pip install --no-cache-dir --no-deps /opt/tule/python
+RUN pip install --no-cache-dir --no-deps /opt/tule/python \
+ && echo /workspace > "$(python -c 'import site; print(site.getsitepackages()[0])')/workspace.pth"
+# (any script imports the project's lib/, as under tule build; appended, so it shadows nothing)
 # the tule CLI: screenshot, inspect, docs, snapshot on the machine (and ssh/up from a laptop)
 RUN --mount=type=bind,source=cli,target=/tmp/cli,rw pip install --no-cache-dir --no-deps /tmp/cli
 COPY skills /opt/tule/skills

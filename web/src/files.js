@@ -90,7 +90,7 @@ function plain(into, s) {
 
 async function draw(into, f, c) {
   const type = typeOf(f.file);
-  if (type === "table") return table(into, parseCsv(text(await c.read(f)), /\.tsv$/i.test(f.file) ? "\t" : ","), c);
+  if (type === "table") return table(into, parseCsv(text(await c.read(f)), /\.tsv$/i.test(f.file) ? "\t" : undefined), c);
   if (type === "data") {
     const data = JSON.parse(text(await c.read(f)));
     if (records(data)) return table(into, fromRecords(data), c);
@@ -295,7 +295,14 @@ function dxf(src) {
 // ---------------------------------------------------------------- tables
 
 /** RFC 4180: quoted fields may hold the separator, quotes ("") and line breaks. */
-export function parseCsv(s, sep = ",") {
+/** The separator of a CSV's header row: comma, or the semicolon (or tab) a European Excel writes. */
+function separator(s) {
+  const head = s.slice(0, s.search(/\r?\n|$/)).replace(/"[^"]*"/g, "");
+  const count = (c) => head.split(c).length - 1;
+  return [",", ";", "\t"].reduce((a, b) => (count(b) > count(a) ? b : a));
+}
+
+export function parseCsv(s, sep = separator(s)) {
   const rows = [];
   let row = [];
   let field = "";

@@ -190,6 +190,8 @@ class Selection:
             return self._new(self.items[i])
         if isinstance(i, Selection):
             return self.owner._resolve(i, self.kind)
+        if isinstance(i, (list, tuple)):
+            return self._new([self.items[k] for k in i])
         return self._new([self.items[i]])
 
     # -- set operations

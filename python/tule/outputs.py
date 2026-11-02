@@ -180,6 +180,9 @@ def folder(name: str | None = None) -> "Folder":
 
 
 def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
+    if isinstance(item, Shape) and not item.faces:
+        raise TuleError(f"{item.name or os.path.basename(path)} is empty (no faces)", op="outputs",
+                        hint="the operation that made it left nothing: check len(part.faces) after each step")
     ext = os.path.splitext(path)[1].lower()
     if ext in (".step", ".stp"):
         return export_step(item, path)

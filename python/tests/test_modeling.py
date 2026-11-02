@@ -345,3 +345,16 @@ def test_an_assembly_takes_a_name_and_a_color():
     n = a.named("hat", "#f00")
     assert n.name == "hat" and [(p, s.color) for p, s in n.parts()] == [("hat/a", "#f00"), ("hat/sub/b", "#f00")]
     assert a.named("x").parts()[0][1].color is None
+
+
+def test_a_selection_takes_a_list_of_indices():
+    b = box(10, 20, 30)
+    assert len(b.faces[[0, 2, 4]]) == 3
+    assert b.faces[[1]].items == b.faces[1].items
+
+
+def test_a_tube_along_a_spline_whose_hole_cut_used_to_vanish():
+    pts = [(-16, -170, 43), (-14, -158, 61), (-3, -55, 69), (-3, -15, 29), (-3, 17, 27), (-6, 51, 22)]
+    t = pipe(pts, 1.0, wall=0.5)
+    assert t.is_valid
+    assert t.volume == pytest.approx(pipe(pts, 1.0).volume - pipe(pts, 0.5).volume, rel=1e-3)

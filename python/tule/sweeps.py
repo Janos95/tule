@@ -196,10 +196,8 @@ def _path(path, smooth: bool):
     return poly.Wire()
 
 
-def _sweep_wire(wire, path_wire, start, tangent, roles_out=None):
-    """One closed profile wire (in the xy plane) swept along the path: a solid."""
-    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_TransitionMode
+def _placed(shape, start, tangent):
+    """A profile (wire or face in the xy plane) set square to the path at its start."""
     from OCP.gp import gp_Ax3
 
     t = gp_Trsf()
@@ -207,7 +205,30 @@ def _sweep_wire(wire, path_wire, start, tangent, roles_out=None):
     x = gp_Dir(1, 0, 0) if abs(tangent[0]) < 0.9 else gp_Dir(0, 1, 0)
     x = gp_Dir(gp_Vec(z).Crossed(gp_Vec(x)).Crossed(gp_Vec(z)).Reversed())
     t.SetTransformation(gp_Ax3(gp_Pnt(*start), z, x), gp_Ax3())
-    placed = cast(BRepBuilderAPI_Transform(wire, t, True).Shape())
+    return cast(BRepBuilderAPI_Transform(shape, t, True).Shape())
+
+
+def _sweep_face(face, path_wire, start, tangent):
+    """A face with holes swept along the path in one go (a tube): cutting the swept hole out of
+    the swept outline instead fails on some splines, as the two surfaces run parallel."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipe
+    from OCP.GeomFill import GeomFill_Trihedron
+
+    try:
+        mk = BRepOffsetAPI_MakePipe(path_wire, _placed(face, start, tangent), GeomFill_Trihedron.GeomFill_IsCorrectedFrenet, False)
+        mk.Build()
+        out = Shape(mk.Shape()) if mk.IsDone() else None
+    except OCC_ERRORS:
+        return None
+    return out if out is not None and out.is_valid and out.volume > 0 else None
+
+
+def _sweep_wire(wire, path_wire, start, tangent, roles_out=None):
+    """One closed profile wire (in the xy plane) swept along the path: a solid."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_TransitionMode
+
+    placed = _placed(wire, start, tangent)
     mk = BRepOffsetAPI_MakePipeShell(path_wire)
     mk.SetMode(False)  # corrected Frenet: the profile does not twist about the path
     mk.SetTransitionMode(BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RoundCorner)
@@ -251,11 +272,17 @@ def sweep(profile: Profile, path, smooth: bool = True) -> Shape:
     for face in faces:
         wires = list(subshapes(face, "wire"))
         outer = static(BRepTools, "OuterWire")(face)
-        solid = Shape(_sweep_wire(outer, pw, start, tangent, roles))
-        for w in wires:
-            if not w.IsSame(outer):
-                solid = solid - Shape(_sweep_wire(w, pw, start, tangent))
+        solid = _sweep_face(face, pw, start, tangent) if len(wires) > 1 else None
+        if solid is None:
+            solid = Shape(_sweep_wire(outer, pw, start, tangent, roles))
+            for w in wires:
+                if not w.IsSame(outer):
+                    solid = solid - Shape(_sweep_wire(w, pw, start, tangent))
         out = solid if out is None else out | solid
+    if not out.faces or out.volume <= 0:
+        raise TuleError("sweeping the profile along the path left nothing", op="sweep",
+                        hint="a bend tighter than the profile folds it onto itself: smooth the path, "
+                             "make the profile smaller, or try smooth=False")
     if len(faces) == 1 and len(list(subshapes(faces[0], "wire"))) == 1:
         side = [f for f in out._sub("face") if not any(f.IsSame(c) for c in roles["start"] + roles["end"])]
         return out._with_roles({"start": roles["start"], "end": roles["end"], "side": side})

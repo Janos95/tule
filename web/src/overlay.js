@@ -285,7 +285,8 @@ export function initOverlay({ viewer, legend, marks }) {
         const row = el("div", "legend-row");
         const sw = el("span", "swatch arrow");
         sw.style.setProperty("--c", `var(${ARROW})`);
-        row.append(sw, el("span", "legend-kind role", "arrow"), el("span", "legend-label", a.label || "—"), el("small", "legend-faces", a.at.map((v) => +v.toPrecision(4)).join(", ")));
+        row.append(sw, el("span", "legend-kind role", "arrow"), el("span", "legend-label", a.label || "—"));
+        row.title = `at ${a.at.map((v) => +v.toPrecision(4)).join(", ")}`; // where it points, on hover: not a column of coordinates
         list.append(row);
       });
       legend.append(list);
@@ -343,7 +344,7 @@ export function initOverlay({ viewer, legend, marks }) {
     },
     /** Hover text for a pick: the face's finding, condition or value, or the arrow's label. */
     describe(hit) {
-      if (hit.arrow !== undefined) return [`load arrow${arrows[hit.arrow]?.label ? ": " + arrows[hit.arrow].label : ""}`];
+      if (hit.arrow !== undefined) return [arrows[hit.arrow]?.label || "arrow"];
       const r = byFace.get(hit.face);
       const cond = r ? [`${r.kind}${r.label ? ": " + r.label : ""}`] : [];
       const fv = at && hit.rest ? at(hit.rest) : undefined;

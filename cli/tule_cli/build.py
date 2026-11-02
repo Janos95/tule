@@ -29,6 +29,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -370,7 +371,9 @@ class Build:
                     log(f"{name}: {p}")
                 why = {15: " (SIGTERM: stopped)",
                        9: f" (SIGKILL: out of memory{memory()}? lighter purchased parts or fewer faces, or a bigger machine: tule up --machine cpu-4)"}.get(-code, "")
-                error = f"killed by signal {-code}{why}" if code < 0 else f"exit status {code}" if code else problems[0]
+                # a script that raised: its exception (TuleError: fillet failed: …), not "exit status 1"
+                raised = re.sub(r"^(?:\w+\.)+(?=\w+:)", "", tail[-1].strip()) if code > 0 and tail else ""
+                error = f"killed by signal {-code}{why}" if code < 0 else raised or f"exit status {code}" if code else problems[0]
                 self.fail(name, error, "\n".join(tail))
                 return []
             # a file changed while the script ran is recorded as changed: the output may have the old one

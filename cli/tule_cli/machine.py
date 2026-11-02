@@ -162,6 +162,9 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
             continue
         from tule import tessellate
 
+        if not item.faces:
+            print(f"tule: {name or nm} is empty (no faces); not drawn", file=sys.stderr)
+            continue
         lo, hi = item.bounds
         diag = max((hi - lo).length, 1e-6)
         m = tessellate(item, tolerance=diag / 2000, angular=0.2)

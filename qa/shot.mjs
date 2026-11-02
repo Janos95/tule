@@ -13,7 +13,7 @@ try {
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   await page.goto(url, { waitUntil: "load", timeout: 30000 });
   const settled = await page
-    .waitForFunction(() => !/Loading…|connecting/.test(document.body.innerText), null, { timeout: 30000 })
+    .waitForFunction(() => !/Loading|connecting/.test(document.body.innerText), null, { timeout: 30000 })
     .then(() => true, () => false);
   await page.waitForTimeout(1500); // the model's first frames
   await page.screenshot({ path: out });

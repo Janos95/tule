@@ -1379,7 +1379,7 @@ main {
 .output:hover { background: var(--hover); }
 .output-icon { flex: none; width: 15px; height: 15px; fill: none; stroke: var(--muted); stroke-width: 1.3; stroke-linejoin: round; }
 .output-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.output small { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.output small { flex: 0 1 auto; min-width: 0; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .output small[data-tone="error"] { color: var(--danger); }
 .output small[data-tone="warning"] { color: var(--warn); }
 .output small[data-tone="live"] { color: var(--ok); }
@@ -1677,6 +1677,8 @@ main {
 .page-empty { color: var(--muted); font-size: 13px; text-align: center; margin-top: 18vh; }
 .page-error { color: var(--danger); font-size: 13px; }
 .page-note { color: var(--muted); font-size: 12px; margin: 8px 2px 0; }
+.page-error { margin: 0 0 14px; color: var(--danger); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.page-body details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
 .page-text { margin: 0; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .page-image { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 4px; }
 .page-dxf svg { display: block; width: 100%; max-height: calc(100vh - 160px); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
