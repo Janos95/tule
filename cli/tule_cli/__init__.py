@@ -546,19 +546,18 @@ def _build_detached(root: str, argv: list[str]):
 
     state = os.path.join(root, "outputs", build.STATE)
     os.makedirs(state, exist_ok=True)
-    path = os.path.join(state, "build.log")
-    with open(path, "ab") as out:
-        if out.tell() > 8 << 20:
-            out.truncate(0)
-        start = out.tell()
+    # each build its own log, so one waiting for another shows only its own lines; build.log links to
+    # the one holding the lock (build.build)
+    path = os.path.join(state, f"build-{os.getpid()}.log")
+    with open(path, "wb") as out:
         child = subprocess.Popen([sys.executable, "-m", "tule_cli", "build", *argv], cwd=root, stdin=subprocess.DEVNULL,
-                                 stdout=out, stderr=out, start_new_session=True, env={**os.environ, "TULE_BUILD_CHILD": "1"})
+                                 stdout=out, stderr=out, start_new_session=True,
+                                 env={**os.environ, "TULE_BUILD_CHILD": "1", "TULE_BUILD_LOG": path})
     signal.signal(signal.SIGINT, lambda *_: os.killpg(child.pid, signal.SIGTERM))
     for sig in (signal.SIGHUP, signal.SIGPIPE):
         signal.signal(sig, signal.SIG_IGN)
     shown = True
     with open(path, "rb") as log_:
-        log_.seek(start)
         while True:
             done = child.poll() is not None
             chunk = log_.read()

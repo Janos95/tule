@@ -294,8 +294,52 @@ def _extrema(a, b, threads=False):
     d.Perform()
     if not d.IsDone():
         raise TuleError("could not measure the distance", op="distance")
-    gap = 0.0 if d.InnerSolution() else max(0.0, d.Value())
-    return gap, np.array(d.PointOnShape1(1).Coord()), np.array(d.PointOnShape2(1).Coord())
+    if d.InnerSolution():  # OCCT says one holds the other; it is sometimes wrong (a pin in a clearance bore)
+        return _held(a, b, threads)
+    return max(0.0, d.Value()), np.array(d.PointOnShape1(1).Coord()), np.array(d.PointOnShape2(1).Coord())
+
+
+def _held(a, b, threads):
+    """The gap between the boundaries, unless a point of one boundary is inside the other (then 0)."""
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_IN, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    def faces(s):
+        from OCP.BRep import BRep_Builder
+        from OCP.TopAbs import TopAbs_FACE
+        from OCP.TopoDS import TopoDS_Compound
+
+        c, bld = TopoDS_Compound(), BRep_Builder()
+        bld.MakeCompound(c)
+        ex = TopExp_Explorer(s, TopAbs_FACE)
+        while ex.More():
+            bld.Add(c, ex.Current())
+            ex.Next()
+        return c
+
+    d = BRepExtrema_DistShapeShape()
+    d.SetMultiThread(threads)
+    d.LoadS1(faces(a))
+    d.LoadS2(faces(b))
+    d.Perform()
+    p, q = np.array(d.PointOnShape1(1).Coord()), np.array(d.PointOnShape2(1).Coord())
+    if not d.IsDone() or d.Value() < 1e-7:
+        return 0.0, p, q
+
+    def inside(s, x):
+        ex = TopExp_Explorer(s, TopAbs_SOLID)
+        while ex.More():
+            c = BRepClass3d_SolidClassifier(ex.Current(), gp_Pnt(*x), 1e-7)
+            if c.State() == TopAbs_IN:
+                return True
+            ex.Next()
+        return False
+
+    if inside(a, q) or inside(b, p):  # boundaries apart, one inside the other
+        return 0.0, q, q
+    return d.Value(), p, q
 
 
 def _closest(fcl, a: _Solid, b: _Solid, rel, seed):

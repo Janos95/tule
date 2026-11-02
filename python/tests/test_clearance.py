@@ -189,3 +189,16 @@ def test_needs_fcl_only_when_checking():
             "except TuleError as e:\n    print(e)\n")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert "python-fcl" in out and "pip install python-fcl" in out
+
+
+def test_held_checks_containment_itself():
+    """When OCCT claims one solid holds the other, the boundaries decide (a pin in a clearance bore is 0.2 apart)."""
+    from tule.clearance import _held
+
+    plate = box(20, 20, 5, center=True) - cylinder(3.2, 10, center=True)
+    pin = cylinder(3.0, 20, center=True)
+    assert abs(_held(plate._s, pin._s, False)[0] - 0.2) < 1e-6
+    big, small = box(20, 20, 20, center=True), box(2, 2, 2, center=True)
+    assert _held(big._s, small._s, False)[0] == 0 and _held(small._s, big._s, False)[0] == 0
+    assert _held(big._s, box(4, 4, 4).at(9, 9, 9)._s, False)[0] == 0  # overlapping
+    assert big.distance(small) == 0 and plate.distance(pin) > 0.19

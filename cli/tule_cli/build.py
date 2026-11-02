@@ -25,6 +25,7 @@ it still holds (``tule based-on <result>`` again records the sources as they are
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -488,14 +489,23 @@ def build(root: str, names: list[str] | None = None, force: bool = False,
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        log(f"another tule build is running here (its log: outputs/{STATE}/build.log); waiting for it")
+        log(f"another tule build is running here (its log: outputs/{STATE}/build.log); waiting for it (--stop ends it)")
         fcntl.flock(lock, fcntl.LOCK_EX)
+    own = os.environ.get("TULE_BUILD_LOG")
+    if own:  # build.log: the log of the build running now
+        link = os.path.join(state, "build.log.new")
+        with contextlib.suppress(OSError):
+            os.unlink(link)
+        os.symlink(os.path.basename(own), link)
+        os.replace(link, os.path.join(state, "build.log"))
     try:
         for n in os.listdir(state):  # left by a build that was killed (the viewer would show it building)
             if n.startswith(("stage-", "old-")):
                 shutil.rmtree(os.path.join(state, n), ignore_errors=True)
             elif n.startswith("result-"):
                 os.unlink(os.path.join(state, n))
+            elif n.startswith("build-") and n.endswith(".log") and not _alive(n[6:-4]) and (not own or n != os.path.basename(own)):
+                os.unlink(os.path.join(state, n))  # a finished build's log
         from .cache import Cache
 
         b = Build(root, Cache.here())
@@ -514,6 +524,16 @@ def build(root: str, names: list[str] | None = None, force: bool = False,
     finally:
         lock.close()
 
+
+
+def _alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except PermissionError:
+        return True
+    except (ValueError, OSError):
+        return False
+    return True
 
 
 def stop(root: str) -> list[int]:
