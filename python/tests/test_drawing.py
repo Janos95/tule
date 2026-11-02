@@ -560,3 +560,174 @@ def test_several_parts_and_a_table_sheet(outdir):
         drawing.render(parts, dims={"B-99": []})
     with pytest.raises(TuleError, match="table is a list"):
         drawing.render(plate(), table="M5")
+
+
+# ---------------------------------------------------------------- assembly drawings, notes
+
+
+@functools.cache
+def cam_toy():
+    """A base, two uprights, a shaft with three cams, three followers in a guide, four screws: 14 parts, 7 items."""
+    base = box(120, 60, 6, center=True).at(0, 0, 3)
+    upright = box(8, 50, 6, center=True).at(0, 0, 9) + box(8, 12, 50, center=True).at(0, 0, 35)
+    upright -= cylinder(4.2, 20, center=True).rotate(y=90).at(0, 0, 45)
+    for y in (-18, 18):
+        upright -= cylinder(1.6, 20, center=True).at(0, y, 9)
+        base -= cylinder(1.6, 20, center=True).at(-55, y, 0) + cylinder(1.6, 20, center=True).at(55, y, 0)
+    cam = (circle(14, center=(-5, 0)) - circle(4.2)).extrude(8).rotate(y=90).at(-4, 0, 0)
+    follower = cylinder(3, 40) + cylinder(7, 3)
+    guide = box(80, 20, 5, center=True).at(0, 0, 90)
+    screw = cylinder(1.5, 12).at(0, 0, -12) + cylinder(2.8, 3)
+    parts = [base.named("base"), *(upright.at(x, 0, 0).named(f"upright{i}") for i, x in enumerate((-55, 55), 1)),
+             cylinder(4, 130, center=True).rotate(y=90).at(5, 0, 45).named("shaft")]
+    parts += [cam.rotate(x=a).at(x, 0, 45).named(f"cam{i}") for i, (x, a) in enumerate(((-25, 0), (0, 120), (25, 240)), 1)]
+    parts += [follower.at(x, 0, 65).named(f"follower{i}") for i, x in enumerate((-25, 0, 25), 1)]
+    for x in (-25, 0, 25):
+        guide -= cylinder(3.3, 20, center=True).at(x, 0, 90)
+    parts.append(guide.named("guide"))
+    parts += [screw.at(x, y, 12).named(f"screw{i}") for i, (x, y) in enumerate(((-55, -18), (-55, 18), (55, -18), (55, 18)), 1)]
+    return Assembly(*parts, name="cam toy")
+
+
+@functools.cache
+def toy_drawing():
+    return drawing.render(cam_toy(), explode=1, info={"number": "CT-1"},
+                          bom={"base": {"material": "PLA", "source": "printed"}, "screw": {"source": "ISO 4762 M3×12"}})
+
+
+def _crosses(p, q, r, s) -> bool:
+    """Segments p–q and r–s cross (properly), by orientation tests: the test's own, not the drawing's."""
+    def o(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    return o(p, q, r) * o(p, q, s) < 0 and o(r, s, p) * o(r, s, q) < 0
+
+
+def test_assembly_balloons_count_identical_parts():
+    page, size, f = toy_drawing()
+    assert [(i["item"], i["name"], i["qty"]) for i in f["items"]] == [
+        (1, "base", 1), (2, "upright", 2), (3, "shaft", 1), (4, "cam", 3), (5, "follower", 3), (6, "guide", 1),
+        (7, "screw", 4)]
+    assert f["items"][3]["parts"] == ["cam toy/cam1", "cam toy/cam2", "cam toy/cam3"]  # rotated copies: one item
+    # one balloon per item, its number in it, on the page
+    assert sorted(b["item"] for b in f["balloons"]) == list(range(1, 8))
+    labels = [t for t, _ in page.labels]
+    for k in range(1, 8):
+        assert str(k) in labels
+    for b in f["balloons"]:
+        assert MARGIN < b["center"][0] < size[0] - MARGIN and MARGIN < b["center"][1] < size[1] - MARGIN
+    assert f["sheet"] in ("A4", "A3") and len(f["pages"]) == 1
+
+
+MARGIN = drawing.MARGIN
+
+
+def test_assembly_parts_list():
+    page, _, f = toy_drawing()
+    head, body = f["parts_list"]
+    assert head == ["Item", "Name", "Qty", "Material", "Source"]
+    assert body[0] == ["1", "base", "1", "PLA", "printed"]
+    assert body[6] == ["7", "screw", "4", "", "ISO 4762 M3×12"]
+    assert [r[2] for r in body] == ["1", "2", "1", "3", "3", "1", "4"]
+    t = f["texts"]
+    assert {"Item", "Qty", "Material", "upright", "ISO 4762 M3×12", "CT-1", "cam toy"} <= set(t)
+    # a name given in bom replaces the part's; a key that is no part is an error
+    _, _, g = drawing.render(cam_toy(), explode=0, bom={"screw": {"name": "Screw ISO 4762 M3×12"}})
+    assert g["parts_list"][0] == ["Item", "Name", "Qty"] and g["parts_list"][1][6][1] == "Screw ISO 4762 M3×12"
+    with pytest.raises(TuleError, match="'nut', which is no part"):
+        drawing.render(cam_toy(), explode=1, bom={"nut": {"source": "x"}})
+
+
+def test_assembly_leaders_never_cross():
+    for item in (cam_toy(), Assembly(*[box(20 + 8 * i, 30 - i, 4).at(0, 0, 4 * i).named(f"plate {chr(65 + i)}")
+                                      for i in range(12)], name="stack")):
+        page, _, f = drawing.render(item, explode=1)
+        L = page.leaders
+        assert len(L) == len(f["items"])
+        for i in range(len(L)):
+            for j in range(i):
+                assert not _crosses(L[i][:2], L[i][2:], L[j][:2], L[j][2:]), (i, j)
+        for b in f["balloons"]:  # each leader ends on its own balloon and passes no other
+            for c in f["balloons"]:
+                if c is not b:
+                    assert math.dist(b["center"], c["center"]) >= 2 * drawing.BALLOON_R + 1
+                    p, q, x = np.array(b["dot"]), np.array(b["center"]), np.array(c["center"])
+                    t = np.clip((x - p) @ (q - p) / ((q - p) @ (q - p)), 0, 1)
+                    assert np.linalg.norm(p + t * (q - p) - x) > drawing.BALLOON_R
+        assert drawing.collisions(page) == []
+
+
+def test_explode_moves_parts_apart():
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    _, _, f = toy_drawing()
+    ex = f["explode"]
+    assert ex["axis"] == "z" and all(o[0] == o[1] == 0 for o in ex["offsets"].values())
+    asm = cam_toy()
+    moved = {p: s.at(*ex["offsets"].get(p, (0, 0, 0))) for p, s in asm.parts()}
+    z = {p: s.bounds[0].z for p, s in moved.items()}
+    # each resting on the one below: shaft over the uprights, cams over the shaft, followers, then the guide
+    assert z["cam toy/base"] < z["cam toy/upright1"] < z["cam toy/shaft"] < z["cam toy/cam1"] < \
+        z["cam toy/follower1"] < z["cam toy/guide"]
+    names = list(moved)
+    for i, a in enumerate(names):  # nothing touches any more
+        for b in names[:i]:
+            d = BRepExtrema_DistShapeShape(moved[a].wrapped, moved[b].wrapped)
+            assert d.Value() > 1.0, (a, b)
+    # given offsets move just those parts; 0 keeps them in place
+    _, _, g = drawing.render(cam_toy(), explode={"shaft": (-90, 0, 0), "screw": (0, 0, 20)})
+    assert g["explode"]["axis"] is None and g["explode"]["offsets"]["cam toy/shaft"] == (-90.0, 0.0, 0.0)
+    assert sorted(g["explode"]["offsets"]) == ["cam toy/screw1", "cam toy/screw2", "cam toy/screw3",
+                                               "cam toy/screw4", "cam toy/shaft"]
+    assert drawing.render(cam_toy(), explode=0)[2]["explode"]["offsets"] == {}
+
+
+def test_assembly_drawing_files_and_errors(outdir):
+    folder = outputs.drawing("toy", cam_toy(), explode=1, title="Cam toy", notes=["Print in PLA"])
+    d = outdir / "toy"
+    assert sorted(x.name for x in d.iterdir()) == ["output.json", "toy.pdf", "toy.step", "toy.svg"]
+    t = svg_texts(d / "toy.svg")
+    assert "Cam toy" in t and "NOTES" in t and "Print in PLA" in t and "Qty" in t
+    with pytest.raises(TuleError, match="dims does not go with explode"):
+        drawing.render(cam_toy(), explode=1, dims=[("top", (0, 0, 0), (1, 0, 0))])
+    with pytest.raises(TuleError, match="goes with explode"):
+        drawing.render(cam_toy(), bom={"base": {"source": "x"}})
+    with pytest.raises(TuleError, match="explode draws an Assembly"):
+        drawing.render(plate(), explode=1)
+    with pytest.raises(TuleError, match="'gear', which is no part"):
+        drawing.render(cam_toy(), explode={"gear": (0, 0, 1)})
+    with pytest.raises(TuleError, match="one view"):
+        drawing.render(cam_toy(), explode=1, views=("front", "top"))
+    assert folder == str(d)
+
+
+def test_notes_one_per_item_and_continuations():
+    n = drawing._notes(["NOTES:", "1. Break all edges 0.3 and", "deburr all holes.", "2) Anodize clear,",
+                        "   MIL-A-8625 Type II", "3. Mark P/N per", "ISO 2768-m"])
+    assert n == ["Break all edges 0.3 and deburr all holes.", "Anodize clear, MIL-A-8625 Type II",
+                 "Mark P/N per ISO 2768-m"]
+    assert drawing._notes("Break all edges 0.3\nAnodize clear, MIL-A-\n8625 Type II\n- Deburr") == \
+        ["Break all edges 0.3", "Anodize clear, MIL-A-8625 Type II", "Deburr"]
+    assert drawing._notes(["Break all edges", "Anodize clear"]) == ["Break all edges", "Anodize clear"]
+    # a wrapped note gets one number
+    lines = drawing._notes_lines(["word " * 40, "short"], 100)
+    assert [k for k, _ in lines if k] == ["1.", "2."] and len(lines) > 3
+
+
+def test_many_notes_get_a_readable_sheet(outdir):
+    notes = [f"{i}. Note number {i}: inspect the bores and break the edges as the line above says" for i in range(1, 21)]
+    _, _, f = drawing.render(plate(), sheet="A2", notes=notes)
+    (p1, s1), (p2, s2) = f["pages"]
+    assert s1 == drawing.SHEETS["A2"] and s2 == (210, 297)  # A4 portrait
+    t1, t2 = [t for t, _ in p1.labels], [t for t, _ in p2.labels]
+    assert "See sheet 2." in t1 and not any("Note number" in t for t in t1)
+    assert "20." in t2 and "1." in t2 and "A4  2/2" in t2 and "NOTES" in t2
+    assert all(op[4] >= 3.5 for op in p2.ops if op[0] == "text" and "Note number" in op[3])
+    assert drawing.collisions(p2) == []
+    # few notes stay beside the title block, at 3.5 mm too
+    page, _, g = drawing.render(plate(), notes=["Break all edges 0.3"])
+    assert len(g["pages"]) == 1
+    assert [op[4] for op in page.ops if op[0] == "text" and op[3] == "Break all edges 0.3"] == [3.5]
+    # with a table, the notes sheet comes after it
+    _, _, h = drawing.render(plate(), notes=notes, table=[["Size", "Qty"], ["M5", 4]])
+    assert [s for _, s in h["pages"]][1:] == [drawing.SHEETS["A4"], (210, 297)]
+    assert "See sheet 3." in [t for t, _ in h["pages"][0][0].labels]

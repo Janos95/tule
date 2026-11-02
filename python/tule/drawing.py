@@ -18,7 +18,8 @@ other text (:func:`collisions` checks a page); leaders cross no leader and no
 dimension line. GD&T (datum feature symbols, feature control frames, basic
 sizes) hangs on model faces through ``datums`` and ``dims``. ``sheets`` spreads
 the views over pages of one PDF, each feature called out once; ``{name: part}``
-draws parts one after another, and ``table`` adds a sheet. The scale is
+draws parts one after another, and ``table`` adds a sheet. ``explode`` draws an
+assembly moved apart, with numbered balloons and a parts list. The scale is
 1:1 when it fits, else the largest ISO 5455 one. Output is deterministic (no
 dates), so a rebuild that changes nothing writes the same bytes.
 """
@@ -2623,8 +2624,12 @@ FIELDS = [
 ]
 GENERAL_TOLERANCE = "ISO 2768-m"
 ROW = 9.0        # title block row height
-NOTE = 3.0       # notes text size
-NOTE_LH = 4.6    # notes line pitch
+NOTE = 3.0       # revision table text size
+NOTE_LH = 4.6    # its line pitch
+NOTES_TEXT = 3.5  # notes: ISO 3098's smallest height for them, wherever they sit
+NOTES_LH = 5.4    # their line pitch
+NOTES_BESIDE = 12  # notes of more lines than this (beside the title block) get sheets of their own
+A4_PORTRAIT = (210, 297)  # a notes sheet
 REV_LH = 6.0     # revision table row height
 
 
@@ -2825,40 +2830,112 @@ def _bend_table(c: _Canvas, x0, y0, bends):
         c.line("thin", (x, y0), (x, y1 - 5.0))
 
 
+class _Unnumbered(str):
+    """A line of the NOTES block without a number: where the notes are, when they have a sheet of their own."""
+
+
+_MARKER = re.compile(r"\s*(?:\(?\d{1,3}[.)]|[-–•*])\s+")  # numbering or a bullet the author typed
+_OPEN_END = re.compile(r"(?:[,;:/(&+–-]|\b(?:and|or|to|with|of|the|a|an|per|for|in|at|on|by|from))$", re.I)
+
+
 def _notes(notes) -> list[str]:
+    """One note per list item (or line of a text): numbering typed in (``1.``, ``-``) is dropped, and an item
+    that only continues the one before (indented, starting lowercase, after an open end like ``and`` or ``,``,
+    or unmarked after numbered ones) is joined to it."""
     if not notes:
         return []
+    if isinstance(notes, list) and all(isinstance(n, _Unnumbered) for n in notes):
+        return notes
     if isinstance(notes, str):
-        notes = [n for n in notes.split("\n") if n.strip()]
+        notes = notes.split("\n")
     if not isinstance(notes, (list, tuple)) or not all(isinstance(n, str) for n in notes):
         raise TuleError("notes is a list of text", op="drawing", hint='notes=["Break all edges 0.3", "Anodize clear"]')
-    return [n.strip() for n in notes]
+    items = [n.rstrip() for n in notes if n.strip()]
+    if items and re.fullmatch(r"\s*notes?\s*:?", items[0], re.I):  # a heading typed in: the block has its own
+        items = items[1:]
+    marked = [bool(_MARKER.match(n)) for n in items]
+    out: list[str] = []
+    for k, (n, m) in enumerate(zip(items, marked)):
+        text = n[_MARKER.match(n).end():].strip() if m else n.strip()
+        prev = out[-1] if out else None
+        if prev is not None and not m and (any(marked[:k]) or n[0].isspace() or bool(_OPEN_END.search(prev))
+                                           or (text[0].islower() and text[0] not in "øµ")):
+            if prev.endswith("-") and prev[-2:-1].islower() and text[0].islower():
+                out[-1] = prev[:-1] + text  # a word broken at the line's end: de- / burr
+            elif prev.endswith(("-", "/")):
+                out[-1] = prev + text
+            else:
+                out[-1] = f"{prev} {text}"
+            continue
+        out.append(text)
+    return out
 
 
-def _notes_lines(notes, w):
-    """``(number or "", text)`` lines of the NOTES block, wrapped to width ``w``."""
+def _notes_lines(notes, w, first=1):
+    """``(number or "", text)`` lines of the NOTES block wrapped to width ``w``, numbered from ``first``; a
+    wrapped line gets no number."""
     out = []
-    for i, n in enumerate(notes, 1):
-        for j, line in enumerate(_wrap(n, w - 6, NOTE)):
-            out.append((f"{i}." if j == 0 else "", line))
+    i = first - 1
+    indent = 2.0 * NOTES_TEXT if any(not isinstance(n, _Unnumbered) for n in notes) else 0.0
+    for n in notes:
+        num = not isinstance(n, _Unnumbered)
+        i += num
+        for j, line in enumerate(_wrap(n, w - indent, NOTES_TEXT)):
+            out.append((f"{i}." if j == 0 and num else "", line))
     return out
 
 
 def _notes_height(notes, w) -> float:
-    return 7.0 + NOTE_LH * len(_notes_lines(notes, w)) if notes else 0.0
+    return 7.5 + NOTES_LH * len(_notes_lines(notes, w)) if notes else 0.0
 
 
-def _notes_block(c: _Canvas, x0, y0, w, notes):
-    """NOTES, numbered, its bottom at ``y0``."""
-    lines = _notes_lines(notes, w)
+def _notes_block(c: _Canvas, x0, y0, w, notes, first=1, title="NOTES"):
+    """NOTES, numbered from ``first``, its bottom at ``y0``."""
+    lines = _notes_lines(notes, w, first)
     y = y0 + _notes_height(notes, w) - 4.0
-    c.text(x0, y, "NOTES", size=TEXT, bold=True)
-    y -= 7.0 - 0.6
+    c.text(x0, y, title, size=TEXT, bold=True)
+    y -= 7.5 - 0.6
+    indent = 2.0 * NOTES_TEXT if any(not isinstance(n, _Unnumbered) for n in notes) else 0.0
     for num, line in lines:
         if num:
-            c.text(x0, y, num, size=NOTE)
-        c.text(x0 + 6, y, line, size=NOTE)
-        y -= NOTE_LH
+            c.text(x0, y, num, size=NOTES_TEXT)
+        c.text(x0 + indent, y, line, size=NOTES_TEXT)
+        y -= NOTES_LH
+
+
+def _notes_spill(notes) -> bool:
+    """More lines than sit comfortably beside the title block: the notes get sheets of their own."""
+    return len(_notes_lines(notes, TB_W - 1)) > NOTES_BESIDE
+
+
+def _notes_pages(notes) -> list[list[str]]:
+    """The notes over A4 portrait sheets, each note whole on one where it fits."""
+    W, H = A4_PORTRAIT
+    room = H - 2 * MARGIN - 16 - _tb_height([("General tolerances", GENERAL_TOLERANCE)]) - 40
+    pages: list[list[str]] = [[]]
+    for n in notes:
+        if pages[-1] and _notes_height(pages[-1] + [n], W - 2 * MARGIN - 16) > room:
+            pages.append([])
+        pages[-1].append(n)
+    return pages
+
+
+def _notes_sheet(title, info, rev, notes, first, number):
+    """An A4 portrait sheet of notes (the first numbered ``first``) with the title block."""
+    W, H = A4_PORTRAIT
+    tb_rows, _ = _fields(info, title)
+    c = _Canvas()
+    c.rect("frame", MARGIN, MARGIN, W - MARGIN, H - MARGIN)
+    w = W - 2 * MARGIN - 16
+    _notes_block(c, MARGIN + 8, H - MARGIN - 8 - _notes_height(notes, w), w, notes, first,
+                 "NOTES" if first == 1 else "NOTES (continued)")
+    _title_block(c, W, title, tb_rows, rev, "–", f"A4  {number[0]}/{number[1]}" if number[1] > 1 else "A4", None)
+    return c
+
+
+def _notes_where(first, last) -> list[str]:
+    """The NOTES block on the other sheets: where the notes are."""
+    return [_Unnumbered(f"See sheet {first}." if first == last else f"See sheets {first} to {last}.")]
 
 
 TABLE_LH = 6.0  # table row height
@@ -2886,16 +2963,20 @@ def _table(table):
     return [str(h) for h in head], [[_value(v) if v is not None else "" for v in r] for r in body]
 
 
-def _table_size(rows):
+def _table_size(rows, size=NOTE):
     head, body = rows
-    ws = [max(text_width(r[i], NOTE, bold=r is head) for r in [head] + body) + 4.0 for i in range(len(head))]
-    return ws, TABLE_LH * (1 + len(body))
+    ws = [max(text_width(r[i], size, bold=r is head) for r in [head] + body) + 4.0 * size / NOTE
+          for i in range(len(head))]
+    return ws, TABLE_LH * size / NOTE * (1 + len(body))
 
 
-def _table_block(c: _Canvas, x0, y1, rows):
-    """The table, its top left at (x0, y1): a bold header, ruled rows, numbers right-aligned."""
+def _table_block(c: _Canvas, x0, y1, rows, size=NOTE, ws=None):
+    """The table, its top left at (x0, y1): a bold header, ruled rows, numbers right-aligned; ``ws``: column
+    widths (else as wide as their text)."""
     head, body = rows
-    ws, h = _table_size(rows)
+    ws0, h = _table_size(rows, size)
+    ws = ws or ws0
+    lh = TABLE_LH * size / NOTE
     xs = [x0]
     for w in ws:
         xs.append(xs[-1] + w)
@@ -2903,15 +2984,16 @@ def _table_block(c: _Canvas, x0, y1, rows):
     for x in xs[1:-1]:
         c.line("thin", (x, y1 - h), (x, y1))
     num = [all(re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)", r[i]) or not r[i] for r in body) for i in range(len(head))]
+    pad = 2.0 * size / NOTE
     for j, r in enumerate([head] + body):
-        y = y1 - TABLE_LH * (j + 1)
+        y = y1 - lh * (j + 1)
         if j:
-            c.line("thin", (x0, y + TABLE_LH), (xs[-1], y + TABLE_LH))
+            c.line("thin", (x0, y + lh), (xs[-1], y + lh))
         for i, v in enumerate(r):
             right = num[i] and j > 0
-            c.text(xs[i + 1] - 2 if right else xs[i] + 2, y + 1.8, v, size=NOTE, anchor="end" if right else "start",
-                   bold=j == 0)
-    c.line("frame" if body else "thin", (x0, y1 - TABLE_LH), (xs[-1], y1 - TABLE_LH))
+            c.text(xs[i + 1] - pad if right else xs[i] + pad, y + 1.8 * size / NOTE, v, size=size,
+                   anchor="end" if right else "start", bold=j == 0)
+    c.line("frame" if body else "thin", (x0, y1 - lh), (xs[-1], y1 - lh))
 
 
 def _table_sheet(title, info, rev, notes, rows, sheet, number):
@@ -3072,19 +3154,37 @@ def _callout_sides(specs, callouts, V, alias):
 
 def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=None, hidden=True,
            projection="first", name=None, notes=None, tol=None, revisions=None, callouts=None, sheets=None,
-           datums=None, table=None):
+           datums=None, table=None, explode=None, bom=None):
     """Lay out a drawing; returns the first sheet's ``(canvas, (width, height), facts)``; ``facts["pages"]``
     holds every sheet's ``(canvas, size)``, ``facts["parts"]`` each part's ``(name, shape, bends)``. ``item``: a
-    part, or ``{name: part}`` for one part after another. See ``outputs.drawing``."""
+    part, or ``{name: part}`` for one part after another; with ``explode``, an assembly drawing (``facts`` has
+    ``items``, ``parts_list``, ``balloons``). See ``outputs.drawing``."""
+    if explode is False:
+        explode = None
+    if explode is None and bom is not None:
+        raise TuleError("bom is the parts list of an assembly drawing: it goes with explode", op="drawing",
+                        hint="explode=1 moves the parts apart, explode=0 keeps them in place")
+    if explode is not None:
+        if isinstance(item, dict):
+            raise TuleError("explode draws one assembly, not {name: part}", op="drawing",
+                            hint="outputs.drawing(name, Assembly(...), explode=1)")
+        for arg, what in ((dims, "dims"), (datums, "datums"), (tol, "tol"), (sheets, "sheets"), (callouts, "callouts")):
+            if arg:
+                raise TuleError(f"{what} does not go with explode: an assembly drawing has balloons and a parts list, "
+                                "no dimensions", op="drawing", hint="dimension each part in a drawing of its own")
     parts = _parts(item)
     names = [k for k, _ in parts]
     if isinstance(dims, dict) and (set(dims) - set(names) or names == [None]):
         raise TuleError(f"dims keyed by part name: {', '.join(map(repr, sorted(set(dims) - set(names))))} is no "
                         "part", op="drawing", hint="parts: " + ", ".join(map(repr, names)))
     rows = _table(table)
-    last = (len(parts) > 1 and bool(_notes(notes))) or rows is not None  # notes (and the table) on a sheet of their own
-    per = len(_sheet_specs(views, sheet, scale, callouts, sheets))
-    total = per * len(parts) + last
+    notes = _notes(notes)
+    spill = _notes_pages(notes) if _notes_spill(notes) else []  # many notes: sheets of their own, at the end
+    last = (len(parts) > 1 and bool(notes) and not spill) or rows is not None  # the table (and notes) on a sheet
+    per = 1 if explode is not None else len(_sheet_specs(views, sheet, scale, callouts, sheets))
+    total = per * len(parts) + last + len(spill)
+    if spill:
+        notes = _notes_where(total - len(spill) + 1, total)
 
     def each(a):  # given per part: {part name: value}
         return isinstance(a, dict) and bool(a) and names != [None] and set(a) <= set(names)
@@ -3094,9 +3194,15 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
         def arg(a):
             return a.get(k) if each(a) else a
         try:
-            _, _, f = _render_part(it, views, arg(dims) or (), title if k is None else k, arg(info), sheet, scale,
-                                   hidden, projection, name if k is None else k, None if last else notes, arg(tol),
-                                   revisions, callouts, sheets, arg(datums), first=i * per, total=total, lead=i == 0)
+            if explode is not None:
+                _, _, f = _render_assembly(it, explode, bom, views, title, info, sheet, scale, name,
+                                           None if last and not spill else notes, revisions, (1, total))
+            else:
+                _, _, f = _render_part(it, views, arg(dims) or (), title if k is None else k, arg(info), sheet,
+                                       scale, hidden, projection, name if k is None else k,
+                                       None if last and not spill else notes, arg(tol),
+                                       revisions, callouts, sheets, arg(datums), first=i * per, total=total,
+                                       lead=i == 0)
         except TuleError as e:
             if k is not None:
                 e.message = f"{k}: {e.message}"
@@ -3110,17 +3216,29 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
             facts["texts"] += f["texts"]
             facts["frames"] += f["frames"]
             facts["sheets"] += f["sheets"]
+    doc = title or (facts["title"] if len(parts) == 1 else name) or "Drawing"
     if last:
-        doc = title or (facts["title"] if len(parts) == 1 else name) or "Drawing"
-        page, size = _table_sheet(doc, None if each(info) else info, facts["rev"], _notes(notes), rows, sheet,
-                                  (total, total))
+        page, size = _table_sheet(doc, None if each(info) else info, facts["rev"], [] if spill else notes, rows,
+                                  sheet, (total - len(spill), total))
         pages.append((page, SHEETS[size]))
         facts["sheets"].append({"sheet": size, "scale": None})
         facts["texts"] += [t for t, _ in page.labels]
+    _add_notes_sheets(pages, facts, spill, doc, None if each(info) else info, total)
     if len(parts) > 1:
         facts["title"] = title or name or "Drawing"
     facts["pages"] = pages
     return pages[0][0], pages[0][1], facts
+
+
+def _add_notes_sheets(pages, facts, spill, title, info, total):
+    """The notes sheets (A4 portrait) at the end of the drawing."""
+    first = 1
+    for i, ns in enumerate(spill):
+        page = _notes_sheet(title, info, facts["rev"], ns, first, (total - len(spill) + i + 1, total))
+        first += len(ns)
+        pages.append((page, A4_PORTRAIT))
+        facts["sheets"].append({"sheet": "A4", "scale": None})
+        facts["texts"] += [t for t, _ in page.labels]
 
 
 def _parts(item):
@@ -3417,6 +3535,669 @@ def _choose(fit, size, fixed, extent, number):
                     op="drawing", hint="use a larger sheet or fewer views")
 
 
+# ---------------------------------------------------------------- assembly drawings: exploded view, balloons, parts list
+
+
+BALLOON_R = 5.0        # balloon radius on the sheet (mm)
+BALLOON_TEXT = 5.0     # its item number
+BALLOON_SEP = 2 * BALLOON_R + 3.0  # balloon centres apart along their ring, at least
+RING = BALLOON_R + 6.0  # the view's outline to the balloons' centres, at least
+DOT = 0.7              # the dot ending a balloon's leader, on the part
+PARTS_TEXT = 3.5       # parts list text
+
+
+def _asm_parts(item):
+    """The assembly and each of its parts: ``(path, name, shape)``."""
+    if isinstance(item, (list, tuple)):
+        item = Assembly(*item)
+    if not isinstance(item, Assembly):
+        raise TuleError(f"explode draws an Assembly (its parts are moved apart, numbered and listed), got a "
+                        f"{type(item).__name__}", op="drawing",
+                        hint='outputs.drawing("toy", Assembly(base.named("base"), cam.named("cam")), explode=1)')
+    out = []
+    for path, sh in item.parts():
+        if not sh.faces:
+            raise TuleError(f"{path} is empty (no faces)", op="drawing", hint="check len(part.faces) after each step")
+        out.append((path, sh.name or path.rsplit("/", 1)[-1], sh))
+    if not out:
+        raise TuleError("the assembly has no parts", op="drawing")
+    return item, out
+
+
+def _base_name(name: str) -> str:
+    """A copy's name without its number: ``screw3`` → ``screw``."""
+    return re.sub(r"[\s_.#-]*\d+$", "", name).strip() or name
+
+
+def _signature(sh: Shape) -> tuple:
+    """A part's geometry wherever it is placed: counts, volume, area, principal moments."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(sh.wrapped, g)
+    return (len(sh.faces), len(sh.edges)), np.array([g.Mass(), sh.area, *sorted(g.PrincipalProperties().Moments())])
+
+
+def _same(a, b) -> bool:
+    return a[0] == b[0] and bool(np.all(np.abs(a[1] - b[1]) <= 1e-6 * np.maximum(np.abs(a[1]), np.abs(b[1])) + 1e-9))
+
+
+def _items(parts) -> list[dict]:
+    """The parts list's items, in the order the parts first come: copies of one part (same geometry, and names
+    that differ only by a number) are one item."""
+    items: list[dict] = []
+    for i, (path, name, sh) in enumerate(parts):
+        sig, base = _signature(sh), _base_name(name)
+        for it in items:
+            if it["base"] == base and _same(it["sig"], sig):
+                it["members"].append(i)
+                it["names"].append(name)
+                break
+        else:
+            items.append({"sig": sig, "base": base, "members": [i], "names": [name]})
+    for k, it in enumerate(items, 1):
+        it["no"] = k
+        it["name"] = it["names"][0] if len(set(it["names"])) == 1 else it["base"]
+        it["paths"] = [parts[i][0] for i in it["members"]]
+    return items
+
+
+def _match(parts, key) -> list[int]:
+    """The parts a name in ``explode`` or ``bom`` means: by path, name, or name without its number."""
+    return [i for i, (path, name, _) in enumerate(parts)
+            if key in (path, name) or path.endswith("/" + key) or _base_name(name) == key]
+
+
+def _part_mesh(sh: Shape, tol: float):
+    """A coarse triangle mesh of a part (meshed apart: its own exports keep theirs): points, triangles."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
+    from .io import tessellate
+
+    m = tessellate(Shape(BRepBuilderAPI_Copy(sh.wrapped, False, False).Shape()), tol, 0.5)
+    return np.asarray(m.positions, dtype=float), np.asarray(m.indices, dtype=np.int64)
+
+
+def _span(Q, P, T, a: int, reach: float = 0.0, chunk: int = 256):
+    """The lowest and highest point (along axis ``a``) of the triangles ``(P, T)`` over each column ``Q``
+    (points in the other two axes), counting triangles that pass within ``reach`` of it; nan where none does."""
+    lo, hi = np.full(len(Q), np.nan), np.full(len(Q), np.nan)
+    if not len(Q) or not len(T):
+        return lo, hi
+    b, c = [k for k in range(3) if k != a]
+    V0, V1, V2 = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+    e1, e2 = V1 - V0, V2 - V0
+    den = e1[:, b] * e2[:, c] - e1[:, c] * e2[:, b]
+    tmin, tmax = np.minimum(np.minimum(V0, V1), V2), np.maximum(np.maximum(V0, V1), V2)
+    qlo, qhi = Q.min(0) - reach, Q.max(0) + reach
+    ok = (np.abs(den) > 1e-12 * max(1.0, float(np.abs(den).max()))) & (tmax[:, b] >= qlo[0]) & \
+        (tmin[:, b] <= qhi[0]) & (tmax[:, c] >= qlo[1]) & (tmin[:, c] <= qhi[1])
+    V0, e1, e2, den = V0[ok], e1[ok], e2[ok], den[ok]
+    if not len(den):
+        return lo, hi
+    # each edge moved out by ``reach``: the barycentric coordinates' slack
+    g1 = 1e-9 + reach * np.hypot(e2[:, b], e2[:, c]) / np.abs(den)
+    g2 = 1e-9 + reach * np.hypot(e1[:, b], e1[:, c]) / np.abs(den)
+    g3 = 1e-9 + reach * np.hypot(e2[:, b] - e1[:, b], e2[:, c] - e1[:, c]) / np.abs(den)
+    for s in range(0, len(Q), chunk):
+        q = Q[s:s + chunk]
+        dx, dy = q[:, None, 0] - V0[None, :, b], q[:, None, 1] - V0[None, :, c]
+        u = (dx * e2[None, :, c] - dy * e2[None, :, b]) / den
+        v = (dy * e1[None, :, b] - dx * e1[None, :, c]) / den
+        inside = (u >= -g1) & (v >= -g2) & (u + v <= 1 + g3)
+        h = V0[None, :, a] + u * e1[None, :, a] + v * e2[None, :, a]
+        hit = inside.any(1)
+        lo[s:s + chunk] = np.where(hit, np.where(inside, h, np.inf).min(1), np.nan)
+        hi[s:s + chunk] = np.where(hit, np.where(inside, h, -np.inf).max(1), np.nan)
+    return lo, hi
+
+
+def _columns(P, T, a: int, cap: int = 300):
+    """Sample columns across axis ``a`` where the part has material: inside its triangles not seen edge-on."""
+    b, c = [k for k in range(3) if k != a]
+    V0, V1, V2 = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+    n = np.cross(V1 - V0, V2 - V0)
+    keep = np.abs(n[:, a]) > 0.05 * np.linalg.norm(n, axis=1)
+    m = (V0 + V1 + V2)[keep] / 3
+    pts = np.concatenate([m] + [V[keep] + 0.1 * (m - V[keep]) for V in (V0, V1, V2)])[:, [b, c]]
+    if len(pts) > cap:
+        pts = pts[np.linspace(0, len(pts) - 1, cap).astype(int)]
+    return pts
+
+
+def _explode(parts, explode, meshes):
+    """Each part's offset (3D) and the axis it was exploded along (None for offsets given).
+
+    A factor stacks the parts along the axis that separates every touching pair with the least travel: a part
+    resting on another stays above it; of two interlocked (a shaft through a bore) the one listed later goes
+    above; each stands off the one below by ``factor`` × a gap."""
+    n = len(parts)
+    offs = [np.zeros(3) for _ in parts]
+    if isinstance(explode, dict):
+        for key, vec in explode.items():
+            hit = _match(parts, str(key))
+            if not hit:
+                raise TuleError(f"explode names {key!r}, which is no part", op="drawing",
+                                hint="parts: " + ", ".join(dict.fromkeys(p[1] for p in parts)))
+            try:
+                vec = np.asarray(vec, dtype=float).reshape(3)
+            except (TypeError, ValueError):
+                raise TuleError(f"explode[{key!r}] is an offset (dx, dy, dz), got {vec!r}", op="drawing") from None
+            for i in hit:
+                offs[i] = vec
+        return offs, None, None
+    try:
+        factor = float(explode)
+    except (TypeError, ValueError):
+        factor = math.nan
+    if not math.isfinite(factor) or factor < 0:
+        raise TuleError(f"explode is a factor (1: the usual spacing, 0: in place) or {{part: (dx, dy, dz)}}, got "
+                        f"{explode!r}", op="drawing", hint='explode=1, or explode={"cam": (0, 0, 40)}')
+    if factor == 0 or n < 2:
+        return offs, None, None
+    lo = np.array([[float(v) for v in p[2].bounds[0]] for p in parts])
+    hi = np.array([[float(v) for v in p[2].bounds[1]] for p in parts])
+    size = float(np.max(hi.max(0) - lo.min(0)))
+    eps = 1e-3 * size
+    reach = max(0.5, 0.004 * size)  # a part in a hole with clearance is still in it
+    touch = [(i, j) for i in range(n) for j in range(i + 1, n)
+             if np.all(lo[i] <= hi[j] + 0.01 * size) and np.all(lo[j] <= hi[i] + 0.01 * size)]
+    best = None
+    for a in (2, 0, 1):  # z first on a tie: the usual way up
+        b, c = [k for k in range(3) if k != a]
+        cols = [_columns(P, T, a) for P, T in meshes]
+        own = [_span(cols[i], *meshes[i], a) for i in range(n)]
+        lifts = {}
+        for i in range(n):
+            for j in range(i + 1, n):
+                if min(hi[i, b], hi[j, b]) - max(lo[i, b], lo[j, b]) <= -reach or \
+                        min(hi[i, c], hi[j, c]) - max(lo[i, c], lo[j, c]) <= -reach:
+                    continue
+                rows = []
+                for p, q in ((i, j), (j, i)):
+                    m = ((cols[p][:, 0] >= lo[q, b] - reach) & (cols[p][:, 0] <= hi[q, b] + reach) &
+                         (cols[p][:, 1] >= lo[q, c] - reach) & (cols[p][:, 1] <= hi[q, c] + reach))
+                    if not m.any():
+                        continue
+                    ql, qh = _span(cols[p][m], *meshes[q], a, reach)
+                    pl, ph = own[p][0][m], own[p][1][m]
+                    got = ~np.isnan(ql) & ~np.isnan(pl)
+                    if got.any():
+                        both = np.stack([pl[got], ph[got], ql[got], qh[got]], 1)
+                        rows.append(both if p == i else both[:, [2, 3, 0, 1]])
+                if rows:
+                    R = np.concatenate(rows)
+                    lifts[(i, j)] = (float(np.max(R[:, 1] - R[:, 2])), float(np.max(R[:, 3] - R[:, 0])))
+        apart = sum(1 for pr in touch if pr not in lifts)  # touching pairs this axis would not separate
+        travel = sum(max(0.0, min(L)) for L in lifts.values())
+        key = (apart, round(travel / max(size, 1e-9), 2))
+        if best is None or key < best[0]:
+            best = (key, a, lifts)
+    _, a, lifts = best
+    ext = hi[:, a] - lo[:, a]
+    gap = factor * max(8.0, 0.75 * float(np.median(ext)))
+    vol = [p[2].volume for p in parts]
+    below: dict[int, list] = {j: [] for j in range(n)}  # j: [(i, lift)], i under j
+    for (i, j), (lij, lji) in lifts.items():
+        if min(lij, lji) > 0.02 * size:  # interlocked (a shaft through a bore): the one listed later goes on top
+            up = True
+        else:  # stacked: the one on top stays on top
+            up = lij < lji - eps or (abs(lij - lji) <= eps and vol[j] <= vol[i])
+        if up:
+            below[j].append((i, lij))
+        else:
+            below[i].append((j, lji))
+    plan = (a, below, lo[:, a], gap)
+    return _stack(plan, np.zeros(n))[0], "xyz"[a], plan
+
+
+def _stack(plan, extra):
+    """Offsets of the parts stacked by ``plan``, each part ``extra`` further off those below it, and the
+    part each rests on (None: on none)."""
+    a, below, lo, gap = plan
+    n = len(below)
+    t = np.zeros(n)
+    on: list = [None] * n
+    left = set(range(n))
+    while left:  # bottom up; a cycle is broken at its lowest part
+        ready = sorted(j for j in left if all(i not in left for i, _ in below[j]))
+        if not ready:
+            ready = [min(left, key=lambda j: (lo[j], j))]
+        for j in ready:
+            for i, L in below[j]:
+                if i not in left and t[i] + L + gap + extra[j] > t[j]:
+                    t[j], on[j] = t[i] + L + gap + extra[j], i
+            left.discard(j)
+    return [np.eye(3)[a] * t[j] for j in range(n)], on
+
+
+def _hull(P):
+    """Convex hull, counterclockwise (monotone chain)."""
+    P = sorted(set(map(tuple, np.round(np.asarray(P, float), 6))))
+    if len(P) < 3:
+        return np.asarray(P, float)
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for p in P:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(P):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return np.asarray(lower[:-1] + upper[:-1], float)
+
+
+def _ring(points, off: float, step: float = 0.5):
+    """The view's convex outline grown by ``off`` (round corners), sampled every ``step`` mm: points and the
+    arc length at each."""
+    ang = np.linspace(0, 2 * math.pi, 48, endpoint=False)
+    H = _hull(points)
+    H = _hull((H[:, None, :] + off * np.stack([np.cos(ang), np.sin(ang)], 1)[None]).reshape(-1, 2))
+    loop = np.vstack([H, H[:1]])
+    seg = np.linalg.norm(np.diff(loop, axis=0), axis=1)
+    L = float(seg.sum())
+    s = np.arange(0.0, L, step)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    k = np.clip(np.searchsorted(cum, s, side="right") - 1, 0, len(seg) - 1)
+    f = (s - cum[k]) / np.where(seg[k] > 0, seg[k], 1.0)
+    return loop[k] + f[:, None] * (loop[k + 1] - loop[k]), s, L
+
+
+def _pav(y):
+    """Least-squares non-decreasing fit (pool adjacent violators)."""
+    blocks: list[list[float]] = []  # [mean, weight]
+    for v in y:
+        blocks.append([float(v), 1.0])
+        while len(blocks) > 1 and blocks[-2][0] > blocks[-1][0]:
+            m2, w2 = blocks.pop()
+            m1, w1 = blocks.pop()
+            blocks.append([(m1 * w1 + m2 * w2) / (w1 + w2), w1 + w2])
+    return np.concatenate([[m] * int(w) for m, w in blocks])
+
+
+def _spread(t, L: float, D: float):
+    """Positions on a loop of length ``L``, in the cyclic order of ``t``, at least ``D`` apart, each as near its
+    ``t`` as that allows."""
+    n = len(t)
+    if n == 1:
+        return np.asarray(t, float) % L
+    order = np.argsort(t, kind="stable")
+    ts = np.asarray(t, float)[order] % L
+    gaps = np.diff(np.concatenate([ts, [ts[0] + L]]))
+    k = int(np.argmax(gaps))  # cut the loop in its widest gap
+    idx = np.concatenate([np.arange(k + 1, n), np.arange(0, k + 1)])
+    seq = np.concatenate([ts[k + 1:], ts[:k + 1] + L])
+    x = _pav(seq - np.arange(n) * D) + np.arange(n) * D
+    if x[-1] - x[0] > L - D:  # it does not close: evenly spaced, as near as can be
+        x = np.arange(n) * (L / n)
+        x += float(np.mean(seq - x))
+    out = np.empty(n)
+    out[order[idx]] = x % L
+    return out
+
+
+def _seg_point_dist(P, a, b):
+    """Distance from points ``P`` (n, 2) to the segment a–b."""
+    d = b - a
+    t = np.clip(((P - a) @ d) / max(float(d @ d), 1e-12), 0.0, 1.0)
+    return np.linalg.norm(P - (a + t[:, None] * d), axis=1)
+
+
+def _clearance(Q, S):
+    """Distance from each point of ``Q`` to the nearest of segments ``S`` (x0, y0, x1, y1)."""
+    if not len(S) or not len(Q):
+        return np.full(len(Q), np.inf)
+    a, d = S[None, :, :2], S[None, :, 2:] - S[None, :, :2]
+    out = np.empty(len(Q))
+    for s in range(0, len(Q), 128):
+        q = Q[s:s + 128, None, :]
+        t = np.clip(np.sum((q - a) * d, 2) / np.maximum(np.sum(d * d, 2), 1e-12), 0.0, 1.0)
+        out[s:s + 128] = np.linalg.norm(q - (a + t[..., None] * d), axis=2).min(1)
+    return out
+
+
+def _candidates(view: _View, meshes, items):
+    """Per item, points on faces of its parts that face the viewer, in view coordinates ``(x, y, seen)``, and
+    the part most often in front of the unseen ones (None when all are seen)."""
+    R = np.stack([view.x, view.y, view.d])
+    allP = [P @ R.T for P, _ in meshes]
+    big_P = np.concatenate(allP)
+    off = np.cumsum([0] + [len(P) for P in allP[:-1]])
+    big_T = np.concatenate([T + o for (_, T), o in zip(meshes, off)])
+    out = []
+    for it in items:
+        cands = []
+        for i in it["members"]:
+            P, T = allP[i], meshes[i][1]
+            V0, V1, V2 = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+            n = np.cross(V1 - V0, V2 - V0)
+            area = np.linalg.norm(n, axis=1)
+            front = n[:, 2] > 0.2 * area
+            if not front.any():
+                front = area > 0
+            k = np.flatnonzero(front)[np.argsort(-area[front], kind="stable")][:60]  # the largest first
+            m = (V0[k] + V1[k] + V2[k]) / 3
+            cands.append(np.concatenate([m] + [m + 0.5 * (V[k] - m) for V in (V0, V1, V2)]))
+        C = np.concatenate(cands)
+        _, top = _span(C[:, :2], big_P, big_T, 2)
+        seen = ~(top > C[:, 2] + 1e-6 * max(1.0, float(np.abs(C).max())))
+        cover = None
+        if seen.mean() < 0.25:  # mostly hidden: what is in front of it
+            hid = C[~seen]
+            fronts = [np.sum(_span(hid[:, :2], allP[p], meshes[p][1], 2)[1] > hid[:, 2] + 1e-6)
+                      if p not in it["members"] else -1 for p in range(len(meshes))]
+            cover = int(np.argmax(fronts))
+        out.append((np.column_stack([C[:, :2], seen.astype(float)]), cover))
+    return out
+
+
+def _anchors(cands, geo1):
+    """The candidates with their distance to the nearest drawn line: ``(x, y, seen, clearance)`` (model mm)."""
+    return [np.column_stack([C, _clearance(C[:, :2], geo1)]) for C, _ in cands]
+
+
+def _balloons(c: _Canvas, geo, anchors, items, s):
+    """Numbered balloons on a ring around the view, a leader from each to a dot on its part.
+
+    Each dot goes where its part is seen, clear of lines and with a short way out; the balloons keep the dots'
+    order around the view and are spread to stand apart; then leaders that cross swap balloons (each swap
+    shortens them, so it ends) until none does."""
+    P = geo.reshape(-1, 2) if len(geo) else np.zeros((1, 2))
+    n = len(items)
+    off = RING
+    for _ in range(12):  # grow the ring until the balloons go round
+        ring, arc, L = _ring(P, off)
+        if n * BALLOON_SEP <= 0.9 * L:
+            break
+        off += (n * BALLOON_SEP / 0.9 - L) / (2 * math.pi) + 1.0
+    dots, want = [], []
+    for A in anchors:
+        Q = A[:, :2] * s
+        clr = A[:, 3] * s
+        d = np.linalg.norm(Q[:, None, :] - ring[None, :, :], axis=2)
+        near = d.argmin(1)
+        dist = d[np.arange(len(Q)), near]
+        cost = 0.04 * dist - np.minimum(clr, 5.0) + 50.0 * (A[:, 2] < 0.5) + 30.0 * (clr < 1.0)
+        top = np.argsort(cost, kind="stable")[:25]  # the best few: and the fewest lines crossed on the way out
+        cost = cost[top] + 3.0 * np.array([_ncross(Q[k], ring[near[k]], geo) for k in top])
+        k = int(top[int(np.argmin(cost))])
+        dots.append(Q[k])
+        want.append(arc[near[k]])
+    at = _spread(np.array(want), L, BALLOON_SEP)
+    slots = [ring[int(round(x / (arc[1] - arc[0]))) % len(ring)] for x in at]
+    order = list(range(n))  # item k's balloon at slots[order[k]]
+    for _ in range(4 * n * n):
+        swapped = False
+        for a_ in range(n):
+            for b_ in range(a_ + 1, n):
+                if _cross(dots[a_], slots[order[a_]], np.array([[*dots[b_], *slots[order[b_]]]])):
+                    order[a_], order[b_] = order[b_], order[a_]
+                    swapped = True
+        if not swapped:
+            break
+    for _ in range(n):  # a leader passing through another balloon: swap the two when that crosses nothing
+        bad = False
+        for a_ in range(n):
+            for b_ in range(n):
+                if a_ == b_:
+                    continue
+                Cb = slots[order[b_]]
+                if _seg_point_dist(np.array([Cb]), dots[a_], slots[order[a_]])[0] < BALLOON_R + 0.8:
+                    trial = list(order)
+                    trial[a_], trial[b_] = trial[b_], trial[a_]
+                    segs = np.array([[*dots[k], *slots[trial[k]]] for k in range(n)])
+                    if not any(_ncross(segs[k, :2], segs[k, 2:], np.delete(segs, k, 0)) for k in range(n)):
+                        order = trial
+                        bad = True
+        if not bad:
+            break
+    out = []
+    for k, it in enumerate(items):
+        ctr, dot = np.asarray(slots[order[k]]), np.asarray(dots[k])
+        u = _unit(dot - ctr)
+        edge = ctr + BALLOON_R * u
+        c.path("sym", _prim_cmds(("circle", float(ctr[0]), float(ctr[1]), BALLOON_R), 1.0))
+        c.line("thin", edge, dot)
+        c.leaders.append((*edge, *dot))
+        ang = np.linspace(0, 2 * math.pi, 10, endpoint=False)
+        c.ops.append(("fill", tuple((float(dot[0] + DOT * math.cos(t)), float(dot[1] + DOT * math.sin(t))) for t in ang)))
+        c.text(float(ctr[0]), float(ctr[1]) - 0.36 * BALLOON_TEXT, str(it["no"]), size=BALLOON_TEXT, anchor="middle")
+        out.append({"item": it["no"], "center": tuple(map(float, ctr)), "dot": tuple(map(float, dot))})
+    return out
+
+
+def _bom_rows(items, parts, bom):
+    """The parts list: Item, Name, Qty and the columns ``bom`` gives per part."""
+    extra: dict[int, dict] = {}
+    if bom is not None:
+        if not isinstance(bom, dict) or not all(isinstance(v, dict) for v in bom.values()):
+            raise TuleError("bom is {part name: {column: value}}", op="drawing",
+                            hint='bom={"cam": {"material": "PLA", "source": "printed"}, "screw": {"source": "ISO 4762 M3×12"}}')
+        for key, cols in bom.items():
+            hit = {i for i in _match(parts, str(key))} | {i for it in items if it["name"] == key for i in it["members"]}
+            its = [it for it in items if set(it["members"]) & hit]
+            if not its:
+                raise TuleError(f"bom names {key!r}, which is no part", op="drawing",
+                                hint="parts: " + ", ".join(it["name"] for it in items))
+            for it in its:
+                extra.setdefault(it["no"], {}).update(cols)
+    heads = list(dict.fromkeys(k for cols in extra.values() for k in cols if str(k).strip().lower() != "name"))
+    head = ["Item", "Name", "Qty"] + [str(k).capitalize() if str(k).islower() else str(k) for k in heads]
+    body = []
+    for it in items:
+        e = {(str(k).strip().lower() if str(k).strip().lower() == "name" else k): v for k, v in extra.get(it["no"], {}).items()}
+        body.append([str(it["no"]), _value(e.get("name", it["name"])), str(len(it["members"]))]
+                    + [_value(e[k]) if e.get(k) is not None else "" for k in heads])
+    return head, body
+
+
+def _trails(view: _View, parts, offs, back, meshes):
+    """Where each moved part goes: a chain line (view coordinates) from the middle of its face toward where it
+    went, ``back`` (its move less that of the part it rests on); only where no part is in front of it."""
+    R = np.stack([view.x, view.y, view.d])
+    big_P = np.concatenate([P @ R.T for P, _ in meshes])
+    off = np.cumsum([0] + [len(P) for P, _ in meshes[:-1]])
+    big_T = np.concatenate([T + o for (_, T), o in zip(meshes, off)])
+    out = []
+    for (_, _, sh), o, b in zip(parts, offs, back):
+        L = float(np.linalg.norm(b))
+        if L < 1e-9:
+            continue
+        u = b / L
+        lo, hi = (np.asarray(v, dtype=float) for v in sh.bounds)
+        c = (lo + hi) / 2 + o - u * (np.abs(hi - lo) @ np.abs(u)) / 2  # the middle of its face toward the move
+        t = np.linspace(0.0, 1.0, max(2, int(L / 0.5) + 1))
+        pts = (c[None, :] - t[:, None] * b[None, :]) @ R.T
+        _, top = _span(pts[:, :2], big_P, big_T, 2)
+        seen = ~(top > pts[:, 2] + 1e-6 * max(1.0, float(np.abs(pts).max())))
+        k = 0
+        while k < len(t):  # each run of seen samples
+            if not seen[k]:
+                k += 1
+                continue
+            j = k
+            while j + 1 < len(t) and seen[j + 1]:
+                j += 1
+            if j > k:
+                out.append((tuple(pts[k, :2]), tuple(pts[j, :2])))
+            k = j + 1
+    return out
+
+
+def _asm_view(views) -> str:
+    if views is None:
+        return "iso"
+    if isinstance(views, (list, tuple)) and len(views) == 1:
+        views = views[0]
+    if not isinstance(views, str) or views not in VIEWS:
+        raise TuleError(f"an assembly drawing has one view, got {views!r}", op="drawing",
+                        hint='views="front" (iso when left out); one of ' + ", ".join(VIEWS))
+    return views
+
+
+def _ring_box(P, n, s):
+    """The view and its ring of ``n`` balloons at scale ``s``: their bounds (sheet mm)."""
+    off = RING
+    for _ in range(12):
+        ring, _, L = _ring(P * s, off, 2.0)
+        if n * BALLOON_SEP <= 0.9 * L:
+            break
+        off += (n * BALLOON_SEP / 0.9 - L) / (2 * math.pi) + 1.0
+    r = BALLOON_R + 1.0
+    return (float(ring[:, 0].min()) - r, float(ring[:, 1].min()) - r, float(ring[:, 0].max()) + r,
+            float(ring[:, 1].max()) + r)
+
+
+def _render_assembly(item, explode, bom, views=None, title=None, info=None, sheet=None, scale=None, name=None,
+                     notes=None, revisions=None, number=(1, 1)):
+    """An assembly drawing on one sheet: the parts (exploded) in one view, a numbered balloon on each item,
+    the parts list on the title block. Facts as ``_render_part``'s, and ``items``, ``parts_list``, ``balloons``."""
+    asm, parts = _asm_parts(item)
+    view = _View(_asm_view(views))
+    if sheet is not None and sheet not in SHEETS:
+        raise TuleError(f"unknown sheet {sheet!r}", op="drawing", hint=", ".join(SHEETS) + ", or leave it out")
+    fixed = _parse_scale(scale)
+    items = _items(parts)
+    meshes = []
+    for _, _, sh in parts:
+        lo, hi = sh.bounds
+        meshes.append(_part_mesh(sh, max(0.01, 0.004 * float(np.linalg.norm(np.subtract(hi, lo))))))
+    offs, axis, plan = _explode(parts, explode, meshes)
+    cands = _candidates(view, [(P + o, T) for (P, T), o in zip(meshes, offs)], items)
+    if plan is not None:  # a part hidden behind another (under a lid): that one goes further up, until all are seen
+        extra = np.zeros(len(parts))
+        for _ in range(6):
+            covers = {cv for _, cv in cands if cv is not None}
+            if not covers:
+                break
+            for cv in covers:
+                lo_, hi_ = parts[cv][2].bounds
+                extra[cv] += 0.3 * max(float(np.subtract(hi_, lo_)[k]) for k in range(3) if k != "xyz".index(axis))
+            offs = _stack(plan, extra)[0]
+            cands = _candidates(view, [(P + o, T) for (P, T), o in zip(meshes, offs)], items)
+    moved = Assembly(*[sh.at(*map(float, o)) if np.any(o) else sh for (_, _, sh), o in zip(parts, offs)])
+    shape = moved.to_shape()
+    lo, hi = shape.bounds
+    diag = float(np.linalg.norm(np.subtract(hi, lo)))
+    _hlr(shape.wrapped, view, False, max(1e-4, diag * 1e-6))
+    if plan is not None:  # each part's way back onto the one it rests on
+        on = _stack(plan, extra)[1]
+        back = [offs[j] - offs[on[j]] if on[j] is not None else np.zeros(3) for j in range(len(parts))]
+    else:
+        back = offs
+    trails = _trails(view, parts, offs, back, [(P + o, T) for (P, T), o in zip(meshes, offs)])
+    one = _Canvas()
+    for p in view.vis:
+        one.path("vis", _prim_cmds(p, 1.0))
+    for p, q in trails:
+        one.line("center", p, q)
+    geo1 = _segments(one.ops)
+    anchors = _anchors(cands, geo1)
+    rows = _bom_rows(items, parts, bom)
+    notes = _notes(notes)
+    revs = _revisions(revisions)
+
+    given = next((str(v) for k, v in (info or {}).items()
+                  if re.sub(r"[_\s]+", " ", str(k).strip().lower()) in FIELDS[0][2] and v), None)
+    title = title or given or asm.name or name or "Assembly"
+    tb_rows, rev = _fields(info, title)
+    if revs:
+        if rev and rev != revs[-1][0]:
+            raise TuleError(f"info rev {rev!r} is not the last revision {revs[-1][0]!r}", op="drawing",
+                            hint="the last entry of revisions is the current one; drop rev from info")
+        rev = revs[-1][0]
+    tb_h, rv_h = _tb_height(tb_rows), _rev_height(revs)
+    ws, ph = _table_size(rows, PARTS_TEXT)
+    colw = max(TB_W, sum(ws))
+    ws = ws[:1] + [ws[1] + colw - sum(ws)] + ws[2:]  # as wide as the title block: the names take the rest
+    P1 = geo1.reshape(-1, 2) if len(geo1) else np.zeros((1, 2))
+    extent = float(np.max(np.subtract(hi, lo)))
+    boxes: dict = {}
+
+    def fit(s, size):
+        """Where the view goes at scale ``s`` on ``size``, and where the notes go; or None."""
+        W, H = SHEETS[size]
+        if s not in boxes:
+            boxes[s] = _ring_box(P1, len(items), s)
+        b = boxes[s]
+        frame = (MARGIN + 3, MARGIN + 3, W - MARGIN - 3, H - MARGIN - 3)
+        col = tb_h + rv_h + ph
+        options = [("column", col + (4.0 + _notes_height(notes, colw - 1) if notes else 0.0), [])]
+        if notes:
+            nw = min(TB_W + 40, W - 2 * MARGIN - colw - 16)
+            options.append(("left", col, [(MARGIN - 1, MARGIN - 1, MARGIN + 4 + nw + 3,
+                                           MARGIN + 4 + _notes_height(notes, nw) + 3)]))
+        for where, h, more in options:
+            if MARGIN + h > H - MARGIN - 4:
+                continue
+            keep = [(W - MARGIN - colw - 3, MARGIN - 1, W - MARGIN + 1, MARGIN + h + 3)] + more
+            at = _place([b], frame, keep)
+            if at is not None:
+                return at, where
+        return None
+
+    sizes = [sheet] if sheet else list(AUTO_SHEETS)
+    if fixed:
+        got = next(((fixed, sz, f) for sz in sizes if (f := fit(fixed, sz))), None)
+        if got is None:
+            raise TuleError(f"the assembly does not fit {sizes[-1]} at {_scale_text(fixed)}", op="drawing",
+                            hint="leave scale out for the largest that fits" + ("" if sheet else ', or sheet="A1"'))
+    else:
+        order = [x for x in SCALES if x > 1 and extent * x <= ENLARGE] + [x for x in SCALES if x <= 1]
+        found = []
+        for sz in sizes:  # each sheet's largest scale that takes it
+            for x in order:
+                if (f := fit(x, sz)):
+                    found.append((sz, x, f))
+                    break
+        if not found:
+            raise TuleError(f"the assembly and its parts list do not fit {sizes[-1]}", op="drawing",
+                            hint="a larger sheet (sheet=\"A1\"), or fewer parts")
+        top = max(x for _, x, _ in found)  # the smallest sheet within one standard scale of the largest's
+        sz, x, f = next(g for g in found if g[1] >= top / 2.5 - 1e-9)
+        got = (x, sz, f)
+    s, size, ((ax, ay), where) = got
+    W, H = SHEETS[size]
+    page = _Canvas()
+    page.rect("frame", MARGIN, MARGIN, W - MARGIN, H - MARGIN)
+    vc = _Canvas()
+    for p in view.vis:
+        vc.path("vis", _prim_cmds(p, s))
+    for p, q in trails:
+        vc.center_line(np.asarray(p) * s, np.asarray(q) * s)
+    balloons = _balloons(vc, _segments(vc.ops), anchors, items, s)
+    page.add(vc, ax, ay)
+    for bl in balloons:
+        bl["center"] = (bl["center"][0] + ax, bl["center"][1] + ay)
+        bl["dot"] = (bl["dot"][0] + ax, bl["dot"][1] + ay)
+    label = size if number[1] == 1 else f"{size}  {number[0]}/{number[1]}"
+    _title_block(page, W, title, tb_rows, rev, _scale_text(s), label, None)
+    if revs:
+        _revision_table(page, W - MARGIN - TB_W, MARGIN + tb_h, revs)
+    y = MARGIN + tb_h + rv_h + ph
+    _table_block(page, W - MARGIN - colw, y, rows, PARTS_TEXT, ws)
+    if notes:
+        if where == "column":
+            _notes_block(page, W - MARGIN - colw + 1, y + 4.0, colw - 1, notes)
+        else:
+            _notes_block(page, MARGIN + 4, MARGIN + 4, min(TB_W + 40, W - 2 * MARGIN - colw - 16), notes)
+    sheets = [{"sheet": size, "scale": _scale_text(s)}]
+    facts = {"scale": sheets[0]["scale"], "sheet": size, "sheets": sheets, "title": title, "rev": rev,
+             "texts": [t for t, _ in page.labels], "frames": [], "pages": [(page, SHEETS[size])], "bends": [],
+             "shape": asm.to_shape(), "parts_list": rows, "balloons": balloons,
+             "items": [{"item": it["no"], "name": it["name"], "qty": len(it["members"]), "parts": it["paths"]}
+                       for it in items],
+             "explode": {"axis": axis, "offsets": {parts[i][0]: tuple(float(v) for v in o)
+                                                   for i, o in enumerate(offs) if np.any(o)}}}
+    return page, SHEETS[size], facts
+
+
 # ---------------------------------------------------------------- writers
 
 
@@ -3645,7 +4426,8 @@ def dxf(item, path: str, view: str = "top") -> str:
 
 def write(folder: str, base: str, item, views=None, dims=(),
           title=None, info=None, sheet=None, scale=None, hidden=True, projection="first", dxf_view=None,
-          notes=None, tol=None, revisions=None, callouts=None, sheets=None, datums=None, table=None) -> dict:
+          notes=None, tol=None, revisions=None, callouts=None, sheets=None, datums=None, table=None, explode=None,
+          bom=None) -> dict:
     """Write ``<base>.pdf`` (every sheet a page) and ``<base>.svg`` (``<base>-2.svg``, ... for further sheets),
     and ``<base>.dxf`` (``<base>-<part>.dxf`` per part of several), into ``folder``; returns facts (scale, texts)."""
     parts = _parts(item)
@@ -3657,6 +4439,9 @@ def write(folder: str, base: str, item, views=None, dims=(),
             return base
         return _slug(k) if _slug(k).startswith(base) else f"{base}-{_slug(k)}"  # tray-flat, not tray-tray-flat
 
+    if dxf_view and explode is not None:
+        raise TuleError("dxf writes a part's view for cutting, not an assembly drawing", op="drawing",
+                        hint="outputs.drawing(name, asm[\"plate\"], dxf=\"top\") for the part")
     for k, it in parts:
         shape, _ = _as_shape(it)
         if dxf_view and shape.sheet_metal is not None:  # a cut file needs the flat: fail first, once, naming the part
@@ -3664,7 +4449,8 @@ def write(folder: str, base: str, item, views=None, dims=(),
 
             _flat(shape, "drawing", k or base)
     _, _, facts = render(item, views, dims, title, info, sheet, scale, hidden, projection, base, notes=notes, tol=tol,
-                         revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table)
+                         revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table,
+                         explode=explode, bom=bom)
     pages = facts["pages"]
     write_atomic(os.path.join(folder, base + ".pdf"), to_pdf(pages, title=facts["title"]))
     for i, (page, size) in enumerate(pages):
