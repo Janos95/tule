@@ -295,7 +295,8 @@ function prepare(list) {
       path: o.root ? f.path : `outputs/${f.path}`,
       type: typeOf(f.file),
     }));
-    return { ...o, root, id: root === "outputs" ? o.name : `${root}/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry") };
+    const field = new Set((Array.isArray(o.meta?.fields) ? o.meta.fields : []).map((x) => x?.file)); // an overlay's field grids: drawn on the part, not a view
+    return { ...o, root, id: root === "outputs" ? o.name : `${root}/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry" && !field.has(f.file)), fields: all.filter((f) => field.has(f.file)) };
   });
 }
 
@@ -626,7 +627,7 @@ async function show() {
   const entries = kind === "assembly" && Array.isArray(o.meta?.parts) ? o.meta.parts.filter((p) => o.files.some((f) => f.file === p?.file)) : null;
   if (entries?.length) shownFiles = entries.map((p) => o.files.find((f) => f.file === p.file));
   // what is drawn: the files and, but for a growing sequence, output.json (overlay faces, placements)
-  const key = o.id + "|" + shownFiles.map((f) => f.hash).join(",") + (kind === "sequence" ? "" : "|" + JSON.stringify(o.meta ?? null));
+  const key = o.id + "|" + [...shownFiles, ...o.fields].map((f) => f.hash).join(",") + (kind === "sequence" ? "" : "|" + JSON.stringify(o.meta ?? null));
   if (key === state.shown) return;
   const first = !state.shown || !state.shown.startsWith(o.id + "|");
   state.shown = key;
@@ -643,7 +644,11 @@ async function show() {
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first ? true : "auto", style);
-    overlay?.apply(o.meta ?? null, kind === "overlay");
+    const field = (name) => {
+      const f = o.fields.find((x) => x.file === name);
+      return f ? readFile(f) : Promise.reject(new Error("not in the output"));
+    };
+    overlay?.apply(o.meta ?? null, kind === "overlay", field);
     $("strip").hidden = $("legend").hidden;
     state.meshes = all;
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };

@@ -220,8 +220,69 @@ def _overlay_color(spec: dict) -> tuple:
     return PALETTE[sum(map(ord, str(role or ""))) % len(PALETTE)]
 
 
-def scene(target: str):
-    """(parts, overlay or None, caption) for a file or an output folder (its output.json, or inferred)."""
+RAMP_RGB = [tuple(c / 255 for c in rgb) for rgb in RAMP]
+
+
+def ramp_array(t):
+    """The ramp's colors at t in [0, 1] (an array): (n, 3)."""
+    import numpy as np
+
+    stops = np.asarray(RAMP_RGB)
+    x = np.clip(np.nan_to_num(np.asarray(t, dtype=np.float64), nan=0.5), 0, 1) * (len(stops) - 1)
+    i = np.minimum(len(stops) - 2, x.astype(int))
+    return stops[i] + (stops[i + 1] - stops[i]) * (x - i)[:, None]
+
+
+def pick_field(fields: list, want: str | None, jpath: str) -> dict:
+    """The field to show: the first, or the one whose label (or 1-based number) is ``want``."""
+    if not want:
+        return fields[0]
+    labels = [str(f.get("label", "")) for f in fields]
+    if want.isdigit() and 1 <= int(want) <= len(fields):
+        return fields[int(want) - 1]
+    for f, label in zip(fields, labels):
+        if want.lower() in label.lower():
+            return f
+    raise CliError(f"{jpath}: no field {want!r}; fields: {', '.join(labels)}")
+
+
+def load_field(path: str, spec: dict, jpath: str):
+    """A field's grid from its .npy file: (nx, ny, nz) or (nx, ny, nz, 3) floats."""
+    import numpy as np
+
+    try:
+        grid = np.load(path, allow_pickle=False)
+    except (OSError, ValueError) as e:
+        raise CliError(f"{path}: not a NumPy .npy file ({e})") from None
+    ok = grid.ndim == 3 or (grid.ndim == 4 and grid.shape[3] == 3)
+    if not ok or not isinstance(spec.get("origin"), list) or len(spec["origin"]) != 3 or not float(spec.get("step") or 0) > 0:
+        raise CliError(f"{jpath}: field {spec.get('label')!r} needs a (nx, ny, nz[, 3]) grid, an origin and a step "
+                       f"(got shape {grid.shape})")
+    return grid.astype(np.float64)
+
+
+def sample_grid(grid, origin, step: float, points):
+    """Trilinear interpolation of a node grid at points (clamped to the grid), as the viewer does."""
+    import numpy as np
+
+    N = np.array(grid.shape[:3])
+    q = np.clip((np.asarray(points, dtype=np.float64) - np.asarray(origin, dtype=np.float64)) / step, 0, N - 1)
+    b = np.minimum(np.floor(q).astype(np.int64), np.maximum(N - 2, 0))
+    t = q - b
+    out = 0
+    for c in ((0, 0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1), (1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)):
+        w = np.prod([t[:, d] if c[d] else 1 - t[:, d] for d in range(3)], axis=0)
+        idx = np.minimum(b + np.array(c), N - 1)
+        v = grid[idx[:, 0], idx[:, 1], idx[:, 2]]
+        out = out + (w[:, None] * v if v.ndim == 2 else w * v)
+    return out
+
+
+def scene(target: str, field: str | None = None):
+    """(parts, overlay or None, caption) for a file or an output folder (its output.json, or inferred);
+    ``field`` picks an overlay's field by label (default: the first)."""
+    import numpy as np
+
     from .render import Overlay
 
     if os.path.isfile(target):
@@ -287,8 +348,25 @@ def scene(target: str):
                     raise CliError(f"{jpath}: every arrow needs \"at\" and \"dir\" (got {a})")
                 overlay.arrows.append(a)
             caption += f" (overlay, {len(overlay.faces)} faces, {len(overlay.arrows)} arrows)"
-            if vals:
-                caption += f" · {sc.get('label') or 'value'}: blue {lo:.3g} to red {hi:.3g}{unit}"
+            fields = [f for f in meta.get("fields") or [] if isinstance(f, dict)]
+            if fields:
+                spec = pick_field(fields, field, jpath)
+                grid = load_field(file_in(str(spec.get("file"))), spec, jpath)
+                deform = float(spec.get("deform") or 0) if grid.ndim == 4 else 0.0
+                for p in parts:
+                    v = sample_grid(grid, spec["origin"], float(spec["step"]), p.positions)
+                    mag = np.linalg.norm(v, axis=1) if v.ndim == 2 else v
+                    flo, fhi = float(spec.get("min", mag.min())), float(spec.get("max", mag.max()))
+                    p.colors = ramp_array((mag - flo) / (fhi - flo) if fhi > flo else np.full(len(mag), 0.5))
+                    if deform:
+                        p.positions = (p.positions + deform * v).astype(np.float32)
+                overlay.scale = {"label": spec.get("label") or "value", "unit": spec.get("unit") or "",
+                                 "min": flo, "max": fhi, "note": spec.get("note") or "", "deform": deform, "colors": RAMP_RGB}
+                others = [f.get("label") for f in fields if f is not spec]
+                caption += f" · {spec.get('label')}" + (f" (also: {', '.join(others)}; --field)" if others else "")
+            elif vals:
+                overlay.scale = {"label": sc.get("label") or "value", "unit": sc.get("unit") or "",
+                                 "min": lo, "max": hi, "colors": RAMP_RGB}
     elif kind is None:
         if not files:
             raise CliError(f"{target}: no STEP or STL files in this output")
@@ -316,7 +394,7 @@ def cmd_screenshot(args):
     if args.view not in VIEWS:
         raise CliError(f"unknown view {args.view!r}; use one of {', '.join(VIEWS)}")
     target = find_output(args.output, args.file)
-    parts, overlay, caption = scene(target)
+    parts, overlay, caption = scene(target, args.field)
     import numpy as np
 
     P = np.concatenate([p.positions for p in parts])
@@ -507,6 +585,7 @@ def add_commands(add):
     sp.add_argument("--view", default="iso", help="iso (default), front, back, left, right, top, bottom")
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
     sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
+    sp.add_argument("--field", help="an overlay field to color by, by label (default: the first; e.g. displacement)")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)
     sp.add_argument("file", help="a STEP/STL file or an output folder")
     sp.add_argument("--json", action="store_true", help="print JSON instead of text")

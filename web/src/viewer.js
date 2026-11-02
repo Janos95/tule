@@ -12,6 +12,7 @@
 // later layer wins): each part's triangles are sorted by face id once, so a
 // face is one range of the index and a style is a geometry group with its own
 // material; nothing is copied. setDim greys every face no layer colors.
+// setField colors vertices instead (a stress field), optionally on a moved shape.
 // Arrows (setArrows) are 3D glyphs whose tip touches the point they act on.
 // A part may carry a placement (mesh.matrix, 16 numbers, row-major).
 import * as THREE from "three";
@@ -75,6 +76,7 @@ export class Viewer {
     // the CAD edges: the palette's navy (--navy in palette.css), a constant since the 3D view stays light
     this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x23344a, transparent: true, opacity: 0.75 });
     this.depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, ...BEHIND });
+    this.fieldMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, side: THREE.DoubleSide, ...BEHIND });
     this.style = { hidden: null, lit: null };
     this.layers = new Map(); // layer -> [{part: index | null (all), faces: [ids], color, hatch}]
     this.dim = false;
@@ -305,6 +307,26 @@ export class Viewer {
     this.paintFaces();
   }
 
+  /** A value on every vertex instead of a color per face (a stress field): fn(mesh, part index)
+   * returns {colors: Float32Array (sRGB 0..1, rgb per vertex), positions?: Float32Array (a deformed
+   * shape), edges?: Float32Array} or null; setField(null) restores the parts. Face layers still win. */
+  setField(fn) {
+    for (const part of this.group.children) {
+      const { index, mesh, geometry, lines } = part.userData;
+      const f = fn ? fn(mesh, index) : null;
+      part.userData.field = !!f;
+      if (f) {
+        const c = Float32Array.from(f.colors, (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); // to linear, as THREE.Color does
+        geometry.setAttribute("color", new THREE.BufferAttribute(c, 3));
+      } else geometry.deleteAttribute("color");
+      geometry.setAttribute("position", new THREE.BufferAttribute(f?.positions ?? mesh.positions, 3));
+      if (lines && mesh.edges) lines.setAttribute("position", new THREE.BufferAttribute(f?.edges ?? mesh.edges, 3));
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+    }
+    this.paintFaces();
+  }
+
   /** Greys every face that no layer colors (an overlay's "the rest"). */
   setDim(on) {
     this.dim = !!on;
@@ -319,7 +341,7 @@ export class Viewer {
       for (const layer of LAYERS)
         for (const s of this.layers.get(layer) ?? [])
           if (s.part == null || s.part === index) for (const f of s.faces) pick.set(+f, this.faceMaterial(s.color, s.hatch));
-      const base = this.dim ? this.material(palette(DIM)) : this.material(color);
+      const base = part.userData.field ? this.fieldMaterial : this.dim ? this.material(palette(DIM)) : this.material(color);
       geometry.clearGroups();
       if (!pick.size) {
         solid.material = base;
@@ -500,7 +522,12 @@ export class Viewer {
     const arrow = hit.object.parent?.userData.arrow;
     if (arrow !== undefined) return { arrow };
     const { index, mesh } = hit.object.parent.userData;
-    return { index, mesh, face: mesh.faceIds[hit.faceIndex], point: [hit.point.x, hit.point.y, hit.point.z] };
+    // the triangle's corner nearest the point (a field's value there)
+    const pos = hit.object.geometry.attributes.position;
+    const local = hit.object.worldToLocal(hit.point.clone());
+    const vertex = [hit.face.a, hit.face.b, hit.face.c].reduce((best, v) =>
+      new THREE.Vector3().fromBufferAttribute(pos, v).distanceToSquared(local) < new THREE.Vector3().fromBufferAttribute(pos, best).distanceToSquared(local) ? v : best);
+    return { index, mesh, face: mesh.faceIds[hit.faceIndex], vertex, point: [hit.point.x, hit.point.y, hit.point.z] };
   }
 
   /** The view as drawn, on a plain background: a canvas at the device's resolution. */
