@@ -34,7 +34,7 @@ import { mcp } from "./mcp";
 import * as ops from "./ops";
 import { landing, page, projectsPage, settingsPage, type ProjectRow } from "./pages";
 import { Host } from "./host";
-import { Project, snapshotKey } from "./project";
+import { gitKey, lfsKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
 import { gpuCatalog, runpodBalance } from "./runpod";
 
@@ -124,16 +124,137 @@ async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[]
   return o ? new Response(o.body, { headers: { "Content-Type": "application/json" } }) : error(`no snapshot ${sid}`, 404);
 }
 
+// ------------------------------------------------------------ git and Git LFS (saves)
+//
+// /api/projects/<p_id>/git: the project's remote for cli/tule_cli/gitremote.py
+//   GET  refs                       {refs: {"refs/heads/main": sha}, bundles: [{id, tip}]} (push order)
+//   GET  bundles/<id>               a pushed bundle
+//   POST push?ref=&old=&new=        the bundle of the new commits (no body: only move or delete the ref)
+// /api/projects/<p_id>/lfs: the Git LFS API (batch, basic transfers)
+//   POST objects/batch              {operation, objects: [{oid, size}]}
+//   PUT/GET objects/<oid>           the object (a PUT is checked against its sha256)
+// Either a machine's join token or the owner's API key, as Bearer or Basic (git-lfs) auth.
+
+const OID = /^[0-9a-f]{64}$/;
+const BUNDLE = /^[0-9a-z]{6,40}$/;
+
+/** The token from "Bearer x" or "Basic base64(user:x)". */
+function tokenOf(req: Request): string {
+  const h = req.headers.get("Authorization") ?? "";
+  if (h.startsWith("Bearer ")) return h.slice(7);
+  if (h.startsWith("Basic ")) {
+    try {
+      const s = atob(h.slice(6));
+      return s.slice(s.indexOf(":") + 1);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+async function gitAllowed(req: Request, env: Env, id: string): Promise<boolean> {
+  const token = tokenOf(req);
+  if (!token) return false;
+  if (token.startsWith("tule_")) {
+    const user = await accounts(env).apiKeyUser(token);
+    return !!user && (await accounts(env).projects(user.id)).some((p) => p.id === id);
+  }
+  return ops.projectStub(env, id).checkJoin(token);
+}
+
+const lfsJson = (b: unknown, status = 200) =>
+  new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/vnd.git-lfs+json", "Cache-Control": "no-store" } });
+
+async function gitRoute(req: Request, env: Env, url: URL, id: string, what: string, rest: string[], origin: string): Promise<Response> {
+  if (!(await gitAllowed(req, env, id)))
+    return new Response("tule: sign in (tule login), or use the machine's own credentials\n", { status: 401, headers: { "WWW-Authenticate": 'Basic realm="tule"' } });
+  const project = ops.projectStub(env, id);
+  if (what === "git") {
+    if (rest[0] === "refs" && req.method === "GET") return json(await project.gitRefs());
+    if (rest[0] === "bundles" && rest[1] && BUNDLE.test(rest[1]) && req.method === "GET") {
+      const o = await env.WORKSPACES.get(gitKey(id, rest[1]));
+      return o ? new Response(o.body, { headers: { "Content-Type": "application/x-git-bundle" } }) : error(`no bundle ${rest[1]}`, 404);
+    }
+    if (rest[0] === "push" && req.method === "POST") {
+      const ref = url.searchParams.get("ref") ?? "";
+      const old = url.searchParams.get("old") ?? "";
+      const next = url.searchParams.get("new") ?? "";
+      const sha = /^([0-9a-f]{40})?$/;
+      if (!/^refs\/(heads|tags)\/[A-Za-z0-9._\/-]{1,200}$/.test(ref) || !sha.test(old) || !sha.test(next))
+        return error("expected ?ref=refs/heads/<name>&old=<sha or empty>&new=<sha or empty>", 400);
+      const size = Number(req.headers.get("Content-Length") ?? 0);
+      let bundle: { id: string; tip: string; size: number } | undefined;
+      if (size > 0 && req.body) {
+        if (!next) return error("a bundle needs a new commit", 400);
+        const bid = `${Date.now().toString(36)}${crypto.getRandomValues(new Uint32Array(1))[0].toString(36)}`;
+        await env.WORKSPACES.put(gitKey(id, bid), req.body, { httpMetadata: { contentType: "application/x-git-bundle" } });
+        bundle = { id: bid, tip: next, size };
+      }
+      const r = await project.gitPush(ref, old, next, bundle);
+      if (r.error && bundle) await env.WORKSPACES.delete(gitKey(id, bundle.id));
+      return json(r, r.error ? 409 : 200);
+    }
+    return error("use GET refs, GET bundles/<id>, POST push", 404);
+  }
+  // Git LFS
+  // the address the client used (a machine and a laptop may reach this Worker by different names in dev)
+  const base = req.headers.get("Host") ? `${url.protocol}//${req.headers.get("Host")}` : origin;
+  const href = (oid: string) => `${base}/api/projects/${id}/lfs/objects/${oid}`;
+  const auth = { Authorization: req.headers.get("Authorization") ?? "" };
+  if (rest[0] === "objects" && rest[1] === "batch" && req.method === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { operation?: string; objects?: { oid?: unknown; size?: unknown }[] };
+    const op = b.operation === "upload" ? "upload" : "download";
+    const objects = await Promise.all(
+      (b.objects ?? []).slice(0, 1000).map(async (o) => {
+        const oid = String(o.oid ?? "");
+        const size = Number(o.size ?? 0);
+        if (!OID.test(oid)) return { oid, size, error: { code: 422, message: "invalid oid" } };
+        const have = await env.WORKSPACES.head(lfsKey(id, oid));
+        if (op === "upload") return have ? { oid, size } : { oid, size, authenticated: true, actions: { upload: { href: href(oid), header: auth, expires_in: 3600 } } };
+        return have
+          ? { oid, size: have.size, authenticated: true, actions: { download: { href: href(oid), header: auth, expires_in: 3600 } } }
+          : { oid, size, error: { code: 404, message: "this object was never uploaded" } };
+      }),
+    );
+    return lfsJson({ transfer: "basic", objects, hash_algo: "sha256" });
+  }
+  if (rest[0] === "objects" && rest[1] && OID.test(rest[1])) {
+    const oid = rest[1];
+    if (req.method === "GET") {
+      const o = await env.WORKSPACES.get(lfsKey(id, oid));
+      return o ? new Response(o.body, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(o.size) } }) : lfsJson({ message: "not found" }, 404);
+    }
+    if (req.method === "PUT") {
+      const len = Number(req.headers.get("Content-Length") ?? -1);
+      if (!req.body || !(len >= 0)) return lfsJson({ message: "a Content-Length is required" }, 411);
+      // stream into R2 while hashing; an object whose bytes do not match its oid is removed
+      const [a, b] = req.body.tee();
+      const digest = new crypto.DigestStream("SHA-256");
+      const fixed = new FixedLengthStream(len);
+      await Promise.all([env.WORKSPACES.put(lfsKey(id, oid), fixed.readable), b.pipeTo(fixed.writable), a.pipeTo(digest)]);
+      const got = [...new Uint8Array(await digest.digest)].map((x) => x.toString(16).padStart(2, "0")).join("");
+      if (got !== oid) {
+        await env.WORKSPACES.delete(lfsKey(id, oid));
+        return lfsJson({ message: `the bytes hash to ${got}, not ${oid}` }, 422);
+      }
+      return new Response(null, { status: 200 });
+    }
+  }
+  return lfsJson({ message: "not found" }, 404);
+}
+
 /** A machine, by project id and join token. */
-async function machineRoute(req: Request, env: Env, url: URL, id: string, what: string, rest: string[]): Promise<Response> {
+async function machineRoute(req: Request, env: Env, url: URL, id: string, what: string, rest: string[], origin: string): Promise<Response> {
   const project = ops.projectStub(env, id);
   if (what === "agent") return req.headers.get("Upgrade")?.toLowerCase() === "websocket" ? project.fetch(req) : error("expected a WebSocket", 426);
+  if (what === "git" || what === "lfs") return gitRoute(req, env, url, id, what, rest, origin);
   const h = req.headers.get("Authorization") ?? "";
   const token = h.startsWith("Bearer ") ? h.slice(7) : "";
   if (!token || !(await project.checkJoin(token))) return error("invalid join token", 401);
   if (what === "blobs") return blobs(req, env, id, rest, true);
   if (what === "snapshots") return snapshotsRoute(req, env, id, rest, true, url);
-  return error("machines may only use agent, blobs and snapshots", 403);
+  return error("machines may only use agent, blobs, snapshots, git and lfs", 403);
 }
 
 // ------------------------------------------------------------ the user's API
@@ -299,7 +420,7 @@ async function route(req: Request, env: Env): Promise<Response> {
   const m = path.match(/^\/api\/projects\/(p_[^/]+)(?:\/([a-z]+))?(?:\/(.*))?$/);
   if (m) {
     if (!PID.test(m[1])) return error("not found", 404);
-    return machineRoute(req, env, url, m[1], m[2] ?? "", (m[3] ?? "").split("/").filter(Boolean));
+    return machineRoute(req, env, url, m[1], m[2] ?? "", (m[3] ?? "").split("/").filter(Boolean), env.MACHINE_URL || origin);
   }
   const auth = await authRoutes(req, env, url);
   if (auth) return auth;

@@ -72,6 +72,9 @@ type Snapshot = { id: string; at: number; reason: string; files: number; bytes: 
 
 /** A snapshot's manifest in R2. */
 export const snapshotKey = (p: string, id: string) => `projects/${p}/snapshots/${id}.json`;
+/** A pushed git bundle, and a Git LFS object, in R2. */
+export const gitKey = (p: string, id: string) => `projects/${p}/git/${id}.bundle`;
+export const lfsKey = (p: string, oid: string) => `projects/${p}/lfs/${oid}`;
 type Result = Record<string, unknown>;
 
 const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -346,6 +349,36 @@ export class Project extends DurableObject<Env> {
   /** Whether `token` is the current machine's join token. */
   async checkJoin(token: string): Promise<boolean> {
     return !!this.state.joinHash && (await sha256(token)) === this.state.joinHash;
+  }
+
+  // ------------------------------------------------------------ git (saves)
+  //
+  // The project's git remote (cli/tule_cli/gitremote.py speaks to it): refs here,
+  // each push a git bundle in R2 (gitKey) holding the commits the push added.
+  // A fetch applies the bundles it lacks in push order.
+
+  async gitRefs(): Promise<{ refs: Record<string, string>; bundles: { id: string; tip: string }[] }> {
+    const refs = (await this.ctx.storage.get<Record<string, string>>("git:refs")) ?? {};
+    const b = await this.ctx.storage.list<{ id: string; tip: string }>({ prefix: "gitb:" });
+    return { refs, bundles: [...b.values()].map((x) => ({ id: x.id, tip: x.tip })) };
+  }
+
+  /** Moves `ref` from `old` to `next` ("" = absent) if it is still at `old`; `bundle` holds the new commits. */
+  async gitPush(ref: string, old: string, next: string, bundle?: { id: string; tip: string; size: number }): Promise<Result> {
+    const refs = (await this.ctx.storage.get<Record<string, string>>("git:refs")) ?? {};
+    if ((refs[ref] ?? "") !== old)
+      return { error: `${ref} moved on the remote (it is at ${refs[ref]?.slice(0, 12) ?? "nothing"} now)`, hint: "fetch, merge, and push again" };
+    if (next) refs[ref] = next;
+    else delete refs[ref];
+    const put: Record<string, unknown> = { "git:refs": refs };
+    if (bundle) {
+      const seq = ((await this.ctx.storage.get<number>("git:seq")) ?? 0) + 1;
+      put["git:seq"] = seq;
+      put[`gitb:${String(seq).padStart(9, "0")}`] = { ...bundle, ref, at: Date.now() };
+    }
+    await this.ctx.storage.put(put);
+    if (ref === "refs/heads/main") this.broadcast();
+    return { ref, from: old || null, to: next || null };
   }
 
   // ------------------------------------------------------------ snapshots
