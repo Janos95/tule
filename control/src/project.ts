@@ -772,9 +772,11 @@ export class Project extends DurableObject<Env> {
       if (typeof m.rid !== "number") return;
       const slot = this.viewSlot(ws);
       const agent = slot ? this.agent(slot) : undefined;
+      const m0 = slot && own(this.machines, slot) ? this.machines[slot] : undefined;
+      const away = m0?.on ? "the machine is reconnecting; try again in a moment" : "the machine is stopped: start it (tule up)";
       if (m.t === "req") {
         const r = m as { rid: number; op?: unknown; args?: unknown };
-        if (!agent) return ws.send(JSON.stringify({ t: "res", rid: r.rid, error: "this copy's machine is not running (tule up)" }));
+        if (!agent) return ws.send(JSON.stringify({ t: "res", rid: r.rid, error: away }));
         const grid = crypto.getRandomValues(new Uint32Array(1))[0];
         this.pending.set(grid, { ws, rid: r.rid });
         agent.send(JSON.stringify({ t: "req", rid: grid, op: r.op, args: r.args ?? {} }));
@@ -782,7 +784,7 @@ export class Project extends DurableObject<Env> {
         return;
       }
       if (m.t !== "mesh" || typeof m.path !== "string") return;
-      if (!agent) return ws.send(JSON.stringify({ t: "mesh-error", rid: m.rid, error: "this copy's machine is not running (tule up)" }));
+      if (!agent) return ws.send(JSON.stringify({ t: "mesh-error", rid: m.rid, error: away }));
       const grid = crypto.getRandomValues(new Uint32Array(1))[0];
       this.pending.set(grid, { ws, rid: m.rid });
       agent.send(JSON.stringify({ t: "mesh", rid: grid, path: m.path, hash: m.hash ?? "" }));
@@ -842,7 +844,9 @@ export class Project extends DurableObject<Env> {
         try {
           await this.ctx.storage.put(`outputs:${slot}`, list);
         } catch {
-          // an index too large for one stored value stays in memory
+          // an index too large for one stored value stays in memory (the agent sends it again
+          // on every connection); an older stored one must not come back after a restart
+          await this.ctx.storage.delete(`outputs:${slot}`).catch(() => {});
         }
         this.broadcast();
         break;

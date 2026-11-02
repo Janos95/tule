@@ -25,7 +25,7 @@ export function typeOf(file) {
   if (f.endsWith(".pdf")) return "pdf";
   if (f.endsWith(".dxf")) return "dxf";
   if (/\.(png|jpe?g|gif|webp|svg)$/.test(f)) return "image";
-  if (/\.(txt|log|py|toml|ya?ml|ini|cfg|xml|js|ts|sh)$/.test(f)) return "text";
+  if (/\.(txt|log|py|toml|ya?ml|ini|cfg|xml|js|ts|sh|ino|h|hpp|c|cpp|scad|gcode|nc|ngc|m|rs|go|java|html|css|tex|bat|ps1)$/.test(f)) return "text";
   return "file";
 }
 

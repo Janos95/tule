@@ -296,3 +296,5 @@ def test_distance_and_clashes():
     assert [(x, y) for x, y, _ in hits] == [("b", "c"), ("a", "b"), ("a", "pin")]  # largest first; c only touches a
     assert hits[1][2] == pytest.approx(200)
     assert [(x, y) for x, y, _ in asm.clashes(ignore=[("pin", "a")])] == [("b", "c"), ("a", "b")]
+    gaps = Assembly(box(10).named("a"), box(10).at(10.3, 0, 0).named("b"), box(10).at(0, 30, 0).named("c")).gaps(below=0.5)
+    assert [(x, y) for x, y, _ in gaps] == [("a", "b")] and gaps[0][2] == pytest.approx(0.3)

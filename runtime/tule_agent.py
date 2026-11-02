@@ -196,6 +196,10 @@ class Outputs:
                 try:
                     with open(os.path.join(self.root, rel)) as f:
                         g["meta"] = json.load(f)
+                    if size > BIG_META and isinstance(g["meta"], dict) and "frames" in g["meta"]:
+                        # a long motion study: the index carries the rest, the viewer reads the frames
+                        g["meta"].pop("frames")
+                        g["meta"]["framesFile"] = {"path": rel.replace(os.sep, "/"), "hash": self._hash(rel, size, mtime), "size": size}
                 except (OSError, ValueError) as e:
                     g["error"] = f"output.json: {e}"
                 continue
@@ -204,6 +208,7 @@ class Outputs:
             except OSError:
                 continue
             g["files"].append({"path": rel.replace(os.sep, "/"), "file": (rest or top).replace(os.sep, "/"), "hash": digest, "size": size})
+            g["changed"] = max(g.get("changed", 0), mtime)  # the viewer opens the newest output
         for (_, name), g in staged.items():  # shown instead of the last built one once it has something to show
             if any(f["file"].lower().endswith(GEOMETRY) for f in g["files"]):
                 groups[("outputs", name)] = {**g, "building": True}
@@ -284,6 +289,7 @@ class Outputs:
 _pool = None
 _pool_lock = threading.Lock()
 MESH_SECONDS = 900
+BIG_META = 256 << 10  # an output.json larger than this keeps its frames out of the index
 
 
 def mesh_apart(path: str) -> bytes:
@@ -721,9 +727,11 @@ class Agent:
         while self.booted is None:
             await asyncio.sleep(0.2)
         os.makedirs(OUTPUTS, exist_ok=True)
+        fresh = True  # a new connection: send the whole index (changes while offline never reached it)
         while True:
             try:
-                if await asyncio.to_thread(self.outputs.changed):
+                if await asyncio.to_thread(self.outputs.changed) or fresh:
+                    fresh = False
                     index = await asyncio.to_thread(self.outputs.index)
                     await self.send({"t": "outputs", "outputs": index})
             except Exception as e:  # a bad file must not end the index for good; the next change retries

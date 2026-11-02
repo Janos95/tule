@@ -92,6 +92,36 @@ class Assembly:
                     out.append((pa, pb, v))
         return sorted(out, key=lambda t: -(t[2] if t[2] == t[2] else float("inf")))
 
+    def gaps(self, below: float = 1.0, ignore=()) -> list[tuple[str, str, float]]:
+        """Parts closer than ``below`` mm: ``[(a, b, gap in mm)]``, smallest first (0: touching or
+        overlapping; ``clashes`` says by how much). Run it on every frame of a motion study for the
+        running clearance; ``ignore`` as for ``clashes``."""
+        from OCP.Bnd import Bnd_Box
+        from OCP.BRepBndLib import BRepBndLib
+
+        from ._occ import static
+
+        parts = self.parts()
+        skip = {frozenset(p) for p in ignore}
+        boxes = []
+        for _, s in parts:
+            b = Bnd_Box()
+            static(BRepBndLib, "Add")(s.wrapped, b, True)
+            b.Enlarge(below / 2)
+            boxes.append(b)
+        out = []
+        for i in range(len(parts)):
+            for j in range(i + 1, len(parts)):
+                (pa, a), (pb, b) = parts[i], parts[j]
+                if boxes[i].IsOut(boxes[j]):
+                    continue
+                if frozenset((pa, pb)) in skip or frozenset((pa.rsplit("/", 1)[-1], pb.rsplit("/", 1)[-1])) in skip:
+                    continue
+                d = a.distance(b)
+                if d < below:
+                    out.append((pa, pb, d))
+        return sorted(out, key=lambda t: t[2])
+
     def _map(self, fn) -> "Assembly":
         return Assembly(*[c._map(fn) if isinstance(c, Assembly) else fn(c) for c in self.children], name=self.name)
 

@@ -60,8 +60,10 @@ numbers or booleans.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import time
 from pathlib import Path
 import re
 from typing import Any, Union
@@ -261,13 +263,17 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
 class Sequence:
     """Frames of a process (an optimization, a simulation) the viewer can scroll and play.
 
-    Each ``add`` writes one frame file and rewrites ``output.json`` with
-    ``"status": "running"``; ``done()`` marks it finished.
+    Each ``add`` writes one frame file; ``output.json`` (``"status": "running"``) follows
+    at most once a second, and ``done()`` (the end of a ``with`` block) writes it finished.
+    ``info``: facts shown under the view, as for a part.
     """
 
-    def __init__(self, name: str, title: str | None = None, fmt: str | None = None):
+    def __init__(self, name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None):
         self.name = name
         self.title = title
+        self.info = info
+        self._written = self._added = 0.0
+        atexit.register(lambda: self._written < self._added and self._flush())  # frames of the last second
         self.fmt = fmt
         self.folder = _folder(name)
         self.frames: list[dict] = []
@@ -302,7 +308,9 @@ class Sequence:
         if values:
             frame["values"] = {k: float(v) for k, v in values.items()}
         self.frames.append(frame)
-        self._flush()
+        self._added = time.monotonic()
+        if len(self.frames) == 1 or time.monotonic() - self._written >= 1.0:  # not a rewrite per frame
+            self._flush()
         return fname or ""
 
     def _place(self, name: str, part: Shape) -> dict:
@@ -324,7 +332,7 @@ class Sequence:
             entry["color"] = part.color
         if not loc.IsIdentity():
             t = loc.Transformation()
-            entry["transform"] = [round(t.Value(r, c), 9) for r in (1, 2, 3) for c in (1, 2, 3, 4)] + [0, 0, 0, 1]
+            entry["transform"] = [round(t.Value(r, c), 7 if c < 4 else 5) for r in (1, 2, 3) for c in (1, 2, 3, 4)] + [0, 0, 0, 1]
         return entry
 
     def done(self, status: str = "done") -> str:
@@ -335,6 +343,9 @@ class Sequence:
         meta: dict[str, Any] = {"kind": "sequence", "frames": self.frames, "status": self.status}
         if self.title:
             meta["title"] = self.title
+        if self.info:
+            meta["info"] = self.info
+        self._written = time.monotonic()
         return _write_json(self.folder, meta)
 
     def __enter__(self):
@@ -344,8 +355,8 @@ class Sequence:
         self.done("failed" if exc_type else "done")
 
 
-def sequence(name: str, title: str | None = None, fmt: str | None = None) -> Sequence:
-    return Sequence(name, title, fmt)
+def sequence(name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None) -> Sequence:
+    return Sequence(name, title, fmt, info)
 
 
 # ---------------------------------------------------------------- overlay

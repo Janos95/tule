@@ -26,16 +26,16 @@ outputs.part("bracket", part)
 - Solids: `box(x, y, z, center=)`, `cube`, `cylinder(r, h, center=)`, `cone(r, h, r2)`, `sphere(r)`, `torus(R, r)`, `wedge`, `polyhedron(points, faces)`.
 - Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner), `text("MK4", size, bold=)` (extrude or engrave it). Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
 - Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`.
-- Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)` for many.
+- Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)`.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
-- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (the gap; 0 if touching). `assembly.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`: run it on every frame of a motion study.
+- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching). `asm.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`, `asm.gaps(below=0.5)` closer ones: run them on every frame of a motion study.
 - Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference, then `pair.place(gear2, angle=)` meshes gear 2 at `pair.distance`.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
 ## Selecting faces and edges
 
-Select with queries on the current shape, never by guessed index:
+Select with queries on the current shape, never by index:
 
 ```python
 from tule import *

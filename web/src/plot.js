@@ -2,7 +2,8 @@
 // key, each scaled to its own range (the legend gives the range; one key also
 // gets its numbers on the axis), so differently sized values share one chart
 // without a second axis. A cursor marks the shown frame; hovering shows a
-// frame's values in the legend, clicking (or dragging) jumps to it.
+// frame's values in the legend, clicking (or dragging) jumps to it. Clicking a
+// legend entry shows that line alone, with its numbers on the axis.
 
 const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]; // fixed order, by key
 const H = 64;
@@ -18,6 +19,8 @@ export function initPlot(el, onPick) {
   let current = 0;
   let hover = null;
   let dragging = false;
+  let solo = null; // the one key shown alone (a legend click), or null
+  const shown = () => (solo && keys.includes(solo) ? [solo] : keys);
 
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("class", "plot-svg");
@@ -48,7 +51,8 @@ export function initPlot(el, onPick) {
       return e;
     };
     add("line", { x1: PAD.l, x2: w - PAD.r, y1: H - PAD.b, y2: H - PAD.b, class: "plot-base" });
-    keys.forEach((k, j) => {
+    shown().forEach((k) => {
+      const j = keys.indexOf(k);
       const { lo, span } = range(k);
       const y = (v) => H - PAD.b - ((v - lo) / span) * (H - PAD.t - PAD.b);
       let d = "";
@@ -63,8 +67,8 @@ export function initPlot(el, onPick) {
       const v = frames[current]?.values?.[k];
       if (Number.isFinite(v)) add("circle", { cx: x(current, w), cy: y(v), r: 3.5, fill: SERIES[j % SERIES.length], class: "plot-dot" });
     });
-    if (keys.length === 1) {
-      const { lo, hi } = range(keys[0]);
+    if (shown().length === 1) {
+      const { lo, hi } = range(shown()[0]);
       add("text", { x: PAD.l + 2, y: PAD.t + 9, class: "plot-axis" }).textContent = fmt(hi);
       add("text", { x: PAD.l + 2, y: H - PAD.b - 3, class: "plot-axis" }).textContent = fmt(lo);
     }
@@ -84,12 +88,19 @@ export function initPlot(el, onPick) {
     keys.forEach((k, j) => {
       const { lo, hi } = range(k);
       const item = document.createElement("span");
-      item.className = "plot-key";
+      item.className = "plot-key" + (keys.length > 1 && solo ? (solo === k ? " solo" : " off") : "");
+      if (keys.length > 1) {
+        item.title = solo === k ? "Show all" : `Show ${k} alone, with its axis`;
+        item.addEventListener("click", () => {
+          solo = solo === k ? null : k;
+          render();
+        });
+      }
       item.innerHTML = '<i></i><span class="k"></span> <b></b> <small></small>';
       item.querySelector("i").style.background = SERIES[j % SERIES.length];
       item.querySelector(".k").textContent = k;
       item.querySelector("b").textContent = fmt(f?.values?.[k]);
-      item.querySelector("small").textContent = keys.length > 1 ? `(${fmt(lo)} – ${fmt(hi)})` : "";
+      item.querySelector("small").textContent = shown().length > 1 ? `(${fmt(lo)} – ${fmt(hi)})` : "";
       legend.append(item);
     });
   }

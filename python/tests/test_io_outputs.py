@@ -142,6 +142,7 @@ def test_outputs_part_assembly_sequence(outdir):
     for a in (0, 30, 60):
         seq.add([base, arm.rotate(y=a).at(10, 0, 10)], angle=a)
     seq.add([base, box(2).named("arm", "#d33")])  # a new solid: a new file
+    seq.done()  # output.json follows the frames at most once a second; done writes them all
     meta = json.load(open(outdir / "move" / "output.json"))
     assert sorted(f for f in os.listdir(outdir / "move") if f.endswith(".step")) == ["arm.step", "arm_2.step", "base.step"]
     f0, f2, f3 = meta["frames"][0], meta["frames"][2], meta["frames"][3]

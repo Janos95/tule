@@ -1435,6 +1435,9 @@ main {
 .plot-key i { width: 10px; height: 3px; border-radius: 2px; }
 .plot-key b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .plot-key small { font-size: 11px; }
+.plot-key[title] { cursor: pointer; }
+.plot-key.off { opacity: 0.45; }
+.plot-key.solo .k { text-decoration: underline; text-underline-offset: 2px; }
 #play.on { background: var(--accent); color: var(--on-accent); }
 
 #play svg {

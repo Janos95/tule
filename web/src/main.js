@@ -284,10 +284,30 @@ $("machine-pick").addEventListener("change", (e) => {
 
 // ------------------------------------------------------------ outputs
 
+const framesOf = new Map(); // output.json hash -> frames (null while loading)
+/** A large output.json's frames, once read (the index leaves them out); reading starts here. */
+function bigFrames(ff) {
+  if (!framesOf.has(ff.hash)) {
+    framesOf.set(ff.hash, null);
+    readFile(ff)
+      .then((buf) => {
+        framesOf.set(ff.hash, JSON.parse(new TextDecoder().decode(buf)).frames ?? []);
+        for (const k of framesOf.keys()) if (framesOf.size > 8 && k !== ff.hash) framesOf.delete(k);
+        state.outputs = state.outputs.map((o) => (o.meta?.framesFile?.hash === ff.hash ? { ...o, meta: { ...o.meta, frames: framesOf.get(ff.hash) } } : o));
+        renderList();
+        show();
+      })
+      .catch(() => framesOf.delete(ff.hash));
+  }
+  return framesOf.get(ff.hash);
+}
+
 /** The index as the page uses it: id (an output's name, or work/<name>, inputs/<name>), files (geometry,
  * drawn in 3D) and docs (the other files, a view each); paths relative to /workspace. */
 function prepare(list) {
   return list.map((o) => {
+    const ff = o.meta?.framesFile; // a long motion study: its frames are read from output.json
+    if (ff) o = { ...o, meta: { ...o.meta, frames: bigFrames(ff) ?? [] } };
     const root = o.root ?? "outputs"; // an agent from before work/ and inputs/ were shown sends no root
     const all = (o.files ?? []).map((f) => ({
       ...f,
@@ -395,7 +415,10 @@ let scrolledTo = null; // the selected entry the list last scrolled to (phones s
 function renderList() {
   // a link's output may not be in the list yet (the machine is starting): show the first meanwhile, keep wanting it
   const all = state.outputs;
-  state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (all.find((o) => o.root === "outputs")?.id ?? all[0]?.id ?? null);
+  // without a link to one: the output that changed last
+  const newest = all.filter((o) => o.root === "outputs").sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0))[0];
+  if (state.wanted == null && newest) state.wanted = newest.id; // once: the view doesn't jump while the agent works
+  state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (newest?.id ?? all[0]?.id ?? null);
   const outs = all.filter((o) => o.root === "outputs");
   $("outputs-empty").hidden = outs.length > 0;
   fill($("output-list"), outs);
