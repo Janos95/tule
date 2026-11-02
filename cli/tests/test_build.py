@@ -391,3 +391,13 @@ def test_groups_in_src(project):
     assert "checks/fit" in check()
     (project / "src" / "checks" / "fit.py").rename(project / "src" / "checks" / "gone.py")
     assert "delete outputs/checks/fit" in check()  # its script is gone
+
+
+def test_models_too_big_for_the_viewer_are_flagged(tmp_path):
+    from tule_cli.build import models_mb
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.step").write_bytes(b"0" * (3 << 20))
+    (tmp_path / "a" / "notes.md").write_bytes(b"0" * (5 << 20))
+    assert round(models_mb(str(tmp_path / "a"))) == 3
+    (tmp_path / "a" / "output.json").write_text('{"kind": "sequence"}')
+    assert models_mb(str(tmp_path / "a")) == 0  # one frame at a time

@@ -222,9 +222,14 @@ export function initOverlay({ viewer, legend, marks }) {
     legend.append(el("div", "legend-head", meta.title || ""));
     if (info.length) {
       const grid = el("dl", "legend-info");
-      for (const [k, v] of info) {
+      // a nested value: one row per entry ("motion · status"), lists of plain values joined
+      const flat = (k, v, depth) =>
+        v !== null && typeof v === "object" && !(Array.isArray(v) && v.every((x) => x === null || typeof x !== "object")) && depth < 2
+          ? Object.entries(v).flatMap(([k2, v2]) => flat(`${k} · ${k2}`, v2, depth + 1))
+          : [[k, Array.isArray(v) ? v.map(fmt).join(", ") || "none" : v !== null && typeof v === "object" ? JSON.stringify(v) : fmt(v)]];
+      for (const [k, v] of info.flatMap(([k, v]) => flat(k, v, 0))) {
         const item = el("div", "legend-fact");
-        item.append(el("dt", "", k), el("dd", "", v !== null && typeof v === "object" ? JSON.stringify(v) : fmt(v)));
+        item.append(el("dt", "", k), el("dd", "", v));
         grid.append(item);
       }
       legend.append(grid);

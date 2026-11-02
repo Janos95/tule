@@ -374,6 +374,10 @@ class Build:
             write_record(self.root, name, rec)
             self.done[name] = "built"
             log(f"{name}: built in {time.time() - t0:.1f} s")
+            heavy = models_mb(os.path.join(self.root, "outputs", name))
+            if heavy > HEAVY_MB:
+                log(f"{name}: {heavy:.0f} MB of models: the viewer may take minutes to show it, or fail; "
+                    "use simpler stand-ins for big purchased parts (their envelope and mounting features)")
             if self.cache and not moved:
                 try:
                     self.cache.upload(self.root, name, rec)
@@ -604,6 +608,22 @@ def _clean(root: str, rel: str) -> str:
     if r != "." and not _inside(root, r):
         raise BuildError(f"{rel}: not in the project ({root})")
     return r
+
+
+HEAVY_MB = 60  # models the viewer meshes at once (a sequence shows one frame: not counted)
+
+
+def models_mb(folder: str) -> float:
+    try:
+        with open(os.path.join(folder, "output.json")) as f:
+            if json.load(f).get("kind") == "sequence":
+                return 0
+    except (OSError, ValueError, AttributeError):
+        pass
+    total = 0
+    for d, _, files in os.walk(folder):
+        total += sum(os.path.getsize(os.path.join(d, f)) for f in files if f.lower().endswith((".step", ".stp", ".stl")))
+    return total / 2**20
 
 
 def read_based_on(root: str) -> dict[str, dict[str, str]]:

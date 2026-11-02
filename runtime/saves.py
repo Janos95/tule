@@ -61,6 +61,23 @@ def configure(root: str, url: str | None = None, project: str | None = None):
     else:
         git(root, "remote", "set-url", REMOTE, f"tule::{base}/git")
     git(root, "config", "lfs.url", f"{base}/lfs")
+    _exclude(root)
+
+
+EXCLUDE = ["._*", ".DS_Store"]  # macOS copies (a tar made on a Mac): never saved, whatever .gitignore says
+
+
+def _exclude(root: str):
+    path = os.path.join(root, ".git", "info", "exclude")
+    try:
+        with open(path) as f:
+            have = set(f.read().split())
+    except OSError:
+        have = set()
+    if missing := [p for p in EXCLUDE if p not in have]:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write("\n" + "\n".join(missing) + "\n")
 
 
 def has_main(root: str) -> bool:

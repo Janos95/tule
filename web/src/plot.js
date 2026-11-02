@@ -10,7 +10,13 @@ const H = 64;
 const PAD = { l: 8, r: 8, t: 6, b: 6 };
 const SVG = "http://www.w3.org/2000/svg";
 
-const fmt = (v) => (Number.isFinite(v) ? +v.toPrecision(4) : "–");
+// to four digits of the series' size, so a value that is zero up to rounding reads 0, not 3.1e-8
+const fmt = (v, r) => {
+  if (!Number.isFinite(v)) return "–";
+  const size = r ? Math.max(Math.abs(r.lo), Math.abs(r.hi)) : Math.abs(v);
+  const digits = size ? Math.max(0, Math.min(8, 3 - Math.floor(Math.log10(size)))) : 0;
+  return String(+v.toFixed(digits));
+};
 
 /** el: the plot's container; onPick(frame index). */
 export function initPlot(el, onPick) {
@@ -68,9 +74,9 @@ export function initPlot(el, onPick) {
       if (Number.isFinite(v)) add("circle", { cx: x(current, w), cy: y(v), r: 3.5, fill: SERIES[j % SERIES.length], class: "plot-dot" });
     });
     if (shown().length === 1) {
-      const { lo, hi } = range(shown()[0]);
-      add("text", { x: PAD.l + 2, y: PAD.t + 9, class: "plot-axis" }).textContent = fmt(hi);
-      add("text", { x: PAD.l + 2, y: H - PAD.b - 3, class: "plot-axis" }).textContent = fmt(lo);
+      const r = range(shown()[0]);
+      add("text", { x: PAD.l + 2, y: PAD.t + 9, class: "plot-axis" }).textContent = fmt(r.hi, r);
+      add("text", { x: PAD.l + 2, y: H - PAD.b - 3, class: "plot-axis" }).textContent = fmt(r.lo, r);
     }
     add("line", { x1: x(current, w), x2: x(current, w), y1: 0, y2: H, class: "plot-cursor" });
     if (hover !== null && hover !== current) add("line", { x1: x(hover, w), x2: x(hover, w), y1: 0, y2: H, class: "plot-hover" });
@@ -83,10 +89,10 @@ export function initPlot(el, onPick) {
     legend.textContent = "";
     const head = document.createElement("span");
     head.className = "plot-frame";
-    head.textContent = f?.label ?? `frame ${i}`;
+    head.textContent = f?.label ?? `frame ${i + 1}`;
     legend.append(head);
     keys.forEach((k, j) => {
-      const { lo, hi } = range(k);
+      const r = range(k);
       const item = document.createElement("span");
       item.className = "plot-key" + (keys.length > 1 && solo ? (solo === k ? " solo" : " off") : "");
       if (keys.length > 1) {
@@ -99,8 +105,8 @@ export function initPlot(el, onPick) {
       item.innerHTML = '<i></i><span class="k"></span> <b></b> <small></small>';
       item.querySelector("i").style.background = SERIES[j % SERIES.length];
       item.querySelector(".k").textContent = k;
-      item.querySelector("b").textContent = fmt(f?.values?.[k]);
-      item.querySelector("small").textContent = shown().length > 1 ? `(${fmt(lo)} – ${fmt(hi)})` : "";
+      item.querySelector("b").textContent = fmt(f?.values?.[k], r);
+      item.querySelector("small").textContent = shown().length > 1 ? `(${fmt(r.lo, r)} – ${fmt(r.hi, r)})` : "";
       legend.append(item);
     });
   }

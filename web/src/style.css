@@ -833,7 +833,8 @@ body.resizing.v * {
   pointer-events: none;
 }
 
-.status[hidden] {
+.status[hidden],
+.status:empty {
   display: none;
 }
 

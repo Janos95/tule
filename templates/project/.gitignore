@@ -2,3 +2,6 @@ __pycache__/
 .pytest_cache/
 # outputs are generated; snapshots keep their history
 outputs/
+# macOS copies
+._*
+.DS_Store

@@ -674,7 +674,7 @@ async function showPage(o, v) {
   const body = document.createElement("div");
   body.className = "page-body";
   if (!v) {
-    body.append(Object.assign(document.createElement("p"), { className: "page-empty", textContent: o.build ? "Nothing to show yet." : "Empty." }));
+    body.append(Object.assign(document.createElement("p"), { className: "page-empty", textContent: o.build?.state === "stale" && o.build.why === "never built" ? `Not built yet: tule build ${o.name}` : o.build ? "Nothing to show yet." : "Empty." }));
   } else if (v.type === "log") {
     body.append(Object.assign(document.createElement("pre"), { className: "page-text", textContent: o.build.log }));
   } else {
@@ -745,6 +745,13 @@ async function show() {
   if (first) annotate?.reset();
   setStatus(meshes.size === 0 || !shownFiles.every((f) => meshes.has(f.hash)) ? "Loading…" : "");
   try {
+    // many files to mesh: count them in, with their size, so a big assembly does not look stuck
+    const todo = [...new Map(shownFiles.filter((f) => !meshes.has(f.hash)).map((f) => [f.hash, f])).values()];
+    let done = 0;
+    const mb = todo.reduce((n, f) => n + (f.size ?? 0), 0) / 2 ** 20;
+    const progress = () => state.shown === key && todo.length > 3 && setStatus(`Loading ${done} / ${todo.length} files${mb >= 10 ? ` (${Math.round(mb)} MB)` : ""}…`);
+    progress();
+    for (const f of todo) request(f).then(() => (done++, progress()), () => {});
     const loaded = await Promise.all(shownFiles.map(request));
     if (state.shown !== key) return;
     const named = (m, f, i) => {

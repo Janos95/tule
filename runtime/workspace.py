@@ -29,7 +29,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 CHUNK = 16 << 20
-IGNORE = ["__pycache__", ".pytest_cache", "*.tule-tmp"]
+IGNORE = ["__pycache__", ".pytest_cache", "*.tule-tmp", "._*", ".DS_Store"]
 
 
 class Api:
