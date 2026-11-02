@@ -906,6 +906,25 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   interferes (checked by turning it through a pitch) or the contact ratio
   is under 1.2, with a profile shift that works as the hint. Not built:
   helical and bevel gears, racks.
+- Sheet metal (2026-11-02): `sheet(profile, t, bend_radius, k)`,
+  `part.flange(edges, length, angle, inset=, relief=)`, `part.unfold()`,
+  `bends`, `bend_table()`, `export_dxf`. In a QA run (a laser-cut Raspberry
+  Pi enclosure) an agent hand-rolled 170 lines of flat development and DXF
+  writing and kept the flat and the 3D part in sync by an assertion: every
+  change was made twice. Now the formed part is the model and the flat is
+  derived from it: `unfold` walks the reference (bottom) side across tangent
+  edges, places each flat panel with a rigid transform and develops each
+  bend at `BA = angle·(R + K·t)`, so cuts made before or after flanging, also
+  across bends, come along; it checks the part is one sheet of thickness t
+  (by volume) and that the flat neither overlaps nor touches itself. Flange
+  length is the outside length from the virtual sharp, the flange's outside
+  face flush with the edge (the profile is the outside footprint); flanges
+  meeting at a square corner stop at each other's bend (square relief),
+  inset ones get rect or obround reliefs. Drawings of a flat draw dash-dot
+  bend lines with `B1 UP 90° R1.5` and a bend table; DXF layers CUT,
+  BEND_UP, BEND_DOWN, BEND_NOTES (R12 written by hand, no ezdxf); the viewer
+  colors DXF layers. Not built: hems, jogs, louvers, closed or non-90°
+  corners, flanges on curved edges, rolled sheet.
 - Measure: `volume`, `area`, `bounds`, `center_of_mass`, `inertia`,
   `mass(material)`, `distance`.
 - I/O: `export_step` (names, colors, tags), `export_stl`, `export_3mf` (a print plate),

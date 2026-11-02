@@ -123,13 +123,34 @@ async function draw(into, f, c) {
 
 // ---------------------------------------------------------------- DXF
 
+// AutoCAD color index -> palette variable; anything else draws in the text color
+const ACI = { 1: "--danger", 2: "--warn-fill", 3: "--ok", 4: "--info-fill", 5: "--info", 6: "--link", 8: "--muted", 9: "--faint" };
+const DASHED = { DASHDOT: "9 3 1.5 3", CENTER: "12 3 3 3", DASHED: "6 3", HIDDEN: "4 2", DOT: "1.5 3", PHANTOM: "12 3 3 3 3 3" };
+
 /** A DXF's linework (lines, circles, arcs, polylines with bulges, splines through their
- * points) as an SVG, y up, with its size: a preview of a flat for laser or waterjet cutting. */
+ * points) and texts as an SVG, y up, with its size: a preview of a flat for laser or waterjet
+ * cutting. Entities take their own or their layer's color and linetype (a sheet metal flat:
+ * CUT solid, BEND_UP / BEND_DOWN dash-dot in green / red); a legend names the layers. */
 function dxf(src) {
   const lines = src.split(/\r?\n/);
   const pairs = [];
   for (let i = 0; i + 1 < lines.length; i += 2) pairs.push([+lines[i].trim(), lines[i + 1].trim()]);
-  const paths = [];
+  const paths = []; // [points, layer, color]
+  const texts = [];
+  // the layer table: name -> {color, ltype}
+  const layers = new Map();
+  for (let i = 0; i < pairs.length; i++) {
+    if (pairs[i][0] !== 0 || pairs[i][1] !== "LAYER" || pairs[i + 1]?.[0] !== 2) continue;
+    const L = { color: 7, ltype: "CONTINUOUS" };
+    let name = "";
+    for (let j = i + 1; j < pairs.length && pairs[j][0] !== 0; j++) {
+      const [c, v] = pairs[j];
+      if (c === 2) name = v;
+      else if (c === 62) L.color = Math.abs(+v);
+      else if (c === 6) L.ltype = v.toUpperCase();
+    }
+    layers.set(name, L);
+  }
   let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
   const see = (x, y) => { lo = [Math.min(lo[0], x), Math.min(lo[1], y)]; hi = [Math.max(hi[0], x), Math.max(hi[1], y)]; };
   const arcPts = (cx, cy, r, a0, a1) => {
@@ -174,23 +195,32 @@ function dxf(src) {
   let poly = null; // an old-style POLYLINE collects its VERTEXes
   for (const e of ents) {
     const g = (k) => +(e.c.find(([c]) => c === k)?.[1] ?? 0);
+    const s = (k) => e.c.find(([c]) => c === k)?.[1];
     const all = (k) => e.c.filter(([c]) => c === k).map(([, v]) => +v);
-    if (e.type === "LINE") paths.push([[g(10), g(20)], [g(11), g(21)]]);
-    else if (e.type === "CIRCLE") paths.push(arcPts(g(10), g(20), g(40), 0, 360));
-    else if (e.type === "ARC") paths.push(arcPts(g(10), g(20), g(40), g(50), g(51)));
+    const layer = s(8) ?? "0";
+    const own = s(62) === undefined ? 256 : +s(62); // 256: by layer
+    const style = { layer, color: own > 0 && own < 256 ? own : undefined, ltype: s(6)?.toUpperCase() };
+    const push = (pts) => paths.push(Object.assign(pts, style));
+    if (e.type === "LINE") push([[g(10), g(20)], [g(11), g(21)]]);
+    else if (e.type === "CIRCLE") push(arcPts(g(10), g(20), g(40), 0, 360));
+    else if (e.type === "ARC") push(arcPts(g(10), g(20), g(40), g(50), g(51)));
+    else if (e.type === "TEXT" && s(1)) texts.push({ ...style, x: g(10), y: g(20), h: g(40) || 2.5, a: g(50), t: s(1).replace(/%%d/gi, "°").replace(/%%p/gi, "±").replace(/%%c/gi, "⌀") });
     else if (e.type === "LWPOLYLINE") {
       const xs = all(10), ys = all(20), pts = xs.map((x, k) => [x, ys[k]]);
       const bulges = [];
       let k = -1;
       for (const [c, v] of e.c) if (c === 10) k++; else if (c === 42) bulges[k] = +v;
-      if (pts.length) paths.push(bulged(pts, bulges, (g(70) & 1) === 1));
+      if (pts.length) push(bulged(pts, bulges, (g(70) & 1) === 1));
     } else if (e.type === "SPLINE") {
       const fx = all(11), fy = all(21);
       const [xs, ys] = fx.length ? [fx, fy] : [all(10), all(20)];
-      if (xs.length) paths.push(xs.map((x, k) => [x, ys[k]]));
-    } else if (e.type === "POLYLINE") poly = { pts: [], bulges: [], closed: (g(70) & 1) === 1 };
+      if (xs.length) push(xs.map((x, k) => [x, ys[k]]));
+    } else if (e.type === "POLYLINE") poly = { pts: [], bulges: [], closed: (g(70) & 1) === 1, style };
     else if (e.type === "VERTEX" && poly) { poly.pts.push([g(10), g(20)]); poly.bulges.push(g(42)); }
-    else if (e.type === "SEQEND" && poly) { if (poly.pts.length) paths.push(bulged(poly.pts, poly.bulges, poly.closed)); poly = null; }
+    else if (e.type === "SEQEND" && poly) {
+      if (poly.pts.length) paths.push(Object.assign(bulged(poly.pts, poly.bulges, poly.closed), poly.style));
+      poly = null;
+    }
   }
   for (const p of paths) for (const [x, y] of p) see(x, y);
   const wrap = el("div", "page-dxf");
@@ -202,13 +232,63 @@ function dxf(src) {
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", `${lo[0] - pad} ${-hi[1] - pad} ${w + 2 * pad} ${h + 2 * pad}`);
-  const path = document.createElementNS(ns, "path");
-  path.setAttribute("d", paths.map((p) => "M" + p.map(([x, y]) => `${+x.toFixed(4)} ${+(-y).toFixed(4)}`).join("L")).join(""));
-  path.setAttribute("vector-effect", "non-scaling-stroke");
-  svg.append(path);
+  // one path per layer, color and linetype; texts after the lines
+  const look = (e) => {
+    const L = layers.get(e.layer) ?? { color: 7, ltype: "CONTINUOUS" };
+    const ltype = e.ltype && e.ltype !== "BYLAYER" ? e.ltype : L.ltype;
+    return { color: `var(${ACI[e.color ?? L.color] ?? "--text"})`, dash: DASHED[ltype] ?? "" };
+  };
+  const groups = new Map();
+  for (const p of paths) {
+    const { color, dash } = look(p);
+    const key = `${p.layer}\u0000${color}\u0000${dash}`;
+    if (!groups.has(key)) groups.set(key, { layer: p.layer, color, dash, paths: [] });
+    groups.get(key).paths.push(p);
+  }
+  const num = (v) => +v.toFixed(4);
+  for (const gr of groups.values()) {
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", gr.paths.map((p) => "M" + p.map(([x, y]) => `${num(x)} ${num(-y)}`).join("L")).join(""));
+    path.setAttribute("vector-effect", "non-scaling-stroke");
+    path.style.stroke = gr.color;
+    if (gr.dash) path.setAttribute("stroke-dasharray", gr.dash);
+    svg.append(path);
+  }
+  for (const tx of texts) {
+    const t = document.createElementNS(ns, "text");
+    t.setAttribute("x", num(tx.x));
+    t.setAttribute("y", num(-tx.y));
+    t.setAttribute("font-size", num(tx.h));
+    if (tx.a) t.setAttribute("transform", `rotate(${num(-tx.a)} ${num(tx.x)} ${num(-tx.y)})`);
+    t.style.fill = look(tx).color;
+    t.textContent = tx.t;
+    svg.append(t);
+  }
   const at = pairs.findIndex(([c, v]) => c === 9 && v === "$INSUNITS");
   const unit = { 1: "in", 2: "ft", 4: "mm", 5: "cm", 6: "m" }[at >= 0 ? +pairs[at + 1]?.[1] : 0] ?? "units";
-  wrap.append(svg, el("p", "page-note", `${+w.toFixed(2)} × ${+h.toFixed(2)} ${unit} · ${paths.length} entities`));
+  wrap.append(svg);
+  // a legend when there is more than one layer: a sample of each layer's line, its name and count
+  const used = [...new Set([...paths, ...texts].map((e) => e.layer))];
+  if (used.length > 1) {
+    const legend = el("div", "dxf-legend");
+    for (const name of used) {
+      const n = paths.filter((p) => p.layer === name).length + texts.filter((t) => t.layer === name).length;
+      const { color, dash } = look({ layer: name });
+      const item = el("span", "dxf-layer");
+      const sw = document.createElementNS(ns, "svg");
+      sw.setAttribute("viewBox", "0 0 28 6");
+      sw.setAttribute("aria-hidden", "true");
+      const ln = document.createElementNS(ns, "line");
+      Object.entries({ x1: 1, y1: 3, x2: 27, y2: 3 }).forEach(([k, v]) => ln.setAttribute(k, v));
+      ln.style.stroke = color;
+      if (dash) ln.setAttribute("stroke-dasharray", dash.split(" ").map((x) => x / 2).join(" "));
+      sw.append(ln);
+      item.append(sw, el("span", null, name), el("small", null, String(n)));
+      legend.append(item);
+    }
+    wrap.append(legend);
+  }
+  wrap.append(el("p", "page-note", `${+w.toFixed(2)} × ${+h.toFixed(2)} ${unit} · ${paths.length + texts.length} entities`));
   return wrap;
 }
 

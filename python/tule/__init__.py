@@ -22,15 +22,16 @@ from .primitives import box, cone, cube, cylinder, polyhedron, sphere, torus, we
 from .profile import Profile, circle, ellipse, polygon, rect, regular_polygon, slot, text
 from .selection import Edges, Faces, Selection, Vertices
 from .shape import Shape, difference, intersection, union
+from .sheetmetal import Bend, SheetMetal, export_dxf, sheet
 from .sweeps import extrude, loft, pipe, revolve, sweep
 
 __version__ = "0.1.0"
 
 __all__ = [
-    "Assembly", "BevelPair", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN", "Profile", "Selection", "Shape",
+    "Assembly", "Bend", "BevelPair", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN", "Profile", "Selection", "Shape",
     "TuleError", "Vec", "Vertices", "X", "Y", "Z", "bevel_gear", "bevel_pair", "box", "circle", "cone", "cube", "cylinder",
-    "difference", "drawing", "ellipse", "export_3mf", "export_gltf", "export_step", "export_stl", "extrude",
+    "difference", "drawing", "ellipse", "export_3mf", "export_dxf", "export_gltf", "export_step", "export_stl", "extrude",
     "fea", "gear_pair", "import_step", "internal_gear", "intersection", "loft", "outputs", "pipe", "sweep",
-    "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "slot", "sphere", "spur_gear",
+    "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "SheetMetal", "sheet", "slot", "sphere", "spur_gear",
     "tessellate", "text", "topopt", "torus", "union", "wedge",
 ]

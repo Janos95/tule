@@ -82,6 +82,7 @@ STYLES = {
     "hid": (0.18, (2.0, 1.0)),
     "thin": (0.18, ()),
     "center": (0.18, (6.0, 1.0, 0.5, 1.0)),
+    "bend": (0.25, (8.0, 1.5, 0.5, 1.5)),  # sheet metal bend lines: dash-dot
     "frame": (0.5, ()),
     "sym": (0.25, ()),  # drawn symbols in text (⌴ ⌵ ↧)
 }
@@ -417,6 +418,7 @@ class _View:
         self.cut: list = []              # loops of the cut faces (view coordinates), hatched
         self.cutlines: list = []         # sections cut through this view: (letter, point, along, sight)
         self.sheet = 0                   # the sheet it is on (0: the first)
+        self.bends: list = []            # bend lines of a flat pattern: ((x0, y0), (x1, y1), label)
 
     def keeps(self, lo: float, hi: float) -> bool:
         """Something between ``lo`` and ``hi`` (along d) is left in this view (always, unless it is a section)."""
@@ -1463,6 +1465,8 @@ def _annotate_once(view, s, plan, bump):
         c.path("vis", _prim_cmds(p, s))
     for p, q in _hatch([[(x * s, y * s) for x, y in L] for L in view.cut]):
         c.line("thin", p, q)
+    for p, q, _ in view.bends:
+        c.line("bend", (p[0] * s, p[1] * s), (q[0] * s, q[1] * s), 4.0)
     geo = _segments(c.ops)  # the part's own lines: leaders should cross as few as possible
     marks = [(np.asarray(p) * s, np.asarray(q) * s) for p, q in _centers(plan, s)]  # extension lines go past them
     for p, q in marks:
@@ -1511,6 +1515,8 @@ def _annotate_once(view, s, plan, bump):
     for t, d, tx in sorted(texts, key=lambda it: it[0]):  # inner tiers first
         if not _place_text(c, occ, *tx) and d is not None:
             far.append(d)
+    for p, q, label in view.bends:
+        _bend_label(c, occ, np.asarray(p) * s, np.asarray(q) * s, label)
     for runs, spots, letter in marks_:
         _place_text(c, occ, runs, 0.0, spots, letter, bold=True)
     leaders: list = []
@@ -1526,6 +1532,29 @@ def _annotate_once(view, s, plan, bump):
         _place_text(c, occ, runs, 0.0, [(np.array([x, top + 4 + 2 * k]), "middle", None) for k in range(40)],
                     title, bold=True)
     return c, far
+
+
+BEND_TEXT = 2.5
+
+
+def _bend_label(c: _Canvas, occ: "_Occ", p, q, label: str):
+    """``B1 UP 90° R1.5`` along a bend line, beside it, on the first free spot."""
+    d = q - p
+    L = float(np.linalg.norm(d))
+    if L < 1e-9:
+        return
+    u = d / L
+    if u[0] < -1e-9 or (abs(u[0]) <= 1e-9 and u[1] < 0):  # read from the left or from below
+        u = -u
+    n = np.array([-u[1], u[0]])
+    angle = math.degrees(math.atan2(u[1], u[0]))
+    runs = _runs([label], BEND_TEXT)
+    mid = (p + q) / 2
+    spots = []
+    for f in (0.0, -0.2, 0.2, -0.35, 0.35):
+        for off in (1.0, -1.0 - 0.75 * BEND_TEXT):
+            spots.append((mid + u * f * L + n * off, "middle", None))
+    _place_text(c, occ, runs, angle, spots, label)
 
 
 def _ncross(p, q, S) -> int:
@@ -2739,6 +2768,41 @@ def _revision_table(c: _Canvas, x0, y0, revs):
             c.line("thin", (x, y0), (x, y1))
 
 
+BEND_COLS = (("Bend", 16), ("Dir", 17), ("Angle", 19), ("R", 18), ("BA", 25), ("BD", 25))
+BEND_LH = 4.6
+
+
+def _bend_height(bends) -> float:
+    return 5.0 + 5.0 + BEND_LH * len(bends) + 0.4 if bends else 0.0
+
+
+def _bend_table(c: _Canvas, x0, y0, bends):
+    """The bend table, its bottom at ``y0``: a title with t and K, a header, one row per bend."""
+    h = _bend_height(bends)
+    x1, y1 = x0 + TB_W, y0 + h
+    c.rect("thin", x0, y0, x1, y1)
+    b0 = bends[0]
+    c.text(x0 + 1.5, y1 - 3.6, f"BENDS   t {_fmt(b0.thickness)}   K {_fmt(b0.k)}   (BA allowance, BD deduction)",
+           size=2.0)
+    y = y1 - 5.0
+    c.line("thin", (x0, y), (x1, y))
+    xs = [x0]
+    for _, w in BEND_COLS[:-1]:
+        xs.append(xs[-1] + w)
+    for x, (label, _) in zip(xs, BEND_COLS):
+        c.text(x + 1.5, y - 3.6, label, size=2.0)
+    y -= 5.0
+    c.line("thin", (x0, y), (x1, y))
+    for b in bends:
+        cells = (b.id, b.direction.upper(), f"{_fmt(b.angle)}°", _fmt(b.radius), f"{b.allowance:.2f}",
+                 f"{b.deduction:.2f}")
+        for x, v in zip(xs, cells):
+            c.text(x + 1.5, y - 3.3, v, size=2.5)
+        y -= BEND_LH
+    for x in xs[1:]:
+        c.line("thin", (x, y0), (x, y1 - 5.0))
+
+
 def _notes(notes) -> list[str]:
     if not notes:
         return []
@@ -2914,6 +2978,10 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
         raise TuleError(f"projection is 'first' or 'third', got {projection!r}", op="drawing")
     if sheet is not None and sheet not in SHEETS:
         raise TuleError(f"unknown sheet {sheet!r}", op="drawing", hint=", ".join(SHEETS) + ", or leave it out")
+    flat = shape.sheet_metal is not None and shape.sheet_metal.flat
+    if flat and views is None and sheets is None:
+        views = ("top",)  # a flat pattern is its top view
+    bends = _bends_of(shape)
     specs = _sheet_specs(views, sheet, scale, callouts, sheets)
     wrapped = shape.wrapped
     lo, hi = shape.bounds
@@ -2943,6 +3011,8 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
             _hlr(_section(wrapped, v, cuts[k], diag, tol_), v, False, tol_)
         else:
             _hlr(wrapped, v, hidden and v.name != "iso", tol_)
+            if flat and v.name in ("top", "bottom"):
+                _bend_lines(v, bends, shape.sheet_metal.thickness, tol_)
     for k, v in V.items():  # each section's plane marked on a plain view that sees it edge-on, its own sheet first
         if v.section:
             seen = [j for j in V if V[j].name != "iso" and not V[j].section and abs(V[j].d @ v.d) < 1e-6]
@@ -2981,7 +3051,8 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
     for si, sp in enumerate(specs):
         first = si == 0
         s, size, page = _sheet(V, plans, grids[si], si, sp, extent, title, rows, rev, projection,
-                               notes if first else [], revs if first else [], tb_h, (si + 1, len(specs)))
+                               notes if first else [], revs if first else [], tb_h, (si + 1, len(specs)),
+                               bends if first else ())
         pages.append((page, SHEETS[size]))
         chosen.append({"sheet": size, "scale": _scale_text(s)})
     facts = {"scale": chosen[0]["scale"], "sheet": chosen[0]["sheet"], "sheets": chosen, "title": title, "rev": rev,
@@ -2990,10 +3061,47 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
     return pages[0][0], pages[0][1], facts
 
 
-def _sheet(V, plans, grid, si, sp, extent, title, rows, rev, projection, notes, revs, tb_h, number):
+def _bends_of(shape) -> list:
+    """A sheet part's bends for its drawing (none when it is no sheet part or does not unfold)."""
+    sm = shape.sheet_metal
+    if sm is None:
+        return []
+    if sm.flat:
+        return list(sm.bends)
+    try:
+        return shape.bends
+    except TuleError as e:
+        print(f"tule: drawing without a bend table: {e}", file=sys.stderr, flush=True)
+        return []
+
+
+def _bend_lines(v: _View, bends, t: float, tol: float):
+    """Bend lines of a flat pattern in its top (or bottom) view: dash-dot with a label, not solid edges."""
+    segs = []
+    for b in bends:
+        (x0, y0), (x1, y1) = b.line
+        p, q = np.array(v.p((x0, y0, t))), np.array(v.p((x1, y1, t)))
+        segs.append((p, q))
+        v.bends.append((tuple(p), tuple(q), f"{b.id} {b.label}"))
+
+    def on_bend(prim):
+        if prim[0] != "line":
+            return False
+        a, c = np.array(prim[1:3]), np.array(prim[3:5])
+        for p, q in segs:
+            u = (q - p) / max(np.linalg.norm(q - p), 1e-12)
+            n = np.array([-u[1], u[0]])
+            if abs((a - p) @ n) < tol * 10 and abs((c - p) @ n) < tol * 10:
+                return True
+        return False
+
+    v.vis = [p for p in v.vis if not on_bend(p)]
+
+
+def _sheet(V, plans, grid, si, sp, extent, title, rows, rev, projection, notes, revs, tb_h, number, bends=()):
     """One sheet: its scale and size (chosen unless given) and the page."""
     iso = next((k for k in V if V[k].sheet == si and V[k].name == "iso"), None)
-    rv_h = _rev_height(revs)
+    rv_h = _rev_height(revs) + _bend_height(bends)  # revisions and the bend table stand on the title block
     cache: dict = {}
 
     def views_at(s):
@@ -3075,6 +3183,8 @@ def _sheet(V, plans, grid, si, sp, extent, title, rows, rev, projection, notes, 
     x0 = W - MARGIN - TB_W
     if revs:
         _revision_table(page, x0, MARGIN + tb_h, revs)
+    if bends:
+        _bend_table(page, x0, MARGIN + tb_h + _rev_height(revs), bends)
     if notes:
         if where == "right":
             _notes_block(page, x0 + 1, MARGIN + tb_h + rv_h + 4.0, TB_W - 1, notes)
@@ -3279,6 +3389,17 @@ def to_svg(c: _Canvas, size, title: str = "") -> str:
 
 def to_dxf(view: _View) -> str:
     """Visible edges of one view as an ASCII DXF (R12): LINE, ARC, CIRCLE, POLYLINE, in mm at 1:1."""
+    return to_dxf_entities([("0", p) for p in view.vis])
+
+
+# R12 linetypes: name -> (description, pattern in mm: dashes > 0, gaps < 0, dots 0)
+DXF_LTYPES = {"CONTINUOUS": ("Solid line", ()), "DASHDOT": ("Dash dot __ . __ .", (8.0, -2.0, 0.0, -2.0))}
+
+
+def to_dxf_entities(prims, texts=(), layers=None) -> str:
+    """An ASCII DXF (R12, mm) of ``(layer, primitive)`` pairs and ``(layer, x, y, height, angle, text)``
+    texts. ``layers`` (``{name: (ACI color, linetype)}``) adds a layer table, so CAM programs see the
+    layers' colors and dash-dot bend lines; without it everything is plain."""
 
     def g(code, value):
         return f"{code}\n{value}\n"
@@ -3288,28 +3409,49 @@ def to_dxf(view: _View) -> str:
         return "0" if s in ("-0", "") else s
 
     out = [g(0, "SECTION"), g(2, "HEADER"), g(9, "$ACADVER"), g(1, "AC1009"), g(9, "$INSUNITS"), g(70, 4),
-           g(0, "ENDSEC"), g(0, "SECTION"), g(2, "ENTITIES")]
-    for p in view.vis:
+           g(0, "ENDSEC")]
+    if layers:
+        out.append(g(0, "SECTION") + g(2, "TABLES") + g(0, "TABLE") + g(2, "LTYPE") + g(70, len(DXF_LTYPES)))
+        for name, (desc, pat) in DXF_LTYPES.items():
+            out.append(g(0, "LTYPE") + g(2, name) + g(70, 0) + g(3, desc) + g(72, 65) + g(73, len(pat))
+                       + g(40, num(sum(abs(x) for x in pat))) + "".join(g(49, num(x)) for x in pat))
+        out.append(g(0, "ENDTAB") + g(0, "TABLE") + g(2, "LAYER") + g(70, len(layers)))
+        for name, (color, ltype) in layers.items():
+            out.append(g(0, "LAYER") + g(2, name) + g(70, 0) + g(62, color) + g(6, ltype))
+        out.append(g(0, "ENDTAB") + g(0, "ENDSEC"))
+    out.append(g(0, "SECTION") + g(2, "ENTITIES"))
+    for layer, p in prims:
+        L = g(8, layer)
         if p[0] == "line":
-            out.append(g(0, "LINE") + g(8, "0") + g(10, num(p[1])) + g(20, num(p[2])) + g(30, 0)
+            out.append(g(0, "LINE") + L + g(10, num(p[1])) + g(20, num(p[2])) + g(30, 0)
                        + g(11, num(p[3])) + g(21, num(p[4])) + g(31, 0))
         elif p[0] == "circle":
-            out.append(g(0, "CIRCLE") + g(8, "0") + g(10, num(p[1])) + g(20, num(p[2])) + g(30, 0) + g(40, num(p[3])))
+            out.append(g(0, "CIRCLE") + L + g(10, num(p[1])) + g(20, num(p[2])) + g(30, 0) + g(40, num(p[3])))
         elif p[0] == "arc":
-            out.append(g(0, "ARC") + g(8, "0") + g(10, num(p[1])) + g(20, num(p[2])) + g(30, 0) + g(40, num(p[3]))
+            out.append(g(0, "ARC") + L + g(10, num(p[1])) + g(20, num(p[2])) + g(30, 0) + g(40, num(p[3]))
                        + g(50, num(p[4])) + g(51, num(p[5])))
         else:
-            out.append(g(0, "POLYLINE") + g(8, "0") + g(66, 1) + g(10, 0) + g(20, 0) + g(30, 0) + g(70, 0))
+            out.append(g(0, "POLYLINE") + L + g(66, 1) + g(10, 0) + g(20, 0) + g(30, 0) + g(70, 0))
             for x, y in p[1]:
-                out.append(g(0, "VERTEX") + g(8, "0") + g(10, num(x)) + g(20, num(y)) + g(30, 0))
-            out.append(g(0, "SEQEND") + g(8, "0"))
+                out.append(g(0, "VERTEX") + L + g(10, num(x)) + g(20, num(y)) + g(30, 0))
+            out.append(g(0, "SEQEND") + L)
+    for layer, x, y, h, angle, text in texts:
+        out.append(g(0, "TEXT") + g(8, layer) + g(10, num(x)) + g(20, num(y)) + g(30, 0) + g(40, num(h))
+                   + g(1, text) + (g(50, num(angle)) if angle else ""))
     out.append(g(0, "ENDSEC") + g(0, "EOF"))
     return "".join(out)
 
 
 def dxf(item, path: str, view: str = "top") -> str:
-    """Write one view's visible edges as a DXF at 1:1 in mm (laser, waterjet, CNC). Returns the path."""
+    """Write one view's visible edges as a DXF at 1:1 in mm (laser, waterjet, CNC). Returns the path.
+
+    A sheet part (``sheet``, ``unfold``) writes its flat pattern instead, whatever the view: outline
+    and holes on layer CUT, bend lines on BEND_UP / BEND_DOWN, their labels on BEND_NOTES."""
     shape, _ = _as_shape(item)
+    if shape.sheet_metal is not None:
+        from .sheetmetal import export_dxf
+
+        return export_dxf(shape, path)
     if view not in VIEWS:
         raise TuleError(f"unknown view {view!r}", op="drawing.dxf", hint=", ".join(VIEWS))
     v = _View(view)
@@ -3334,4 +3476,10 @@ def write(folder: str, base: str, item: Union[Shape, Assembly], views=None, dims
                      to_svg(page, size, facts["title"] + (f" ({i + 1}/{n})" if n > 1 else "")))
     if dxf_view:
         dxf(item, os.path.join(folder, base + ".dxf"), dxf_view)
+    shape, _ = _as_shape(item)
+    bends = _bends_of(shape)
+    if bends:
+        from .sheetmetal import bend_csv
+
+        write_atomic(os.path.join(folder, base + "-bends.csv"), bend_csv(shape))
     return facts
