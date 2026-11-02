@@ -163,8 +163,11 @@ def wait_running(p: str, slot: str, timeout: float = 120, quiet: bool = False) -
             shown = m["state"]
         if m["state"] == "stopped" and m.get("lastError"):
             raise CliError(f"{p}: {slot} did not start: {m['lastError']}")
-        if m["state"] == "stopped" and time.time() - t0 > 10:
+        if m["state"] == "stopped" and slot == "cloud" and time.time() - t0 > 10:
             raise CliError(f"{p}: {slot} stopped while starting (tule status; check the Worker's logs)")
+        if slot != "cloud" and m["state"] == "stopped" and time.time() - t0 > timeout:
+            raise CliError(f"{p}: the computer {slot} is not connected (is its tule join agent running?); "
+                           "--machine cloud uses a Tule machine instead")
         if time.time() - t0 > timeout:
             raise CliError(f"{p}: {slot} is {m['state']} but its agent did not connect within {int(timeout)} s "
                            "(the container's logs say why: Cloudflare dashboard, or docker logs in local dev)")
@@ -243,12 +246,16 @@ def cmd_ssh(args):
         elif st != "running" or not s.get("hostKey"):
             s = up(p, "cpu-1" if args.machine == "cloud" else args.machine)
     else:
-        running = [m for m in live(s) if m["state"] == "running"]
         if len(live(s)) > 1:
             raise CliError(f"{p} runs on {' and '.join(m['id'] for m in live(s))}: say which with --machine")
-        slot = live(s)[0]["id"] if live(s) else "cloud"
-        if not running or not s.get("hostKey"):
-            s = up(p, live(s)[0]["size"] if live(s) else "cpu-1")
+        # a joined computer that is (re)connecting is still the project's machine: wait for it, don't start another
+        joined = [m for m in s.get("machines") or [] if m["id"] != "cloud"]
+        m = live(s)[0] if live(s) else joined[0] if len(joined) == 1 else None
+        slot = m["id"] if m else "cloud"
+        if m and slot != "cloud" and (m["state"] != "running" or not s.get("hostKey")):
+            s = wait_running(p, slot, timeout=60)
+        elif not m or m["state"] != "running" or not s.get("hostKey"):
+            s = up(p, m["size"] if m else "cpu-1")
     ensure_access(p, s)
     argv = ["ssh", *ssh_options(p)]
     if args.command and not (sys.stdin.isatty() and sys.stdout.isatty()):  # no terminal: bytes pass unchanged

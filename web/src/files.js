@@ -109,7 +109,7 @@ async function draw(into, f, c) {
   if (type === "pdf") {
     const frame = el("iframe", "page-pdf");
     frame.title = f.file;
-    frame.src = await c.url(f);
+    frame.src = (await c.url(f)) + "#view=Fit&navpanes=0"; // a whole sheet at first sight, no thumbnails
     return into.append(frame);
   }
   const card = el("div", "page-file");
