@@ -344,7 +344,8 @@ function prepare(list) {
 function views(o) {
   const v = [];
   // a document named after the output is what it is for (shopping-list/shopping-list.md): it opens first, the 3D after it
-  const named = o.files.length && o.docs.find((f) => f.type !== "file" && f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop());
+  // (a set of parts with their drawings opens on the first drawing)
+  const named = o.files.length && (o.docs.find((f) => f.type !== "file" && base(f.file) === o.name.split("/").pop()) ?? drawn(o)[0]);
   if (o.files.length && !named) v.push({ id: "3d", label: "3D", type: "geometry" });
   // the file named after the output first (parts-list/parts-list.csv), then documents; beside a model,
   // files with no view of their own (an STL, a .3mf) are only in Download
@@ -364,12 +365,16 @@ const viewOf = (o) => {
   return v.find((x) => x.id === state.view) ?? v[0] ?? null;
 };
 
+const base = (file) => file.replace(/\.[^.]*$/, "");
+/** The drawings (PDFs) named like the entry's models: a set of parts, each with its drawing. */
+const drawn = (o) => o.docs.filter((d) => d.type === "pdf" && o.files.some((f) => base(f.file) === base(d.file)));
+
 /** part, assembly, sequence or overlay: output.json's kind, else inferred from the files. */
 function kindOf(o) {
   if (o.meta?.kind) return o.meta.kind;
   if (o.files.length === 1) return "part";
-  // frames written by hand: frame_001.step, 0001.stl (not numbered parts: R11-001.step, R11-002.step)
-  if (o.files.length > 2 && o.files.every((f) => /^(frame[-_ ]?)?\d+\.[a-z]+$/i.test(f.file))) return "sequence";
+  // frames written by hand: numbered files (plate-01.step …), unless each has its drawing (R11-001.step and .pdf: parts)
+  if (o.files.length > 2 && o.files.every((f) => /\d+\.[a-z]+$/i.test(f.file)) && !drawn(o).length) return "sequence";
   return "assembly";
 }
 

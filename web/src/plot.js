@@ -1,7 +1,8 @@
 // The sequence plot: the frames' `values` (output.json) as lines, one per
-// key, each scaled to its own range (the legend gives the range; one key also
-// gets its numbers on the axis), so differently sized values share one chart
-// without a second axis. A cursor marks the shown frame; hovering shows a
+// key. Keys in one unit (angle_deg, tension (N)), or without one but of a
+// size, share a scale, so they compare; other groups get their own (the legend
+// gives each key's range; a group shown alone gets its numbers on the axis), so
+// differently sized values share one chart without a second axis. A cursor marks the shown frame; hovering shows a
 // frame's values in the legend, clicking (or dragging) jumps to it. Clicking a
 // legend entry shows that line alone, with its numbers on the axis.
 
@@ -46,6 +47,36 @@ export function initPlot(el, onPick) {
     return { lo, hi, span: hi - lo || Math.abs(hi) || 1 };
   }
 
+  // the scale a key is drawn on: its group's (keys of one unit, or unitless ones of a size)
+  let groups = new Map();
+  function group() {
+    groups = new Map();
+    const unit = (k) => k.match(/[\s_([]((?:deg|°|rad|mm|cm|m|N|Nm|N·m|N·mm|Nmm|MPa|kPa|Pa|s|ms|g|kg|%|W|A|V|rpm|mm\/s|deg\/s))[)\]]?$/i)?.[1].toLowerCase();
+    const size = (k) => { const r = range(k); return Math.max(Math.abs(r.lo), Math.abs(r.hi)) || 1; };
+    const byUnit = new Map();
+    const loose = [];
+    for (const k of keys) {
+      const u = unit(k);
+      if (u) byUnit.set(u, [...(byUnit.get(u) ?? []), k]);
+      else loose.push(k);
+    }
+    const sets = [...byUnit.values()];
+    loose.sort((a, b) => size(a) - size(b));
+    for (const k of loose) {
+      const last = sets.at(-1);
+      if (last?.unitless && size(k) <= 10 * size(last[0])) last.push(k);
+      else sets.push(Object.assign([k], { unitless: true }));
+    }
+    for (const set of sets) {
+      const rs = set.map(range);
+      const lo = Math.min(...rs.map((r) => r.lo));
+      const hi = Math.max(...rs.map((r) => r.hi));
+      const r = { lo, hi, span: hi - lo || Math.abs(hi) || 1, keys: set };
+      for (const k of set) groups.set(k, r);
+    }
+  }
+  const scale = (k) => groups.get(k) ?? range(k);
+
   function render() {
     const w = width();
     svg.setAttribute("viewBox", `0 0 ${w} ${H}`);
@@ -60,7 +91,7 @@ export function initPlot(el, onPick) {
     const drawn = new Set(); // a line on top of one drawn before (servos turning together) is dashed, so both show
     shown().forEach((k) => {
       const j = keys.indexOf(k);
-      const { lo, span } = range(k);
+      const { lo, span } = scale(k);
       const y = (v) => H - PAD.b - ((v - lo) / span) * (H - PAD.t - PAD.b);
       let d = "";
       let pen = false;
@@ -75,8 +106,8 @@ export function initPlot(el, onPick) {
       const v = frames[current]?.values?.[k];
       if (Number.isFinite(v)) add("circle", { cx: x(current, w), cy: y(v), r: 3.5, fill: SERIES[j % SERIES.length], class: "plot-dot" });
     });
-    if (shown().length === 1) {
-      const r = range(shown()[0]);
+    if (shown().every((k) => scale(k) === scale(shown()[0]))) { // one scale: its numbers on the axis
+      const r = scale(shown()[0]);
       add("text", { x: PAD.l + 2, y: PAD.t + 9, class: "plot-axis" }).textContent = fmt(r.hi, r);
       add("text", { x: PAD.l + 2, y: H - PAD.b - 3, class: "plot-axis" }).textContent = fmt(r.lo, r);
     }
@@ -150,6 +181,7 @@ export function initPlot(el, onPick) {
       const constant = (k) => new Set(list.map((f) => f.values?.[k])).size === 1 && list.length > 1;
       keys = keys.filter((k) => !counts(k) && !constant(k));
       el.hidden = !keys.length;
+      group();
       if (keys.length) render();
     },
   };
