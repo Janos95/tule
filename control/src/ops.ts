@@ -123,16 +123,21 @@ export async function outputs(env: Env, user: User, name: unknown, origin: strin
   const list = (await projectStub(env, p.id).outputsIndex()) as { name: string; root?: string; meta?: { kind?: string; title?: string }; files: { file: string }[]; build?: Build }[];
   return {
     viewer: viewerUrl(origin, p.name),
-    outputs: list.map((o) => ({
-      name: o.name,
-      folder: `${o.root ?? "outputs"}/${o.name}`,
-      kind: o.meta?.kind ?? (o.files.length === 1 ? "part" : "assembly"),
-      title: o.meta?.title ?? null,
-      files: o.files.map((f) => f.file),
-      // what `tule build --check` says, when it is not up to date: stale (why), building, or failed (error, log)
-      ...(o.build && o.build.state !== "ok" ? { build: o.build } : {}),
-      viewer: `${viewerUrl(origin, p.name)}?o=${encodeURIComponent(o.name)}`,
-    })),
+    outputs: list.map((o) => {
+      const root = o.root ?? "outputs";
+      const models = o.files.filter((f) => /\.(step|stp|stl)$/i.test(f.file)).length;
+      const id = root === "outputs" ? o.name : `${root}/${o.name}`; // the viewer's id (web/src/main.js)
+      return {
+        name: o.name,
+        folder: `${root}/${o.name}`,
+        kind: o.meta?.kind ?? (models === 0 ? "files" : models === 1 ? "part" : "assembly"),
+        title: o.meta?.title ?? null,
+        files: o.files.map((f) => f.file),
+        // what `tule build --check` says, when it is not up to date: stale (why), building, or failed (error, log)
+        ...(o.build && o.build.state !== "ok" ? { build: o.build } : {}),
+        viewer: `${viewerUrl(origin, p.name)}?o=${encodeURIComponent(id)}`,
+      };
+    }),
   };
 }
 

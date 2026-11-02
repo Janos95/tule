@@ -200,8 +200,9 @@ def _font(size: int):
 
 
 def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool = False,
-           overlay: Overlay | None = None, caption: str = "") -> tuple[Image.Image, dict]:
-    """Returns the image and a report: {"labeled": [...], "small": [...], "hidden": [...]} (face names)."""
+           overlay: Overlay | None = None, caption: str = "", plain: bool = False) -> tuple[Image.Image, dict]:
+    """Returns the image and a report: {"labeled": [...], "small": [...], "hidden": [...]} (face names).
+    plain: for documents (white, no axes, no footer but the caption)."""
     if view not in VIEWS:
         raise ValueError(f"unknown view {view!r}; use one of {', '.join(VIEWS)}")
     parts = [p for p in parts if len(p.indices)]
@@ -267,7 +268,7 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     shade = 0.30 + 0.62 * np.clip(n @ key, 0, 1) + 0.20 * np.clip(n @ fill, 0, 1)
     spec = 0.10 * np.clip(n @ half, 0, 1) ** 40
     img = np.empty((Ws * Hs, 3))
-    img[:] = BACKGROUND
+    img[:] = (1.0, 1.0, 1.0) if plain else BACKGROUND
     img[fg] = np.clip(tri_color[t] * shade[:, None] + spec[:, None], 0, 1)
 
     # lines: face boundaries (CAD edges), silhouettes, depth jumps; creases on meshes without faces
@@ -350,6 +351,13 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
         if text:
             p = ((tail @ R[0] - c[0]) * scale + W / 2, H / 2 - (tail @ R[1] - c[1]) * scale)
             _tag_box(draw, font, text, p, boxes, W, H, fill=(255, 236, 230), outline=(200, 40, 20))
+    if plain:
+        if not caption:
+            return im, report
+        out = Image.new("RGB", (W, H + fs + 14), (255, 255, 255))
+        out.paste(im, (0, 0))
+        ImageDraw.Draw(out).text((8, H + 6), caption, fill=(40, 44, 50), font=font)
+        return out, report
     _triad(draw, R, font, H)
 
     out = Image.new("RGB", (W, H + fs + 14), (232, 234, 237))

@@ -303,11 +303,10 @@ function prepare(list) {
 function views(o) {
   const v = [];
   if (o.files.length) v.push({ id: "3d", label: "3D", type: "geometry" });
-  // documents first; files with no view of their own (.3mf, .zip) only in Download, unless that is all there is
-  const rank = (t) => ["document", "pdf", "table", "data", "chart", "image", "text"].indexOf(t) + 1 || 9;
+  // documents first; beside a model, files with no view of their own (an STL, a .3mf) are only in Download
+  const rank = (t) => ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(t) + 1 || 9;
   const docs = [...o.docs].sort((a, b) => rank(a.type) - rank(b.type));
-  const seen = docs.filter((f) => f.type !== "file");
-  for (const f of seen.length || o.files.length ? seen : docs) v.push({ id: f.file, label: f.file, type: f.type, f });
+  for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) v.push({ id: f.file, label: f.file, type: f.type, f });
   if (o.build?.state === "failed" && o.build.log) v.push({ id: "log", label: "build log", type: "log" });
   return v;
 }

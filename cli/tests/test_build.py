@@ -79,6 +79,16 @@ def test_refuses_writes_outside_its_output_and_keeps_the_last_one(project):
     assert (project / "outputs" / "plate" / "plate.step").exists()
 
 
+def test_scratch_files_in_a_temporary_folder_are_fine(project):
+    (project / "src" / "plate.py").write_text(PLATE + """import tempfile, os
+with tempfile.TemporaryDirectory() as d:
+    open(os.path.join(d, "iso.png"), "w").write("x")
+    os.mkdir(os.path.join(d, "sub"))
+""")
+    code, err = build(project, "plate")
+    assert code == 0, err
+
+
 def test_a_script_writes_only_the_output_named_like_it(project):
     (project / "src" / "wrong.py").write_text('from tule import *\noutputs.part("other", box(1, 1, 1))\n')
     code, err = build(project, "wrong")

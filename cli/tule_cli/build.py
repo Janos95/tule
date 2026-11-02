@@ -693,6 +693,8 @@ def _run_script(script: str):
             reads[r] = stamp(os.path.join(root, r))
 
     def write(path):
+        if path is None:
+            return
         try:
             p = os.path.abspath(os.fsdecode(path))
         except (TypeError, ValueError):
@@ -715,6 +717,15 @@ def _run_script(script: str):
             f = f.f_back
         return False
 
+    def at(path, dir_fd):
+        """A path given relative to an open folder (dir_fd: shutil.rmtree deletes so) made absolute."""
+        if dir_fd is None or not isinstance(path, (str, bytes)) or os.path.isabs(path):
+            return path
+        try:
+            return os.path.join(os.readlink(f"/proc/self/fd/{dir_fd}"), os.fsdecode(path))
+        except OSError:
+            return None  # not knowable here (no /proc): not checked
+
     def hook(event, args):
         if event == "open":
             path, mode, flags = args
@@ -732,8 +743,12 @@ def _run_script(script: str):
         elif event == "glob.glob":
             read(os.path.dirname(os.fsdecode(args[0])) or ".", listing=True)
         elif event in ("os.rename", "os.replace"):
-            write(args[1])
-        elif event in ("os.remove", "os.rmdir", "os.mkdir", "shutil.rmtree", "shutil.move", "shutil.copyfile"):
+            write(at(args[1], args[3]))
+        elif event in ("os.remove", "os.rmdir"):
+            write(at(args[0], args[1]))
+        elif event == "os.mkdir":
+            write(at(args[0], args[2]))
+        elif event in ("shutil.rmtree", "shutil.move", "shutil.copyfile"):
             write(args[1] if event in ("shutil.move", "shutil.copyfile") else args[0])
 
     def report(code: int):

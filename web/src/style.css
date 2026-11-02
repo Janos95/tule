@@ -1661,6 +1661,8 @@ main {
 .page-note { color: var(--muted); font-size: 12px; margin: 8px 2px 0; }
 .page-text { margin: 0; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .page-image { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 4px; }
+.page-dxf svg { display: block; width: 100%; max-height: calc(100vh - 160px); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.page-dxf path { fill: none; stroke: var(--text); stroke-width: 1.2; }
 .page-pdf { display: block; width: 100%; height: calc(100vh - 120px); border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .page-file { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .page-file span { flex: 1; min-width: 0; overflow-wrap: anywhere; }

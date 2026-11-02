@@ -14,7 +14,7 @@
 
 export const GEOMETRY = /\.(step|stp|stl)$/i;
 
-/** geometry, chart, table, data (a table when it is a list of records), document, pdf, image, text, or file. */
+/** geometry, chart, table, data (a table when it is a list of records), document, pdf, dxf, image, text, or file. */
 export function typeOf(file) {
   const f = file.toLowerCase();
   if (GEOMETRY.test(f)) return "geometry";
@@ -23,6 +23,7 @@ export function typeOf(file) {
   if (f.endsWith(".json")) return "data";
   if (/\.(md|markdown)$/.test(f)) return "document";
   if (f.endsWith(".pdf")) return "pdf";
+  if (f.endsWith(".dxf")) return "dxf";
   if (/\.(png|jpe?g|gif|webp|svg)$/.test(f)) return "image";
   if (/\.(txt|log|py|toml|ya?ml|ini|cfg|xml|js|ts|sh)$/.test(f)) return "text";
   return "file";
@@ -39,6 +40,7 @@ export const TYPE_ICONS = {
   text: '<path d="M4 1.5h5.5L12.5 4.5v10h-8.5zM9.5 1.5v3h3M6 8h4.5M6 10.5h3"/>',
   image: '<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="5.75" cy="6.5" r="1.1"/><path d="m2.5 12 3.5-3.5 2.5 2.5 1.75-1.75L13.5 12"/>',
   file: '<path d="M4 1.5h5.5L12.5 4.5v10h-8.5zM9.5 1.5v3h3"/>',
+  dxf: '<rect x="2" y="2" width="12" height="12" rx="1.5"/><circle cx="10" cy="6" r="1.8"/><path d="M4.5 11.5h4v-4"/>',
   log: '<path d="M4 1.5h5.5L12.5 4.5v10h-8.5zM9.5 1.5v3h3M6 8h4.5M6 10.5h4.5"/>',
 };
 
@@ -103,6 +105,7 @@ async function draw(into, f, c) {
     img.src = await c.url(f);
     return into.append(img);
   }
+  if (type === "dxf") return into.append(dxf(text(await c.read(f))));
   if (type === "pdf") {
     const frame = el("iframe", "page-pdf");
     frame.title = f.file;
@@ -116,6 +119,97 @@ async function draw(into, f, c) {
   b.addEventListener("click", () => c.download(f));
   card.append(b);
   into.append(card);
+}
+
+// ---------------------------------------------------------------- DXF
+
+/** A DXF's linework (lines, circles, arcs, polylines with bulges, splines through their
+ * points) as an SVG, y up, with its size: a preview of a flat for laser or waterjet cutting. */
+function dxf(src) {
+  const lines = src.split(/\r?\n/);
+  const pairs = [];
+  for (let i = 0; i + 1 < lines.length; i += 2) pairs.push([+lines[i].trim(), lines[i + 1].trim()]);
+  const paths = [];
+  let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+  const see = (x, y) => { lo = [Math.min(lo[0], x), Math.min(lo[1], y)]; hi = [Math.max(hi[0], x), Math.max(hi[1], y)]; };
+  const arcPts = (cx, cy, r, a0, a1) => {
+    if (a1 <= a0) a1 += 360;
+    const n = Math.max(8, Math.ceil((a1 - a0) / 6));
+    return Array.from({ length: n + 1 }, (_, k) => {
+      const a = ((a0 + ((a1 - a0) * k) / n) * Math.PI) / 180;
+      return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    });
+  };
+  const bulged = (pts, bulges, closed) => {
+    const out = [];
+    const m = closed ? pts.length : pts.length - 1;
+    for (let k = 0; k < m; k++) {
+      const [p, q, b] = [pts[k], pts[(k + 1) % pts.length], bulges[k] || 0];
+      out.push(p);
+      if (!b) continue;
+      const th = 4 * Math.atan(b), d = Math.hypot(q[0] - p[0], q[1] - p[1]), r = d / (2 * Math.sin(th / 2));
+      const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2, h = r * Math.cos(th / 2);
+      const nx = -(q[1] - p[1]) / d, ny = (q[0] - p[0]) / d;
+      const cx = mx + nx * h, cy = my + ny * h;
+      const a0 = Math.atan2(p[1] - cy, p[0] - cx), steps = Math.max(4, Math.ceil(Math.abs(th) / 0.1));
+      for (let j = 1; j < steps; j++) {
+        const a = a0 + (th * j) / steps;
+        out.push([cx + Math.abs(r) * Math.cos(a), cy + Math.abs(r) * Math.sin(a)]);
+      }
+    }
+    if (!closed) out.push(pts[pts.length - 1]);
+    else out.push(pts[0]);
+    return out;
+  };
+  // entities: group code 0 starts one; collect its codes
+  let inEntities = false;
+  const ents = [];
+  for (const [code, v] of pairs) {
+    if (code === 2 && v === "ENTITIES") inEntities = true;
+    else if (code === 0 && v === "ENDSEC") inEntities = false;
+    if (!inEntities) continue;
+    if (code === 0) ents.push({ type: v, c: [] });
+    else ents.at(-1)?.c.push([code, v]);
+  }
+  let poly = null; // an old-style POLYLINE collects its VERTEXes
+  for (const e of ents) {
+    const g = (k) => +(e.c.find(([c]) => c === k)?.[1] ?? 0);
+    const all = (k) => e.c.filter(([c]) => c === k).map(([, v]) => +v);
+    if (e.type === "LINE") paths.push([[g(10), g(20)], [g(11), g(21)]]);
+    else if (e.type === "CIRCLE") paths.push(arcPts(g(10), g(20), g(40), 0, 360));
+    else if (e.type === "ARC") paths.push(arcPts(g(10), g(20), g(40), g(50), g(51)));
+    else if (e.type === "LWPOLYLINE") {
+      const xs = all(10), ys = all(20), pts = xs.map((x, k) => [x, ys[k]]);
+      const bulges = [];
+      let k = -1;
+      for (const [c, v] of e.c) if (c === 10) k++; else if (c === 42) bulges[k] = +v;
+      if (pts.length) paths.push(bulged(pts, bulges, (g(70) & 1) === 1));
+    } else if (e.type === "SPLINE") {
+      const fx = all(11), fy = all(21);
+      const [xs, ys] = fx.length ? [fx, fy] : [all(10), all(20)];
+      if (xs.length) paths.push(xs.map((x, k) => [x, ys[k]]));
+    } else if (e.type === "POLYLINE") poly = { pts: [], bulges: [], closed: (g(70) & 1) === 1 };
+    else if (e.type === "VERTEX" && poly) { poly.pts.push([g(10), g(20)]); poly.bulges.push(g(42)); }
+    else if (e.type === "SEQEND" && poly) { if (poly.pts.length) paths.push(bulged(poly.pts, poly.bulges, poly.closed)); poly = null; }
+  }
+  for (const p of paths) for (const [x, y] of p) see(x, y);
+  const wrap = el("div", "page-dxf");
+  if (!paths.length) {
+    wrap.append(el("p", "page-note", "No lines, arcs or polylines to show; download the file."));
+    return wrap;
+  }
+  const w = hi[0] - lo[0] || 1, h = hi[1] - lo[1] || 1, pad = 0.04 * Math.max(w, h);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `${lo[0] - pad} ${-hi[1] - pad} ${w + 2 * pad} ${h + 2 * pad}`);
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", paths.map((p) => "M" + p.map(([x, y]) => `${+x.toFixed(4)} ${+(-y).toFixed(4)}`).join("L")).join(""));
+  path.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.append(path);
+  const at = pairs.findIndex(([c, v]) => c === 9 && v === "$INSUNITS");
+  const unit = { 1: "in", 2: "ft", 4: "mm", 5: "cm", 6: "m" }[at >= 0 ? +pairs[at + 1]?.[1] : 0] ?? "units";
+  wrap.append(svg, el("p", "page-note", `${+w.toFixed(2)} × ${+h.toFixed(2)} ${unit} · ${paths.length} entities`));
+  return wrap;
 }
 
 // ---------------------------------------------------------------- tables

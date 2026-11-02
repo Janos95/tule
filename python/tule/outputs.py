@@ -115,9 +115,9 @@ def _folder(name: str) -> str:
 
 def picture(item: Union[Shape, Assembly], path: str, view: str = "iso", size: int = 1200,
             caption: str = "", labels: bool = False) -> str:
-    """A PNG of a shape or assembly, drawn as ``tule screenshot`` draws it: for documents (an
-    assembly guide's steps, ``![](step-1.png)`` in a ``.md`` beside it). ``view``: iso, front,
-    back, left, right, top, bottom."""
+    """A PNG of a shape or assembly for documents (an assembly guide's steps, ``![](step-1.png)``
+    in a ``.md`` beside it; a drawing): shaded like ``tule screenshot``, on white, without axes.
+    ``view``: iso, front, back, left, right, top, bottom."""
     try:
         from tule_cli.machine import items_to_parts
         from tule_cli.render import render
@@ -126,7 +126,7 @@ def picture(item: Union[Shape, Assembly], path: str, view: str = "iso", size: in
     import io as _io
 
     items = [(n.rsplit("/", 1)[-1], s) for n, s in item.parts()] if isinstance(item, Assembly) else [(item.name or "part", item)]
-    img, _ = render(items_to_parts(items), view, size, labels, None, caption)
+    img, _ = render(items_to_parts(items), view, size, labels, None, caption, plain=True)
     buf = _io.BytesIO()
     img.save(buf, "PNG")
     return write_atomic(str(path), buf.getvalue())
