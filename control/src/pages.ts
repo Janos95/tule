@@ -239,11 +239,11 @@ export function settingsPage(user: User, d: SettingsData): Response {
         ? copyBlock("Paste this into a terminal on the computer", install(d.hostKey), "Works on Linux, macOS and Windows (WSL). Expires in an hour.", "add-computer")
         : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span>Add a computer</button></form>`}
       ${addRow(
-        rp.connected ? "Replace RunPod key" : "Connect RunPod for GPUs",
+        rp.connected ? "Replace RunPod key" : "Connect RunPod",
         "/settings/runpod",
         html`<input name="key" type="password" placeholder="RunPod API key, rpa_…" aria-label="RunPod API key" required />`,
         !!rp.error,
-        rp.error ? html`<span class="warn">${rp.error}</span>` : "A read/write key from runpod.io → Settings → API Keys. GPU time is paid from your RunPod balance.",
+        rp.error ? html`<span class="warn">${rp.error}</span>` : "A read/write key from runpod.io → Settings → API Keys. Billed to your RunPod balance.",
       )}`}`,
   );
 
