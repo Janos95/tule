@@ -352,8 +352,8 @@ def test_outputs_built_on_one_machine_are_downloaded_on_another(project, tmp_pat
     shutil.copytree(project, other, ignore=shutil.ignore_patterns("outputs"))
     check = subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=other, capture_output=True, text=True,
                            env={**os.environ, "TULE_MACHINE_FILE": str(control)}).stdout
-    assert "plate  out of date  never built (built on cpu-1: tule build downloads it)" in check
-    assert "bom    out of date  never built (built on cpu-1" in check
+    assert "plate  out of date  never built (the cache has a matching build from cpu-1: tule build fetches it)" in check
+    assert "bom    out of date  never built (the cache has a matching build from cpu-1" in check
     code, err = build(other, machine=control)
     assert code == 0 and "2 fetched" in err and "building" not in err
     assert (other / "outputs" / "bom" / "bom.csv").read_text() == (project / "outputs" / "bom" / "bom.csv").read_text()

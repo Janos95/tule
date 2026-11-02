@@ -491,7 +491,7 @@ def _check(root: str, names: list[str] | None = None):
             lines.append((r["name"], "failed", last[0] if last and r["failed"].startswith("exit status") else r["failed"], took))
         elif r.get("why"):
             where = cached(r["name"])
-            lines.append((r["name"], "out of date", r["why"] + (f" (built on {where}: tule build downloads it)" if where else ""), took))
+            lines.append((r["name"], "out of date", r["why"] + (f" (the cache has a matching build from {where}: tule build fetches it)" if where else ""), took))
     for n in [] if only is not None else build.orphans(root):
         lines.append((n, "no script", f"src/{n}.py is gone: delete outputs/{n} if it is not needed", ""))
     for w in [] if only is not None else build.based_on_status(root):

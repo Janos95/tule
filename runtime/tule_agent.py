@@ -280,14 +280,44 @@ class Outputs:
         if key in self.meshes:
             return self.meshes[key]
         data = make()
-        if len(self.meshes) > 64:
-            self.meshes.pop(next(iter(self.meshes)))
         self.meshes[key] = data
+        while len(self.meshes) > 1 and sum(map(len, self.meshes.values())) > MESH_CACHE:
+            self.meshes.pop(next(iter(self.meshes)))
         return data
+
+
+def expendable(pid: int | str = "self", score: int = 800):
+    """When memory runs out, the kernel kills this process before the agent (which would take the
+    machine down with it): build scripts and mesh workers, not the machine."""
+    try:
+        with open(f"/proc/{pid}/oom_score_adj", "w") as f:
+            f.write(str(score))
+    except OSError:
+        pass
+
+
+def oom_kills() -> int:
+    """How many processes the kernel killed for memory in this machine (its cgroup)."""
+    try:
+        for line in open("/sys/fs/cgroup/memory.events"):
+            if line.startswith("oom_kill "):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def memory_limit() -> str:
+    try:
+        v = open("/sys/fs/cgroup/memory.max").read().strip()
+        return "" if v == "max" else f"{int(v) / 2**30:.0f} GiB"
+    except (OSError, ValueError):
+        return ""
 
 
 _pool = None
 _pool_lock = threading.Lock()
+MESH_CACHE = 256 << 20  # bytes of meshes kept for the viewer
 MESH_SECONDS = 900
 BIG_META = 256 << 10  # an output.json larger than this keeps its frames out of the index
 
@@ -302,9 +332,10 @@ def mesh_apart(path: str) -> bytes:
 
     with _pool_lock:
         if _pool is None:
-            _pool = cf.ProcessPoolExecutor(max_workers=2, mp_context=mp.get_context("spawn"))
+            _pool = cf.ProcessPoolExecutor(max_workers=2, mp_context=mp.get_context("spawn"), initializer=expendable, initargs=("self", 1000))
         pool = _pool
     name = os.path.basename(path)
+    kills = oom_kills()
     try:
         return pool.submit(encode_mesh, path).result(timeout=MESH_SECONDS)
     except (BrokenProcessPool, cf.TimeoutError) as e:
@@ -316,6 +347,10 @@ def mesh_apart(path: str) -> bytes:
         pool.shutdown(wait=False, cancel_futures=True)
         if isinstance(e, cf.TimeoutError):
             raise RuntimeError(f"{name} took over {MESH_SECONDS // 60} minutes to show; make it lighter (fewer faces, or STL)") from None
+        if oom_kills() > kills:
+            mem = memory_limit()
+            raise RuntimeError(f"showing {name} ran out of memory{f' ({mem})' if mem else ''}; the machine is fine. Make it lighter "
+                               "(simplified purchased parts, fewer faces, or STL for display), or use a bigger machine") from None
         raise RuntimeError(f"reading {name} crashed OpenCascade (the machine is fine); check it with tule inspect, or write it again") from None
 
 
@@ -445,6 +480,7 @@ class Sshd:
                "-o", "KbdInteractiveAuthentication=no", "-o", "PermitRootLogin=prohibit-password",
                "-o", "StrictModes=no", "-o", "PidFile=none", "-o", "SetEnv=TULE_WORKSPACE=" + WORKSPACE]
         self.proc = subprocess.Popen(cmd)
+        expendable(self.proc.pid, 500)  # and every session it starts (tule build, the agent's scripts)
         log("sshd started", self.proc.pid)
 
 
@@ -565,6 +601,9 @@ class Agent:
             asyncio.create_task(self.mesh(m["rid"], m["path"], m.get("hash", "")))
 
     async def ssh(self, sid: int):
+        if self.sshd.proc and self.sshd.proc.poll() is not None:  # killed (out of memory): start it again
+            await asyncio.to_thread(self.sshd.start)
+            await asyncio.sleep(0.3)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", SSHD_PORT)
         except OSError as e:

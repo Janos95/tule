@@ -149,6 +149,14 @@ class Assembly:
     def bounds(self):
         return self.to_shape().bounds
 
+    @property
+    def size(self):
+        return self.to_shape().size
+
+    @property
+    def volume(self) -> float:
+        return sum(p.volume for _, p in self.parts())
+
     def export_step(self, path: str) -> str:
         from .io import export_step
 

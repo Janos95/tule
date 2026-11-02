@@ -111,6 +111,15 @@ def orphans(root: str) -> list[str]:
     return sorted(n for n in names if n not in have)
 
 
+def memory() -> str:
+    """ " (6 GiB)": this machine's memory limit, or ""."""
+    try:
+        v = open("/sys/fs/cgroup/memory.max").read().strip()
+        return "" if v == "max" else f" ({int(v) / 2**30:.0f} GiB)"
+    except (OSError, ValueError):
+        return ""
+
+
 _LIB = None
 
 
@@ -352,7 +361,7 @@ class Build:
                 for p in problems[:5]:
                     log(f"{name}: {p}")
                 why = {15: " (SIGTERM: the SSH session that ran tule build ended? run long builds with nohup, see tule docs loop)",
-                       9: " (SIGKILL: out of memory?)"}.get(-code, "")
+                       9: f" (SIGKILL: out of memory{memory()}? lighter purchased parts or fewer faces, or a bigger machine: tule up --machine cpu-4)"}.get(-code, "")
                 error = f"killed by signal {-code}{why}" if code < 0 else f"exit status {code}" if code else problems[0]
                 self.fail(name, error, "\n".join(tail))
                 return []
@@ -528,7 +537,7 @@ def status(root: str, hashes: Hashes | None = None) -> list[dict]:
 
 def machine_label(slot: str | None) -> str:
     """A machine slot as people say it: "cloud", "joined", "gpu-rtx4090", a computer's name."""
-    return {"cloud": "Tule cloud", "joined": "another machine", None: "another machine", "": "another machine"}.get(slot, slot)
+    return {"cloud": "Tule cloud", "joined": "a joined computer", None: "a machine", "": "a machine"}.get(slot, slot)
 
 
 def cached_on(root: str, name: str, cache, hashes: Hashes | None = None) -> str | None:
