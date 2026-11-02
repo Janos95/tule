@@ -133,13 +133,13 @@ outputs.part("bracket", part)
 
 - Operations return new values; nothing changes in place. Units: mm.
 - Parameters are variables at the top of the script (shared ones in `lib/params.py`); derive the rest.
-- `from tule import *` gives everything below; `help(box)` documents each call.
+- `from tule import *` gives everything below; `tule docs Shape.fillet` documents a call.
 
 ## Building blocks
 
 - Solids: `box(x, y, z, center=)`, `cube`, `cylinder(r, h, center=)`, `cone(r, h, r2)`, `sphere(r)`, `torus(R, r)`, `wedge`, `polyhedron(points, faces)`.
-- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner), `spline(points, tol=)` (smooth, not a dense polygon), `text("MK4", size, bold=)` (extrude or engrave it). Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
-- Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`, `sweep(profile, [(x, y, z), …])` along a smooth 3D path (faces `start`, `end`), `pipe(points, r, wall=)` for tendons, cables, tubes.
+- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner), `spline(points, tol=)` (a smooth outline), `text("MK4", size, bold=)`. Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
+- Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`, `sweep(profile, [(x, y, z), …])` along a smooth 3D path (faces `start`, `end`), `pipe(points, r, wall=)` for tendons, cables, tubes; points `(x, y, z, r)`: straight, that corner an arc of radius r (a pulley).
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)`.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
@@ -165,16 +165,16 @@ print(top.ids, hole.info())                    # stable ids (f12 in the viewer) 
 part = part.chamfer(rim, 0.5)                  # ids change: select again after each operation
 ```
 
-Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`, `top()`/`bottom()` (along an axis), `within(lo, hi)`, `nearest(point)`, `sort_by(axis)`, `filter(fn)`; edges also `lines()`, `circles(r=)`, `parallel(axis)`, `perpendicular(axis)`, `on(faces)`, `longest()`. Combine with `| & -`. Seam edges are never selected. `part.face(12)` is face `f12` as shown by `tule screenshot --labels` and `tule inspect`.
+Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`, `top()`/`bottom()` (along an axis), `within(lo, hi)`, `nearest(point)`, `sort_by(axis)`, `filter(fn)`; edges also `lines()`, `circles(r=)`, `parallel(axis)`, `perpendicular(axis)`, `on(faces)`, `longest()`. Combine with `| & -`. Seam edges are never selected. `part.face(12)` is `f12` in `tule screenshot --labels` and `tule inspect`.
 
 ## Roles and tags
 
 - **Roles**: primitives and features name faces: `box(...).faces["top"]` (`top bottom left right front back`), `side`, `fillet`, `chamfer`, shell `inner`. A role resolves through later operations when selected on the feature: `part.fillet(boss.edges["bottom"], 2)`. After a Boolean, `part.faces["top"]` is not defined.
-- **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation, into STEP files and the viewer (`f12 · load`); analysis (`tule.topopt`) reads them. Tag loads, fixed and mating faces.
+- **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation into STEP files, the viewer (`f12 · load`) and analysis. Tag loads, fixed and mating faces.
 
 ## Drawings
 
-`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts from the model. Don't hand-draw one; `tule docs drawings` adds your dimensions, tolerances, sections, scale.
+`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts from the model. Don't hand-draw one; `tule docs drawings`: dimensions, tolerances, sections, scale.
 
 ## Errors
 

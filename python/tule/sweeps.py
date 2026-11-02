@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 from typing import Sequence
 
+import numpy as np
+
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
@@ -169,9 +171,13 @@ def _path(path, smooth: bool):
         if not mk.IsDone():
             raise TuleError("the path's edges do not join into one line", op="sweep")
         return mk.Wire()
+    if hasattr(path, "ShapeType"):  # an OCP edge or wire
+        return _path(Shape(path), smooth)
     pts = [tuple(float(c) for c in p) for p in path]
-    if len(pts) < 2 or any(len(p) != 3 for p in pts):
-        raise TuleError("a path is two or more (x, y, z) points, or an edge or wire", op="sweep")
+    if len(pts) < 2 or any(len(p) not in (3, 4) for p in pts):
+        raise TuleError("a path is two or more (x, y, z) points (or (x, y, z, r): a corner of radius r), or an edge or wire", op="sweep")
+    if any(len(p) == 4 for p in pts):
+        return _rounded_path([p if len(p) == 4 else (*p, 0.0) for p in pts])
     pts = [p for i, p in enumerate(pts) if i == 0 or math.dist(p, pts[i - 1]) > 1e-9]
     if smooth and len(pts) > 2:
         from OCP.GeomAPI import GeomAPI_Interpolate
@@ -194,6 +200,52 @@ def _path(path, smooth: bool):
     for p in pts:
         poly.Add(gp_Pnt(*p))
     return poly.Wire()
+
+
+def _rounded_path(pts):
+    """Straight segments through (x, y, z, r) points, each corner rounded with radius r by an arc
+    tangent to both sides: a tendon around a pulley, a cable over a guide."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.GC import GC_MakeArcOfCircle
+
+    P = [np.array(p[:3]) for p in pts]
+    if any(np.linalg.norm(P[i + 1] - P[i]) < 1e-9 for i in range(len(P) - 1)):
+        raise TuleError("two points of the path are the same", op="sweep")
+    corners = {}  # point index -> (arc start, arc end)
+    for i in range(1, len(P) - 1):
+        r = pts[i][3]
+        d1 = (P[i] - P[i - 1]) / np.linalg.norm(P[i] - P[i - 1])
+        d2 = (P[i + 1] - P[i]) / np.linalg.norm(P[i + 1] - P[i])
+        turn = math.acos(max(-1.0, min(1.0, float(d1 @ d2))))
+        if r <= 0 or turn < 1e-9:
+            continue
+        if turn > math.pi - 1e-6:
+            raise TuleError(f"the path turns straight back at point {i}", op="sweep")
+        t = r * math.tan(turn / 2)
+        corners[i] = (P[i] - d1 * t, P[i] + d2 * t, d1)
+    for i in range(len(P) - 1):
+        a = corners[i][1] if i in corners else P[i]
+        b = corners[i + 1][0] if i + 1 in corners else P[i + 1]
+        if (b - a) @ (P[i + 1] - P[i]) < -1e-9:
+            raise TuleError(f"the corner radii at points {i} and {i + 1} need more room than the "
+                            f"{np.linalg.norm(P[i + 1] - P[i]):.3g} mm between them", op="sweep",
+                            hint="make the radii smaller or the points further apart")
+    pnt = lambda v: gp_Pnt(*map(float, v))  # noqa: E731
+    mk = BRepBuilderAPI_MakeWire()
+    start = P[0]
+    for i in range(1, len(P)):
+        end = corners[i][0] if i in corners else P[i]
+        if np.linalg.norm(end - start) > 1e-9:
+            mk.Add(BRepBuilderAPI_MakeEdge(pnt(start), pnt(end)).Edge())
+        if i in corners:
+            a, b, d1 = corners[i]
+            mk.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(pnt(a), gp_Vec(*map(float, d1)), pnt(b)).Value()).Edge())
+            start = b
+        else:
+            start = P[i]
+    if not mk.IsDone():
+        raise TuleError("the path's segments do not join", op="sweep")
+    return mk.Wire()
 
 
 def _placed(shape, start, tangent):
@@ -249,7 +301,8 @@ def _sweep_wire(wire, path_wire, start, tangent, roles_out=None):
 
 def sweep(profile: Profile, path, smooth: bool = True) -> Shape:
     """Sweep ``profile`` along a 3D ``path``: points ``[(x, y, z), ...]`` (a smooth spline through them,
-    or a polyline with rounded corners with ``smooth=False``) or an edge or wire.
+    or a polyline with rounded corners with ``smooth=False``), points ``(x, y, z, r)`` (straight
+    segments, that corner an arc of radius ``r``: a tendon around a pulley), or an edge or wire.
 
     The profile's xy plane is set square to the path at its start, its origin on the path, and is
     carried along without twisting. Faces: ``start``, ``end``, ``side``. A tube: a profile with a hole.

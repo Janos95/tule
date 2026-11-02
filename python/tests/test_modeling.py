@@ -373,3 +373,14 @@ def test_a_tube_along_a_spline_whose_hole_cut_used_to_vanish():
     t = pipe(pts, 1.0, wall=0.5)
     assert t.is_valid
     assert t.volume == pytest.approx(pipe(pts, 1.0).volume - pipe(pts, 0.5).volume, rel=1e-3)
+
+
+def test_a_path_with_corner_radii_is_lines_and_arcs():
+    import math
+
+    a = math.radians(60)
+    t = pipe([(0, 0, 0), (40, 0, 0, 4), (40 + 30 * math.cos(a), 0, 30 * math.sin(a))], 0.6, wall=0.2)
+    length = (40 - 4 * math.tan(a / 2)) + (30 - 4 * math.tan(a / 2)) + 4 * a  # two straights and the arc
+    assert t.is_valid and t.volume == pytest.approx(length * math.pi * (0.6**2 - 0.4**2), rel=1e-6)
+    with pytest.raises(TuleError, match="need more room"):
+        pipe([(0, 0, 0), (5, 0, 0, 10), (5, 5, 0)], 0.5)
