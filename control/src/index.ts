@@ -28,7 +28,7 @@
 // MCP: /mcp, behind the OAuth provider (tokens from /authorize, or an API key).
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Accounts, type User } from "./accounts";
-import { accounts, authorize, authRoutes, deviceApi, devicePage, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
+import { accounts, authorize, authRoutes, deviceApi, isAdmin, devicePage, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
@@ -327,6 +327,25 @@ async function route(req: Request, env: Env): Promise<Response> {
     fwd.headers.set("X-Tule-Host-Owner", host.userId);
     fwd.headers.set("X-Tule-Host-Name", host.name);
     return env.HOST.getByName(host.id).fetch(fwd);
+  }
+
+  // admin, with DEV_TOKEN only: GET /api/admin/users; POST /api/admin/users/delete {"email"} deletes an account
+  // with its projects, snapshots, computers, keys and connector sign-ins
+  if (path.startsWith("/api/admin/")) {
+    if (!isAdmin(req, env)) return error("admin only", 403);
+    const a = accounts(env);
+    if (path === "/api/admin/users" && req.method === "GET") return reply({ users: await a.allUsers() });
+    if (path === "/api/admin/users/delete" && req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { email?: unknown };
+      const u = (await a.allUsers()).find((x) => !x.guest && x.email === b.email);
+      if (!u) return error(`no account ${JSON.stringify(b.email)}`, 404);
+      for (const h of await a.hosts(u.id)) await stub<Host>(env.HOST, h.id).forget();
+      const grants = await env.OAUTH_PROVIDER.listUserGrants(u.id);
+      for (const g of grants.items) await env.OAUTH_PROVIDER.revokeGrant(g.id, u.id);
+      const r = await a.removeAccount(u.id);
+      return reply({ deleted: !r.failed.length, email: u.email, projects: r.projects, failed: r.failed, connectorSignIns: grants.items.length });
+    }
+    return error("unknown admin route", 404);
   }
 
   const user = await who(req, env);

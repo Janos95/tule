@@ -403,7 +403,10 @@ request `id`.
   `tule login --code tulel_…` redeems a device code the connector's
   `connect_info` approved in advance, so agents sign in without the user.
   API keys (`tule_…`) are also made in Settings. `DEV_TOKEN` remains as an
-  admin credential acting as a "dev" user, for tests.
+  admin credential acting as a "dev" user, for tests, and is the only key to
+  `GET /api/admin/users` (every account, with project and computer counts) and
+  `POST /api/admin/users/delete {"email"}` (an account with its projects,
+  snapshots, computers, keys and connector sign-ins).
 - **MCP:** `@cloudflare/workers-oauth-provider` wraps the Worker: `/mcp` takes
   its OAuth tokens (dynamic client registration, `/authorize` signs the user
   in with the site's session and asks for consent) or a Tule API key.

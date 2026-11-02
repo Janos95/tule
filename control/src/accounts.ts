@@ -200,6 +200,33 @@ export class Accounts extends DurableObject<Env> {
     this.sql.exec("DELETE FROM users WHERE id = ?", id);
   }
 
+  /** Every account, for the admin listing. */
+  allUsers() {
+    return this.all<{ id: string; email: string | null; guest: number; created: number; projects: number; hosts: number }>(
+      `SELECT u.id, u.email, u.guest, u.created,
+         (SELECT COUNT(*) FROM projects p WHERE p.user_id = u.id) AS projects,
+         (SELECT COUNT(*) FROM hosts h WHERE h.user_id = u.id) AS hosts
+       FROM users u ORDER BY u.created`,
+    ).map((u) => ({ ...u, email: u.email ?? "guest", guest: !!u.guest, created: new Date(u.created).toISOString() }));
+  }
+
+  /** Delete an account for good: its projects (machines stopped, snapshots deleted), then everything else it owns. */
+  async removeAccount(id: string): Promise<{ projects: string[]; failed: string[] }> {
+    const done: string[] = [];
+    const failed: string[] = [];
+    for (const p of this.projects(id)) {
+      try {
+        await (this.env.PROJECT.getByName(p.id) as unknown as { destroyProject(): Promise<unknown> }).destroyProject();
+        done.push(p.name);
+      } catch (e) {
+        console.log(JSON.stringify({ event: "remove-account", project: p.id, error: String(e) }));
+        failed.push(p.name);
+      }
+    }
+    if (!failed.length) this.deleteUser(id);
+    return { projects: done, failed };
+  }
+
   async alarm() {
     await this.sweep();
   }

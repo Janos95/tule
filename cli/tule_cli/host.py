@@ -220,7 +220,7 @@ def install_service():
 <key>Label</key><string>com.tule.host</string>
 <key>ProgramArguments</key><array>{args}</array>
 <key>EnvironmentVariables</key><dict>{"".join(f"<key>{k}</key><string>{v}</string>" for k, v in env.items())}</dict>
-<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>StandardOutPath</key><string>{logf}</string><key>StandardErrorPath</key><string>{logf}</string>
 </dict></plist>
 """)
@@ -241,7 +241,7 @@ After=network-online.target docker.service
 [Service]
 ExecStart={' '.join(cmd)}
 {chr(10).join(f"Environment={k}={v}" for k, v in env.items())}
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]
@@ -368,6 +368,7 @@ async def serve(cfg: dict):
                         t.cancel()
         except (OSError, asyncio.TimeoutError, Exception) as e:  # noqa: BLE001 - reconnect on anything
             if getattr(e, "status_code", None) == 401 or "401" in str(e):
+                # a clean exit: the service manager restarts only after a crash (Restart=on-failure, SuccessfulExit)
                 log("Tule does not know this computer any more; pair it again: tule host up")
                 return
             log("connection lost:", repr(e)[:200])
@@ -420,8 +421,9 @@ def cmd_down(args):
 
 def cmd_run(args):
     cfg = read_config()
-    if not cfg:
-        raise CliError("not paired: run tule host up")
+    if not cfg:  # removed from the account (or never paired): a clean exit, so the service is not restarted
+        log("not paired: run tule host up")
+        return
     asyncio.run(serve(cfg))
 
 

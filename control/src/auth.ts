@@ -137,6 +137,12 @@ export function safeNext(next: string | null): string {
 }
 
 /** Forms post only from our own pages. */
+/** The admin credential: DEV_TOKEN as a Bearer header. */
+export function isAdmin(req: Request, env: Env): boolean {
+  const h = req.headers.get("Authorization") ?? "";
+  return !!env.DEV_TOKEN && h.startsWith("Bearer ") && same(h.slice(7), env.DEV_TOKEN);
+}
+
 export function sameOrigin(req: Request, url: URL): boolean {
   const o = req.headers.get("Origin");
   return !o || o === url.origin;
