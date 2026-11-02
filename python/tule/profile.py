@@ -314,6 +314,137 @@ def regular_polygon(n: int, r: float) -> Profile:
     return polygon(pts)
 
 
+def spline(points: Sequence[Point2], closed: bool = True, tol: float | None = None) -> Profile:
+    """A smooth outline: one B-spline curve through the ``(x, y)`` points (no corners, no facets).
+
+    ``closed=True`` joins the last point back to the first smoothly (periodic,
+    no seam corner); with ``closed=False`` the points must end on the first
+    one, which becomes a corner. ``tol`` lets the curve pass within ``tol`` of
+    the points instead of through each, keeping only as many as it needs, so
+    a dense sampling (``[f(t) for t in ts]``) becomes a light spline. The
+    curve is stored as edges of at most a quarter turn each (smooth where
+    they meet), so area and volume measure right.
+    """
+    import numpy as np
+    from OCP.Geom2dAPI import Geom2dAPI_InterCurveCurve
+    from OCP.GeomAPI import GeomAPI
+    from OCP.gp import gp_Pln
+
+    try:
+        pts = np.array([(float(p[0]), float(p[1])) for p in points])
+    except (TypeError, IndexError, ValueError):
+        raise TuleError("spline points are (x, y) pairs", op="spline") from None
+    size = float(np.ptp(pts, axis=0).max()) if len(pts) else 0.0
+    eps = 1e-9 * max(size, 1.0)
+    if len(pts):
+        keep = np.concatenate([[True], np.hypot(*np.diff(pts, axis=0).T) > eps])
+        pts = pts[keep]
+    ends_meet = len(pts) > 1 and math.dist(pts[0], pts[-1]) <= eps
+    if not closed and not ends_meet:
+        raise TuleError("an open curve does not bound a region", op="spline",
+                        hint="pass closed=True for a smooth closed outline, or end on the first point")
+    if ends_meet:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        raise TuleError(f"a spline outline needs at least 3 distinct points, not {len(pts)}", op="spline")
+    if np.linalg.svd(pts - pts.mean(axis=0), compute_uv=False)[-1] <= eps:
+        raise TuleError("the spline points lie on a line", op="spline")
+    x, y = pts[:, 0], pts[:, 1]
+    if np.dot(x, np.roll(y, -1)) < np.dot(y, np.roll(x, -1)):  # counter-clockwise, so the face's normal is +z
+        pts = np.vstack([pts[:1], pts[:0:-1]])
+    if tol is not None and tol <= 0:
+        raise TuleError("tol must be positive", op="spline")
+
+    curve = _spline_through(pts, closed, tol)
+    seam = curve.Value(curve.FirstParameter())
+    hits = Geom2dAPI_InterCurveCurve(curve, 1e-7 * max(size, 1.0))
+    at_seam = [math.hypot(p.X() - seam.X(), p.Y() - seam.Y()) <= 1e-6 * max(size, 1.0)
+               for p in (hits.Point(i + 1) for i in range(hits.NbPoints()))]
+    if hits.NbSegments() or at_seam.count(False) or at_seam.count(True) > 1:  # the seam itself is always listed once
+        p = next((hits.Point(i + 1) for i, s in enumerate(at_seam) if not s), seam)
+        raise TuleError(f"the spline crosses itself near ({p.X():.4g}, {p.Y():.4g})", op="spline",
+                        hint="reorder the points so they run once around the outline; a curve wiggling "
+                             "between close points can loop: thin them out or pass tol=")
+    c3 = static(GeomAPI, "To3d")(curve, gp_Pln())
+    cuts = _quarter_turns(c3)
+    wire = BRepBuilderAPI_MakeWire()
+    for a, b in zip(cuts[:-1], cuts[1:]):
+        piece = c3.Copy() if len(cuts) > 2 else c3  # each edge keeps only its own poles
+        if len(cuts) > 2:
+            piece.Segment(a, b)
+        wire.Add(BRepBuilderAPI_MakeEdge(piece).Edge())
+    mk = BRepBuilderAPI_MakeFace(wire.Wire(), True)
+    if not mk.IsDone():
+        raise TuleError("could not make a face from the spline", op="spline")
+    return Profile(mk.Face())
+
+
+def _quarter_turns(curve) -> list[float]:
+    """Parameters that cut ``curve`` into pieces turning at most a quarter turn each.
+
+    OpenCascade integrates area and volume with a fixed number of points per
+    edge, so a wavy curve measures wrong as one edge but right in such pieces.
+    """
+    import numpy as np
+
+    u0, u1 = curve.FirstParameter(), curve.LastParameter()
+    us = np.linspace(u0, u1, 16 * curve.NbKnots() + 1)
+    d = []
+    for u in us:
+        p, v = gp_Pnt(), gp_Vec()
+        curve.D1(float(u), p, v)
+        d.append(complex(v.X(), v.Y()))
+    d = np.array(d)
+    turn = np.concatenate([[0], np.cumsum(np.abs(np.angle(d[1:] / d[:-1])))])
+    n = max(1, math.ceil(turn[-1] / (math.pi / 2) - 1e-6))
+    cuts = np.interp(np.linspace(0, turn[-1], n + 1), turn, us)
+    return [u0, *map(float, cuts[1:-1]), u1]
+
+
+def _spline_through(pts, closed, tol):
+    """The 2D B-spline through ``pts`` (periodic when ``closed``, else from the first point back
+    to it); with ``tol``, through as few of them as keep all within ``tol``."""
+    import numpy as np
+    from OCP.Geom2dAPI import Geom2dAPI_Interpolate, Geom2dAPI_ProjectPointOnCurve
+    from OCP.gp import gp_Pnt2d
+
+    try:
+        from OCP.collections import HArray1_gp_Pnt2d as HArray  # OCP 8
+    except ImportError:  # pragma: no cover
+        from OCP.TColgp import TColgp_HArray1OfPnt2d as HArray
+
+    def through(sub):
+        ring = sub if closed else np.vstack([sub, sub[:1]])
+        arr = HArray(1, len(ring))  # kept in a variable: the interpolation holds a handle to it
+        for i, p in enumerate(ring):
+            arr.SetValue(i + 1, gp_Pnt2d(float(p[0]), float(p[1])))
+        it = Geom2dAPI_Interpolate(arr, closed, 1e-9)
+        it.Perform()
+        if not it.IsDone():
+            raise TuleError("could not fit a spline through the points", op="spline",
+                            hint="points too close together or doubling back")
+        return it.Curve()
+
+    n = len(pts)
+    if tol is None:
+        return through(pts)
+    chosen = np.unique(np.linspace(0, n - 1, min(n, 16)).round().astype(int))
+    while True:
+        curve = through(pts[chosen])
+        if len(chosen) == n:
+            return curve
+        dev = np.zeros(n)
+        for i in np.setdiff1d(np.arange(n), chosen):
+            proj = Geom2dAPI_ProjectPointOnCurve(gp_Pnt2d(*map(float, pts[i])), curve)
+            dev[i] = proj.LowerDistance() if proj.NbPoints() else math.inf
+        if dev.max() <= tol:
+            return curve
+        # add the worst point of every stretch between chosen points that strays past tol
+        bounds = np.append(chosen, n)
+        extra = [a + int(np.argmax(dev[a:b])) for a, b in zip(bounds[:-1], bounds[1:]) if dev[a:b].max() > tol]
+        chosen = np.union1d(chosen, extra)
+
+
 def slot(length: float, width: float) -> Profile:
     """A stadium along x, ``length`` overall and ``width`` wide, centered."""
     if length <= width:
