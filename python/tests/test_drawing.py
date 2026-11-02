@@ -101,7 +101,7 @@ def test_agent_dims_project_into_the_view():
     ])
     assert "10" in t and "12" in t and "25.25" in t and "L1" in t
     assert _fmt_check(math.hypot(37.5, 6)) in t
-    assert t.count("⌀20") == 1  # given by the agent, not repeated by the automatic callout
+    assert sum(s.startswith("⌀20") for s in t) == 1  # given by the agent, not repeated by the automatic callout
     with pytest.raises(TuleError):
         texts(item=p, dims=[("left", (0, 0, 0), (1, 0, 0))])  # a view that is not drawn
     with pytest.raises(TuleError):
@@ -174,9 +174,15 @@ def test_bad_arguments():
 
 def test_scale_is_chosen_or_checked():
     _, _, facts = drawing.render(plate(), views=("top",))
-    assert facts["scale"] == "2:1"  # 200 x 120 fits A4, 500 x 300 does not
+    assert facts["scale"] == "1:1" and facts["sheet"] == "A4"  # 1:1 when it fits: 2:1 would too
+    _, _, facts = drawing.render(box(30, 20, 4), views=("top",))
+    assert facts["scale"] == "2:1"  # a small part is enlarged
+    _, _, facts = drawing.render(box(250, 150, 6), views=("top", "front"))
+    assert facts["scale"] == "1:1" and facts["sheet"] == "A3"  # the sheet grows before the scale shrinks
+    _, _, facts = drawing.render(box(250, 150, 6), views=("top", "front"), sheet="A4")
+    assert facts["scale"] == "1:2" and facts["sheet"] == "A4"
     with pytest.raises(TuleError, match="do not fit A4 at 5:1"):
-        drawing.render(plate(), scale="5:1")
+        drawing.render(plate(), scale="5:1", sheet="A4")
     _, _, facts = drawing.render(plate(), scale="1:2", sheet="A3")
     assert facts["scale"] == "1:2" and facts["sheet"] == "A3"
 
@@ -223,7 +229,7 @@ def test_tolerances():
     assert "88 ±0.1" in t and "60 ±0.05" in t and "47.14 H7" in t
     assert "4× slot 5.5 +0.1/0 × 11.5 THRU" in t
     t = texts(item=plate(), dims=[("top", plate().edges.circles(r=10), {"tol": "H7"})])
-    assert "⌀20 H7" in t
+    assert "⌀20 H7 THRU" in t
     with pytest.raises(TuleError, match="nothing on the drawing is '⌀6.5'") as e:
         texts(item=motor_plate(), tol={"⌀6.5": 0.1})
     assert "⌀6.6" in e.value.hint  # the sizes it could have meant
@@ -328,7 +334,7 @@ def test_callout_side_can_be_chosen():
     page, _, _ = drawing.render(c, views=CLAMP_VIEWS, callouts={"top": "bottom"})
     assert drawing.collisions(page) == []
     for bad in ("middle", {"iso": "top"}, {"top": "up"}, 3):
-        with pytest.raises(TuleError, match="callouts is a side"):
+        with pytest.raises(TuleError, match="callouts"):
             texts(item=c, views=CLAMP_VIEWS, callouts=bad)
 
 
@@ -364,7 +370,103 @@ def test_section_view():
 
 def test_scale_hint_names_scales_that_fit():
     with pytest.raises(TuleError, match="do not fit A4 at 2:1") as e:
-        drawing.render(box(140, 60, 6), views=("top",), scale="2:1")
-    assert 'scale="1.5:1" fits' in e.value.hint and '"1:1" is the largest ISO 5455' in e.value.hint
+        drawing.render(box(140, 60, 6), views=("top",), scale="2:1", sheet="A4")
+    assert 'scale="1.5:1" is the largest that fits' in e.value.hint and "292 × 130 mm" in e.value.hint  # and why
     assert 'sheet="A3"' in e.value.hint
-    assert drawing.render(box(140, 60, 6), views=("top",), scale="1.5:1")[2]["scale"] == "1.5:1"
+    assert drawing.render(box(140, 60, 6), views=("top",), scale="1.5:1", sheet="A4")[2]["scale"] == "1.5:1"
+    assert drawing.render(box(140, 60, 6), views=("top",), scale="2:1")[2]["sheet"] == "A3"  # the sheet to suit
+
+
+@functools.cache
+def gdt_plate():
+    """A 90 × 70 × 10 plate: a ⌀30 bore, four ⌀5.5 holes, two 5.5 × 15.5 slots."""
+    p = box(90, 70, 10) - cylinder(15, 30, center=True).at(45, 40, 0)
+    for x in (12, 78):
+        for y in (12, 58):
+            p -= cylinder(2.75, 30, center=True).at(x, y, 0)
+        p -= slot(15.5, 5.5).extrude(30).at(x, 35, -10)
+    return p.named("plate_v3_internal")
+
+
+def gdt_kw(p, **kw):
+    return dict(title="Bore plate", datums={"A": p.faces.bottom(), "B": p.faces.normal((-1, 0, 0)).largest()},
+                dims=[(p.faces.top(), {"frame": "flatness 0.05"}),
+                      (p.faces.cylindrical(r=15), {"tol": "H7", "frame": ["perpendicular ⌀0.02 A",
+                                                                         "position ⌀0.05 A B"]}),
+                      (p.faces.cylindrical(r=2.75).within((0, 0, -1), (90, 25, 11)), {"frame": "position ⌀0.1 M A B"}),
+                      ("top", (0, 0, 10), (45, 40, 10), {"along": "h", "tol": "basic"})], **kw)
+
+
+def test_gdt_frames_datums_and_basic_dimensions(outdir):
+    p = gdt_plate()
+    page, _, facts = drawing.render(p, **gdt_kw(p))
+    for f in ("datum A", "datum B", "⏥ | 0.05", "⊥ | ⌀0.02 | A", "⌖ | ⌀0.05 | A | B", "⌖ | ⌀0.1 Ⓜ | A | B"):
+        assert f in facts["frames"], f
+    t = facts["texts"]
+    assert "⌀0.1 Ⓜ" in t and "⌀0.05" in t and t.count("A") >= 4 and "[45]" in t  # the basic size, boxed
+    assert drawing.collisions(page) == []
+    outputs.drawing("gdt", p, **gdt_kw(p))
+    s = svg_texts(outdir / "gdt" / "gdt.svg")
+    assert "⌀0.02" in s and "B" in s and not any("⌖" in x or "⊥" in x for x in s)  # symbols are strokes
+    pdf = (outdir / "gdt" / "gdt.pdf").read_bytes()
+    assert b"/Title (Bore plate)" in pdf
+    with pytest.raises(TuleError, match="datum"):
+        texts(item=p, dims=[(p.faces.top(), {"frame": "parallel 0.05 A"})])  # no datum A on the drawing
+    with pytest.raises(TuleError, match="flatness"):
+        drawing._Frame("flatness 0.05 A")  # a form tolerance takes no datum
+    assert drawing._Frame("position Ø0.1 (M) A B C").name == "⌖ | ⌀0.1 Ⓜ | A | B | C"
+
+
+def test_slot_width_and_length():
+    p = gdt_plate()
+    t = texts(item=p, dims=[(p.faces.cylindrical(r=2.75).within((5, 25, -1), (85, 45, 11)),
+                              {"width": "+0.1/0", "length": True})])
+    assert "5.5 +0.1/0" in t and "15.5" in t and "2× slot THRU" in t
+
+
+def test_sheets_call_each_feature_out_once(outdir):
+    p = gdt_plate()
+    sheets = [{"views": ("front", "top")}, {"views": (("front", (45, 40, 5)), "iso"), "callouts": "none"}]
+    page, _, facts = drawing.render(p, sheets=sheets, **gdt_kw(p))
+    assert len(facts["pages"]) == 2 and len(facts["sheets"]) == 2
+    t = facts["texts"]
+    assert t.count("⌀30 H7 THRU") == 1 and sum(s.startswith(("4× ⌀5.5", "2× ⌀5.5")) for s in t) == 2
+    p2 = [s for s, _ in facts["pages"][1][0].labels]
+    assert "C-C" in p2 and not any(s.startswith("⌀") or "THRU" in s for s in p2)  # sheet 2: no callouts
+    assert "1/2" in " ".join(s for s, _ in page.labels)  # the sheet number in the title block
+    for pg, _ in facts["pages"]:
+        assert drawing.collisions(pg) == []
+    outputs.drawing("two", p, sheets=sheets, **gdt_kw(p))
+    pdf = (outdir / "two" / "two.pdf").read_bytes()
+    assert b"/Count 2" in pdf and b"/Title (Bore plate)" in pdf
+    assert (outdir / "two" / "two.svg").exists() and (outdir / "two" / "two-2.svg").exists()
+    outputs.drawing("two", p, sheets=sheets, **gdt_kw(p))
+    assert (outdir / "two" / "two.pdf").read_bytes() == pdf  # deterministic
+    with pytest.raises(TuleError, match="sheet 1 is a dict with views"):
+        texts(item=p, sheets=[{"view": ("top",)}])
+
+
+def test_no_leader_crosses_a_dimension_line():
+    p = gdt_plate()
+    page, _, _ = drawing.render(p, **gdt_kw(p, sheet="A3"))
+    assert page.leaders and page.dimsegs
+    for L in page.leaders:
+        assert not drawing._cross(L[:2], L[2:], page.dimsegs), L
+        assert not drawing._cross(L[:2], L[2:], [M for M in page.leaders if M != L]), L
+
+
+def test_title_wins_over_the_shape_name():
+    p = gdt_plate()
+    t = texts(item=p, title="Bore plate")
+    assert "Bore plate" in t and "plate_v3_internal" not in " ".join(t)
+    t = texts(item=p, info={"part": "BP-7 bore plate"})
+    assert "BP-7 bore plate" in t and "plate_v3_internal" not in " ".join(t)
+
+
+def test_concave_radius_callout():
+    blk = box(80, 40, 30) - rect(40, 16, center=True).round(3).extrude(14).rotate(x=-90).at(40, -1, 15)
+    r3 = blk.faces.cylindrical(r=3)
+    t = texts(item=blk, views=("front", "top", "right"), dims=[("front", r3)])
+    assert any(s.startswith("4× R3 ↧") for s in t)
+    t = texts(item=blk, views=("front", "top", "right"), dims=[("front", r3, {"text": "SIDE POCKETS: R3, DEPTH 14"})])
+    assert "SIDE POCKETS: R3, DEPTH 14" in t

@@ -25,7 +25,8 @@ def test_examples_run(doc, tmp_path):
     blocks = python_blocks(os.path.join(SKILLS, doc))
     if not blocks:
         pytest.skip("no Python examples")
-    env = {**os.environ, "TULE_OUTPUTS": str(tmp_path / "outputs"), "PYTHONPATH": ""}
+    # this checkout's tule, not whichever one the venv installed (a worktree's docs must run against its code)
+    env = {**os.environ, "TULE_OUTPUTS": str(tmp_path / "outputs"), "PYTHONPATH": os.path.join(ROOT, "python")}
     env.pop("TULE_WORKSPACE", None)
     subprocess.run([sys.executable, os.path.join(ROOT, "examples", "bracket.py")], cwd=tmp_path, env=env,
                    check=True, capture_output=True)
