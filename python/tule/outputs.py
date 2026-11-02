@@ -439,24 +439,44 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
 # ---------------------------------------------------------------- drawings
 
 def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front", "top", "right", "iso"), dims=(),
-            title: str | None = None, info: dict | None = None, sheet: str = "A4", scale=None,
-            hidden: bool = True, projection: str = "first", dxf: str | None = None) -> str:
-    """Write a dimensioned 2D drawing: ``outputs/<name>/<name>.pdf`` and ``.svg``. Returns the folder.
+            title: str | None = None, info: dict | None = None, notes=None, tol: dict | None = None,
+            revisions=None, sheet: str = "A4", scale=None, hidden: bool = True, projection: str = "first",
+            dxf: str | None = None) -> str:
+    """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` and ``.svg``. Returns the folder.
 
     Views (``front top right left bottom back iso``) are projected with hidden lines
     (dashed; ``hidden=False`` drops them) and placed by ``projection`` (``"first"``
-    angle, ISO, or ``"third"``). Overall sizes and hole diameters (``4× ⌀5.5``) are
-    dimensioned automatically; ``dims`` adds yours: ``("front", p1, p2)`` measures two
-    3D points in that view (``{"along": "h" | "v" | "aligned", "text": ..., "offset": mm}``
-    as a fourth item), ``("top", part.edges.circles(r=3))`` a diameter. ``info`` rows go
-    in the title block (``{"material": "S235"}``). ``scale``: ``"1:2"`` (default: the
-    largest standard scale that fits ``sheet``, A4 to A0). ``dxf="top"`` also writes
-    that view at 1:1 as ``<name>.dxf`` for laser or waterjet cutting.
+    angle, ISO, or ``"third"``). Automatic: overall sizes, and callouts for holes and
+    slots, counted, in standard form (``4× ⌀6.6 THRU`` / ``⌴ ⌀11 ↧6.5`` for a counterbore,
+    ``⌵ ⌀12 × 90°`` countersink, ``4× slot 5.5 × 11.5 THRU``: width × overall length).
+    No text touches a line or another text.
+
+    ``dims`` adds yours: ``("top", p1, p2)`` measures two 3D points (or one-item
+    selections) in that view; a fourth item ``{"along": "h" | "v" | "aligned",
+    "tol": "±0.05", "text": "40", "offset": mm}``. ``("top", part.edges.circles(r=11),
+    {"tol": "H7"})`` calls out those circles.
+
+    ``tol`` tolerances any size by its printed text: ``{"⌀22": "+0.05/0", "88": "±0.1",
+    "slot 5.5": "+0.1/0", "↧6.5": "±0.1"}``; values ``"±0.1"``, ``"+0.05/0"`` (stacked),
+    ``"H7"``. A key that matches nothing is an error listing the sizes drawn.
+
+    ``info`` fills the title block: ``number`` (part number), ``rev``, ``material``,
+    ``finish``, ``tolerance`` (general tolerances, default ISO 2768-m; ``""`` drops it),
+    ``drawn``, ``date``, ``checked``, ``approved``; other keys get rows of their own.
+    Nothing is dated unless you say so: the same drawing writes the same bytes.
+    ``revisions=[("A", "First issue"), ("B", "Slots 2 mm longer", "2026-11-02")]``
+    draws a revision table; the last is the current rev. ``notes=["Break all edges
+    0.3", "Anodize clear, MIL-A-8625 Type II"]``: a numbered NOTES block.
+
+    ``sheet``: ``"A4"`` to ``"A0"``. ``scale``: ``"1:2"`` (default: the largest standard
+    scale that fits). ``dxf="top"`` also writes that view at 1:1 as ``<name>.dxf`` for
+    laser or waterjet cutting.
     """
     from .drawing import write as write_drawing
 
     info = _info(info)
     folder = _folder(name)
-    write_drawing(folder, _slug(name), item, views=views, dims=dims, title=title, info=info, sheet=sheet,
-                  scale=scale, hidden=hidden, projection=projection, dxf_view=dxf)
+    write_drawing(folder, _slug(name.rsplit("/", 1)[-1]), item, views=views, dims=dims, title=title, info=info,
+                  sheet=sheet, scale=scale, hidden=hidden, projection=projection, dxf_view=dxf, notes=notes,
+                  tol=tol, revisions=revisions)
     return folder

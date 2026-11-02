@@ -579,16 +579,30 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   from the model (`tule/drawing.py`): views by OCCT hidden-line removal
   (hidden edges dashed; a mesh-based algorithm for very large parts), placed
   by ISO first-angle (or third-angle) projection with an isometric view in a
-  free spot; overall sizes, each once, and hole diameters as callouts
-  (`4× ⌀5.5`, `depth` for blind holes and counterbores), center lines on
-  holes and bosses; dimensions only the author knows are given as 3D points
-  or circular edges (`dims=[("top", p1, p2)]`); a title block with `info`
-  rows, the scale (the largest standard one that fits the sheet, A4 to A0),
-  units and the projection symbol. PDF, SVG and DXF are written by hand (no
-  new dependencies) and have no dates, so an unchanged part gives the same
-  bytes. Not done: section views, detail views, tolerances and surface
-  finish symbols (an agent writes them as dimension text), hole patterns
-  (bolt circles) found automatically.
+  free spot; overall sizes, each once, and callouts found from the faces in
+  standard form: holes (`4× ⌀6.6 THRU`, `↧` depth for blind ones) with their
+  counterbore (`⌴ ⌀11 ↧6.5`) or countersink (`⌵ ⌀12 × 90°`), slots (two
+  facing half-cylinders: `4× slot 5.5 × 11.5 THRU`, width × overall length);
+  center lines on holes, bosses and slots; dimensions only the author knows
+  are given as 3D points or circular edges (`dims=[("top", p1, p2)]`).
+  Tolerances go on any size by its printed text (`tol={"⌀22": "+0.05/0"}`,
+  deviations stacked, fits like `H7`; a key that matches nothing is an error
+  listing the sizes drawn) or per dimension. The title block has part
+  number, revision, material, finish, general tolerances (ISO 2768-m unless
+  told), drawn/date only when given; a revision table and a NOTES block go
+  above it (or notes bottom left when that gives a larger scale). Every text
+  is placed after all lines, on the first spot that touches no line and no
+  other text (dimension text slides along its line or moves past its end;
+  callouts move along their column), and `drawing.collisions(page)` checks a
+  finished sheet; tests hold dense parts (a NEMA 23 plate) to zero. Added
+  2026-11-02 after a QA agent read `help(outputs.drawing)` and still built
+  its motor plate drawings with reportlab, for tolerances, counterbore/slot
+  callouts, notes and revision. Symbols Helvetica lacks (⌴ ⌵ ↧) are drawn as
+  strokes. PDF, SVG and DXF are written by hand (no new dependencies) and
+  have no dates, so an unchanged part gives the same bytes. Not done: section
+  views, detail views, surface finish and GD&T symbols, hole tables, hole
+  patterns (bolt circles) found automatically, threads (an agent writes
+  `M5` as callout text).
 - Later: per-vertex results (stress), variants side by side.
 
 ### Isolation and quotas

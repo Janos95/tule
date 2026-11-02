@@ -60,17 +60,17 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 
 ## Drawings
 
-One call gives a dimensioned shop drawing: views with hidden lines, overall sizes, hole callouts, title block, fitting scale. Add what only you know:
+One call gives a shop drawing: hidden lines, overall sizes, hole, counterbore and slot callouts, title block. Don't hand-draw one; add what only you know:
 
 ```python
 from tule import *
 
-plate = box(80, 40, 3) - cylinder(2.75, 10, center=True).at(10, 10, 0)
-outputs.drawing("plate-drawing", plate.named("plate"), info={"material": "S235, 3 mm"}, dxf="top",
-                dims=[("top", (0, 0, 0), (10, 10, 0), {"along": "h"}), ("top", plate.edges.circles(r=2.75))])
+plate = box(80, 40, 6) - cylinder(2.75, 20, center=True).at(10, 10, 0)
+outputs.drawing("plate", plate.named("plate"), dims=[("top", (0, 0, 6), (10, 10, 6), {"along": "h"})],
+                tol={"⌀5.5": "+0.1/0"}, info={"material": "6061-T6", "rev": "A"}, notes=["Break edges 0.3"])
 ```
 
-It writes `.pdf` and `.svg`; `dxf=` adds that view at 1:1 for laser cutting. See `help(outputs.drawing)`.
+It writes `.pdf` and `.svg`; `dxf="top"` adds a 1:1 DXF. Finish, revisions: `help(outputs.drawing)`.
 
 ## Errors
 
