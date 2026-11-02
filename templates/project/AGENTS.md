@@ -44,18 +44,18 @@ How to work on a Tule machine so that the user can follow along and nothing is l
 
 1. **Edit** a script in `src/` (keep parameters at the top). A new project's `src/part.py` is a placeholder: rename it for your part (`git mv src/part.py src/bracket.py`) rather than leaving it beside yours. It writes its output with `tule.outputs`, named like the script (`src/part.py` → `outputs.part("part", …)`; other files into `outputs.folder()`).
 2. **Build**: `tule build` runs the scripts whose inputs changed (`tule build part` for one); the viewer updates live. Fix `TuleError`s from their message and hint (`tule docs occt`). Nothing rebuilds by itself: keeping outputs current is your job.
-3. **Look**: `tule screenshot -o /tmp/view.png --labels`, then read the PNG (your own checks stay in `/tmp`, not `work/`). Check other sides with `--view top|front|right|bottom`. Do not claim a feature is there until you have seen it.
+3. **Look**: `tule screenshot -o /tmp/view.png --labels`, then read the PNG (your own checks stay in `/tmp`, not `work/`). Check other sides (`--view top|front|right|bottom`). Claim a feature only once you have seen it.
 4. **Check numbers**: `tule inspect outputs/<name>/<file>.step` (size, volume, faces, tags), or print measurements in the script (`part.size`, `part.volume`, `part.is_valid`).
 5. **Iterate** until it matches the request; then save (`tule save -m "…"`) and tell the user what to look at in the viewer. Don't end a turn with work unsaved.
 
-Faces are named `f<id>` the same way in the viewer, in screenshots and in `part.face(id)`. When the user says "the face on the left" or picks one in the viewer, confirm the id with a labeled screenshot before changing it.
+Faces are `f<id>` alike in the viewer, screenshots and `part.face(id)`. When the user says "the face on the left" or picks one in the viewer, confirm the id with a labeled screenshot before changing it.
 
 ## Project layout
 
 ```
 inputs/    from outside: supplier STEP, scans, datasheets, customer specs; scripts only read it
 src/       src/<name>.py makes outputs/<name>/: a part, an assembly, a BOM, a study;
-           a folder is a group in the viewer: src/checks/fit.py makes outputs/checks/fit/
+           a folder is a group: src/checks/fit.py makes outputs/checks/fit/
 lib/       code and parameters the scripts share (from lib.params import WALL)
 work/      done by hand from the design: supplier quotes, part comparisons, reviews
 outputs/   made by tule build; never edit it by hand
@@ -102,8 +102,8 @@ The machine stops after 30 minutes without SSH sessions or traffic; a job runnin
 
 ## Housekeeping
 
-- Install packages with `pip install`, system ones with `apt-get update && apt-get install -y prusa-slicer`; list them in `tule.toml` (`[packages] pip = [...]`, `apt = [...]`) so they are there after a restart.
-- Keep big generated data under `/workspace` only if it must persist; scratch goes to `/tmp`.
+- `pip install`, or `apt-get update && apt-get install -y prusa-slicer`; list them in `tule.toml` (`[packages] pip = [...]`, `apt = [...]`) to keep them after a restart.
+- Big generated data stays out of `/workspace` unless it must persist; scratch goes to `/tmp`.
 - Put notes for the next session (decisions, open questions) in `NOTES.md` and save it.
 
 ---
