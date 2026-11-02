@@ -340,6 +340,21 @@ def test_filter_sees_centers_types_and_sizes():
     assert len(b.vertices.filter(lambda v: v.center.z > 4)) == 6  # 4 corners, 1 on each hole
 
 
+def test_filter_raises_on_a_name_an_item_does_not_have():
+    from tule import box, cylinder
+    b = box(20, 20, 5) - cylinder(1, 10).at(7, 5, -1)
+    assert len(b.faces.filter(lambda f: f.center_of_mass.z > 4)) == 1   # an alias of center
+    assert len(b.faces.filter(lambda f: f.normal is None)) == 1         # known, None on the hole's wall
+    assert len(b.faces.filter(lambda f: f.radius is None)) == 6
+    with pytest.raises(AttributeError, match="no 'centre'") as e:
+        b.faces.filter(lambda f: f.centre.z > 4)
+    assert all(k in str(e.value) for k in ("center", "normal", "area", "type", "id", "radius"))
+    with pytest.raises(AttributeError, match="no 'area'.*length"):
+        b.edges.filter(lambda e: e.area > 1)
+    with pytest.raises(AttributeError, match="no 'normal'"):
+        b.vertices.filter(lambda v: v.normal)
+
+
 def test_an_assembly_takes_a_name_and_a_color():
     a = Assembly(box(1).named("a"), Assembly(box(2).named("b"), name="sub"), name="vendor")
     n = a.named("hat", "#f00")
