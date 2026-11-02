@@ -59,15 +59,31 @@ def log(*a):
 # ---------------------------------------------------------------- the control plane
 
 
-def start_control(night: Path) -> subprocess.Popen:
-    """A wrangler dev of control/ on PORT with the night's own state; machines reach it from Docker."""
+def freeze(night: Path) -> Path:
+    """A copy of the control plane and viewer for the night: wrangler dev reloads on every edit
+    of its sources, which would drop every run's SSH sessions while Tule is being fixed."""
     subprocess.run(["node", "web/build.mjs", "--dev"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    app = night / "app"
+    shutil.rmtree(app, ignore_errors=True)
+    shutil.copytree(ROOT / "control", app / "control", ignore=shutil.ignore_patterns("node_modules", ".wrangler"))
+    (app / "control" / "node_modules").symlink_to(ROOT / "control" / "node_modules")
+    for d in ("web/dist", "web/src", "skills", "templates"):
+        shutil.copytree(ROOT / d, app / d)
+    (app / "runtime").mkdir()
+    shutil.copy(ROOT / "runtime" / "Dockerfile", app / "runtime")
+    return app
+
+
+def start_control(night: Path) -> subprocess.Popen:
+    """A wrangler dev of a frozen copy of control/ on PORT with the night's own state; machines
+    reach it from Docker. `run.py serve --restart` takes up Tule's changes (it drops live sessions)."""
+    app = freeze(night)
     out = open(night / "control.log", "w")
     p = subprocess.Popen(
         ["npx", "wrangler", "dev", "--port", str(PORT), "--ip", "127.0.0.1", "--inspector-port", str(PORT + 1000),
          "--enable-containers=false", "--persist-to", str(night / "state"), "--local-upstream", f"127.0.0.1:{PORT}",
          "--var", f"MACHINE_URL:{MACHINE_URL}", "--var", f"PUBLIC_URL:{URL}"],
-        cwd=ROOT / "control", stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+        cwd=app / "control", stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(120):
         try:
             urllib.request.urlopen(URL + "/__dev/version", timeout=2)
@@ -446,7 +462,7 @@ def save_state(run: Path, st: dict):
 
 
 def cmd_serve(a):
-    night = Path(a.night) if a.night else QA / "runs" / time.strftime("%Y-%m-%d-%H%M")
+    night = (Path(a.night) if a.night else QA / "runs" / time.strftime("%Y-%m-%d-%H%M")).resolve()
     night.mkdir(parents=True, exist_ok=True)
     CACHE.mkdir(exist_ok=True)
     if not (QA / "node_modules" / "playwright-core").exists():
@@ -454,9 +470,17 @@ def cmd_serve(a):
     if not a.no_image:
         log(f"building {IMAGE}")
         sh("docker", "build", "-q", "-f", "runtime/Dockerfile", "-t", IMAGE, ".", cwd=ROOT, timeout=1800)
+    if a.restart:
+        cmd_stop(argparse.Namespace(night=str(night)))
+        for _ in range(30):
+            try:
+                urllib.request.urlopen(URL + "/__dev/version", timeout=1)
+                time.sleep(1)
+            except Exception:
+                break
     try:
         urllib.request.urlopen(URL + "/__dev/version", timeout=2)
-        log(f"a control plane is already on {URL}; using it")
+        log(f"a control plane is already on {URL}; using it (--restart to take up changes)")
     except Exception:
         p = start_control(night)
         (night / "control.pid").write_text(str(p.pid))
@@ -640,7 +664,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("serve", "stop", "start", "say", "_turn", "wait", "shell", "shot", "finish"):
         ap = argparse.ArgumentParser()
         sub = ap.add_subparsers(dest="cmd")
-        p = sub.add_parser("serve"); p.add_argument("--night"); p.add_argument("--no-image", action="store_true")
+        p = sub.add_parser("serve"); p.add_argument("--night"); p.add_argument("--no-image", action="store_true"); p.add_argument("--restart", action="store_true")
         p = sub.add_parser("stop"); p.add_argument("night")
         p = sub.add_parser("start"); p.add_argument("night"); p.add_argument("name"); p.add_argument("--model")
         p.add_argument("--scenario"); p.add_argument("--file", action="append", default=[]); p.add_argument("--setup", action="append", default=[])
