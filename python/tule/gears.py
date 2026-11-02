@@ -23,6 +23,8 @@ ring gear a positive x moves the teeth outward (its tip circle grows), so a
 planet and a ring with the same x mesh at the standard center distance.
 ``backlash`` thins each tooth (an external gear's tooth, a ring gear's tooth)
 by that much along the pitch circle; a pair's backlash is the sum.
+
+Straight bevel gears are in ``tule.bevel`` (``bevel_gear``, ``bevel_pair``).
 """
 
 from __future__ import annotations
@@ -273,10 +275,10 @@ def _xy(polar, turn=0.0, mirror=False):
 
 
 def _fit(points, tol, degree=5):
-    """A B-spline through the ends and within ``tol`` of the points between."""
+    """A B-spline through the ends and within ``tol`` of the points (x, y or x, y, z) between."""
     arr = TColgp_Array1OfPnt(1, len(points))
-    for i, (x, y) in enumerate(points):
-        arr.SetValue(i + 1, gp_Pnt(float(x), float(y), 0))
+    for i, p in enumerate(points):
+        arr.SetValue(i + 1, gp_Pnt(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0))
     fit = GeomAPI_PointsToBSpline(arr, Approx_ParametrizationType.Approx_ChordLength, 3, degree,
                                   GeomAbs_Shape.GeomAbs_C2, tol)
     if not fit.IsDone():
@@ -292,12 +294,18 @@ def _turned(curve, angle, v0, v1):
 
 
 def _arc(p0, pm, p1, v0, v1):
-    c = GC_MakeArcOfCircle(*(gp_Pnt(float(p[0]), float(p[1]), 0) for p in (p0, pm, p1))).Value()
+    c = GC_MakeArcOfCircle(*(gp_Pnt(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0)
+                             for p in (p0, pm, p1))).Value()
     return BRepBuilderAPI_MakeEdge(c, v0, v1).Edge()
 
 
-def _toothed_wire(g):
-    """The closed toothed outline (counter-clockwise) and its edges by role."""
+def _toothed_wire(g, lift=None):
+    """The closed toothed outline (counter-clockwise) and its edges by role.
+
+    ``lift`` maps (n, 2) points of the outline to the (n, 3) points of the wire (default: z = 0); it
+    must commute with turns about z (a bevel gear's outline lifted onto its back cone).
+    """
+    lift = lift or (lambda p: np.column_stack([p, np.zeros(len(p))]))
     z = g.z
     pitch = 2 * math.pi / z
     root = g.root(_ROOT_POINTS)        # space middle → involute start (upper side of the tooth on +x)
@@ -314,17 +322,19 @@ def _toothed_wire(g):
         return pts @ np.array([[c, s], [-s, c]])
 
     def vertex(p):
-        return BRepBuilderAPI_MakeVertex(gp_Pnt(float(p[0]), float(p[1]), 0)).Vertex()
+        p = lift(np.asarray(p, float).reshape(1, 2))[0]
+        return BRepBuilderAPI_MakeVertex(gp_Pnt(*(float(c) for c in p))).Vertex()
 
     tol = _TOL * g.m
-    c_lo, c_hi, c_root = _fit(lower, tol), _fit(upper, tol), _fit(root_curve, 5 * tol, 8)  # the root carries no load
+    c_lo, c_hi = _fit(lift(lower), tol), _fit(lift(upper), tol)
+    c_root = _fit(lift(root_curve), 5 * tol, 8)  # the root carries no load
     corners = [[vertex(turned(p, k)) for p in (lower[0], lower[-1], upper[0], upper[-1])] for k in range(z)]
     wire = BRepBuilderAPI_MakeWire()
     roles = {"flanks": [], "tips": [], "roots": []}
     for k in range(z):
         v_lo, v_tip_lo, v_tip_hi, v_hi = corners[k]
         e_lo = _turned(c_lo, k * pitch, v_lo, v_tip_lo)
-        e_tip = _arc(turned(lower[-1], k), turned(tip_mid, k), turned(upper[0], k), v_tip_lo, v_tip_hi)
+        e_tip = _arc(*lift(np.array([turned(p, k) for p in (lower[-1], tip_mid, upper[0])])), v_tip_lo, v_tip_hi)
         e_hi = _turned(c_hi, k * pitch, v_tip_hi, v_hi)
         e_root = _turned(c_root, k * pitch, v_hi, corners[(k + 1) % z][0])
         for e in (e_lo, e_tip, e_hi, e_root):
