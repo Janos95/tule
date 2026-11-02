@@ -161,7 +161,7 @@ A user can plug in their own computers (a Linux box with a GPU, a Mac mini)
 as machines, modelled on T3 Code's remote machines (`t3 up`) but
 containerized:
 
-- **One command:** Settings → Your computers → **Add a computer** shows
+- **One command:** Settings → Machines → **Add a computer** shows
   `curl -fsSL <site>/install.sh | sh -s -- tulep_…`, with a one-time key
   (an hour, one computer) in it. Pasted into a terminal on the computer,
   `install.sh` (web/src/install.sh, served by the Worker) installs what is
@@ -195,8 +195,8 @@ containerized:
   own machine image (from `ghcr.io/janos95/tule-runtime`), never to run a
   command; containers are unprivileged and see none of the computer's files.
   This is the main difference from T3 Code, whose agents run as the user.
-- **Accounts:** computers belong to a user, are listed in Settings ("Your
-  computers": online state, specs, remove) and in `tule hosts`; no quota
+- **Accounts:** computers belong to a user, are listed in Settings (under "Machines":
+  online state, specs, remove) and in `tule hosts`; no quota
   applies (the user's hardware). Guests cannot add computers.
 - **Images:** `ghcr.io/janos95/tule-runtime:cpu` (amd64), `:cpu-arm64`
   (Apple Silicon and ARM Linux, natively) and `:cuda` (amd64) for computers
@@ -236,8 +236,7 @@ workspace.
 **RunPod credentials:** the key is encrypted at rest in the Accounts Durable
 Object (key from a Worker secret), used only by the control plane to create,
 query and stop pods, and never passed into a machine. Creating pods needs a
-key with write access to RunPod's API; the settings page says so and suggests
-a dedicated key. Users who prefer not to store a key
+key with write access to RunPod's API; the settings page says so. Users who prefer not to store a key
 can let their agent create the pod with their own RunPod connector, passing
 a join token from Tule; the pod then joins the project the same way.
 
@@ -411,7 +410,9 @@ request `id`.
   its OAuth tokens (dynamic client registration, `/authorize` signs the user
   in with the site's session and asks for consent) or a Tule API key.
 - **Pages** (server-rendered): the projects list (the site's front page),
-  Settings (connecting an agent, RunPod, usage, SSH and API keys, account),
+  Settings (four short sections: the connector; machines, meaning Tule
+  cloud with this month's hours, your computers and RunPod; SSH and API keys
+  in one list; account; no explanations beyond one note per add row),
   the device approval, the consent page.
 
 ### Guests

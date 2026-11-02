@@ -62,7 +62,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .list{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .item{display:grid;grid-template-columns:minmax(120px,auto) 1fr auto;align-items:center;gap:16px;padding:10px 8px;border-bottom:1px solid var(--line);min-height:44px}
 .item-label{font-weight:500;overflow:hidden;text-overflow:ellipsis}.item-meta{color:var(--muted);font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.item-action form{margin:0}.item-block{grid-template-columns:1fr auto}.item-block pre{grid-column:1/-1;margin:0}
+.item-action form{margin:0}.item-block{grid-template-columns:1fr auto}.item-block pre,.item-block .copyfield,.item-block .hint{grid-column:1/-1;margin:0}
 .newkey{background:var(--selected)}
 button.small{padding:3px 10px;font-size:13px}
 .guestbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:6px 14px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn-fill);color:var(--warn);font-size:13px;font-weight:500;white-space:nowrap;box-shadow:0 2px 8px var(--shadow)}
@@ -74,7 +74,7 @@ body:has(.guestbar) main{padding-bottom:64px}
 .agentbtns{display:inline-flex;gap:6px;white-space:nowrap}.item-action .agenthint{text-align:right;margin-top:6px}
 .copyfield{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:5px 10px;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--text);font:13px var(--mono);cursor:pointer}
 .copyfield:hover{border-color:var(--faint)}.copyfield:focus-visible{box-shadow:0 0 0 3px var(--focus)}
-.copyfield span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.copyfield span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.copyfield.wrap{justify-content:space-between}.copyfield.wrap span{white-space:normal;word-break:break-all}
 .copyfield svg{flex:none;width:14px;height:14px;fill:none;stroke:var(--muted);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .copyfield .ck,.copyfield.copied .cp{display:none}.copyfield.copied .ck{display:block;stroke:var(--ok)}
 .notice{padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
@@ -100,7 +100,7 @@ export function layout(title: string, body: Html | string, user?: User | null, s
 
 /** Copy buttons; "+ New …" rows: opening focuses the field, Esc closes it again. */
 const NEWP_JS = `document.addEventListener("click",(e)=>{const g=e.target.closest?.("[data-chatgpt]");if(g){navigator.clipboard.writeText(g.dataset.chatgpt);const h=g.closest(".agentbar,.item")?.querySelector(".agenthint");if(h)h.hidden=false}});
-document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);if(b.classList.contains("copyfield")){b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)}else{b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)}});
+document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)});
 document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
 document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
 
@@ -189,7 +189,6 @@ const rowButton = (actionUrl: string, text: string, id?: string, danger = false)
   html`<form method="post" action="${actionUrl}">${id ? html`<input type="hidden" name="id" value="${id}">` : ""}<button class="small${danger ? " danger" : ""}">${text}</button></form>`;
 
 
-const copyButton = (text: string) => html`<button type="button" class="small" data-copy="${text}">Copy</button>`;
 
 /** A value shown as a field: clicking anywhere copies it (the icon turns into a check). */
 const copyField = (text: string) =>
@@ -214,83 +213,55 @@ const agentStrip = (origin: string) =>
 
 /** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (connect_info).
     Settings also shows the CLI command, for working on a machine by hand. */
-function agentSection(origin: string, cli = false): Html {
-  const cmd = `curl -fsSL ${origin}/cli.sh | sh\ntule ssh -p <project>`;
-  return section(
-    "Connect your agent",
-    "Add the connector to your agent; it sets up the rest.",
-    html`${item("Connector", copyField(`${origin}/mcp`), html`${agentButtons(origin)}${agentHint}`)}
-      ${cli ? html`<div class="item item-block"><span class="item-label">CLI, by hand</span><span class="item-action">${copyButton(cmd)}</span><pre>${cmd}</pre></div>` : ""}`,
-  );
-}
+/** A value to copy, shown in full under its label (an install command, a new key). */
+const copyBlock = (label: string, text: string, note: Html | string = "", id = "") =>
+  html`<div class="item item-block newkey"${id ? html` id="${id}"` : ""}><span class="item-label">${label}</span><button type="button" class="copyfield wrap" data-copy="${text}" title="Copy"><span>${text}</span><svg class="cp" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg><svg class="ck" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg></button>${note ? html`<p class="hint">${note}</p>` : ""}</div>`;
 
 export function settingsPage(user: User, d: SettingsData): Response {
-  const agent = agentSection(d.origin, true);
+  const agent = section("Connect your agent", "", item("Connector", copyField(`${d.origin}/mcp`), html`${agentButtons(d.origin)}${agentHint}`));
 
+  // Machines: Tule's own, your computers, RunPod; with this month's hours on each
+  const u = d.usage;
   const rp = d.runpod;
-  const runpod = user.guest
-    ? section("GPU machines", "GPU machines run on your own RunPod account.", item("RunPod", "sign in to connect it", html`<a class="button small" href="/auth/login">Sign in</a>`))
-    : section(
-    "GPU machines",
-    "GPU machines run on your RunPod account and are paid from its balance. Tule stores the key encrypted and never passes it to a machine.",
-    html`${rp.connected
-        ? item("RunPod", html`connected${rp.balance ? html` · ${rp.balance} balance` : ""}`, rowButton("/settings/runpod/remove", "Disconnect", undefined, true))
-        : item("RunPod", "not connected")}
-      ${addRow(
-        rp.connected ? "Replace key" : "Connect RunPod",
-        "/settings/runpod",
-        html`<input name="key" type="password" placeholder="rpa_…" aria-label="RunPod API key" required />`,
-        !!rp.error,
-        rp.error ? html`<span class="warn">${rp.error}</span>` : "A read/write key from runpod.io → Settings → API Keys.",
-      )}`,
-  );
-
   const spec = (s: unknown) => {
     const x = (s ?? {}) as { cpus?: number; memoryGb?: number; gpus?: string[]; arch?: string };
     return [x.cpus ? `${x.cpus} cores` : "", x.memoryGb ? `${x.memoryGb} GB` : "", ...(x.gpus ?? []), x.arch ?? ""].filter(Boolean).join(" · ");
   };
-  const cmd = (key: string) => `curl -fsSL ${d.origin}/install.sh | sh -s -- ${key}`;
-  const computers = user.guest
-    ? ""
-    : section(
-        "Your computers",
-        "Run machines on your own hardware: Tule starts its container there, using the whole computer.",
-        html`${d.hosts.map((h) => item(h.name, html`<span class="dot ${h.online ? "running" : ""}"></span>${h.online ? "online" : "offline"}${spec(h.specs) ? ` · ${spec(h.specs)}` : ""}`, rowButton("/settings/hosts/remove", "Remove", h.id, true)))}
-          ${
-            d.hostKey
-              ? html`<div class="item item-block newkey" id="add-computer"><span class="item-label">Paste this into a terminal on the computer</span><span class="item-action">${copyButton(cmd(d.hostKey))}</span><pre>${cmd(d.hostKey)}</pre>
-                  <p class="hint">It installs what is missing (Docker, the tule CLI), adds the computer to your account and runs it as a background service. Linux, macOS, or Windows in WSL. The key works once, for an hour.</p></div>`
-              : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span>Add a computer</button></form>`
-          }`,
-      );
-
-  const u = d.usage;
-  const usage = section(
-    "Usage",
-    `This month (${u.month}).`,
-    html`${item("CPU machines", `${u.cpuHours} h of ${d.quota} h`)}
-      ${item("GPU machines", u.gpuCost ? `${u.gpuHours} h · about $${u.gpuCost.toFixed(2)} on RunPod` : `${u.gpuHours} h`)}`,
+  const install = (key: string) => `curl -fsSL ${d.origin}/install.sh | sh -s -- ${key}`;
+  const gpu = u.gpuHours ? ` · ${u.gpuHours} h this month${u.gpuCost ? ` (about $${u.gpuCost.toFixed(2)})` : ""}` : "";
+  const machines = section(
+    "Machines",
+    "",
+    html`${item("Tule cloud", `${u.cpuHours} h of ${d.quota} h this month`)}
+      ${user.guest ? "" : html`${d.hosts.map((h) => item(h.name, html`<span class="dot ${h.online ? "running" : ""}"></span>${h.online ? "online" : "offline"}${spec(h.specs) ? ` · ${spec(h.specs)}` : ""}`, rowButton("/settings/hosts/remove", "Remove", h.id, true)))}
+      ${rp.connected ? item("RunPod", html`connected${rp.balance ? html` · ${rp.balance} balance` : ""}${gpu}`, rowButton("/settings/runpod/remove", "Disconnect", undefined, true)) : ""}
+      ${d.hostKey
+        ? copyBlock("Paste this into a terminal on the computer", install(d.hostKey), "Installs what is missing and runs as a background service. Linux, macOS or WSL. Works once, for an hour.", "add-computer")
+        : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span>Add a computer</button></form>`}
+      ${addRow(
+        rp.connected ? "Replace RunPod key" : "Connect RunPod for GPUs",
+        "/settings/runpod",
+        html`<input name="key" type="password" placeholder="RunPod API key, rpa_…" aria-label="RunPod API key" required />`,
+        !!rp.error,
+        rp.error ? html`<span class="warn">${rp.error}</span>` : "A read/write key from runpod.io → Settings → API Keys. GPU time is paid from your RunPod balance.",
+      )}`}`,
   );
 
-  const ssh = section(
-    "SSH keys",
-    "They work on every project's machine. tule ssh adds its own.",
-    html`${d.sshKeys.map((k) => item(k.name, html`<code>${k.key.slice(0, 24)}…</code> · ${day(k.created)}`, rowButton("/settings/ssh/remove", "Remove", k.id, true)))}
-      ${addRow("Add SSH key", "/settings/ssh/add", html`<input name="key" placeholder="ssh-ed25519 AAAA… you@laptop" aria-label="Public key" required />`)}`,
-  );
-
-  const api = section(
-    "API keys",
-    "For the CLI and scripts. tule login makes one for you.",
-    html`${d.newKey ? html`<div class="item item-block newkey"><span class="item-label">New key, shown once</span><span class="item-action">${copyButton(d.newKey)}</span><pre>${d.newKey}</pre></div>` : ""}
-      ${d.apiKeys.map((k) => item(k.name, html`<code>${k.prefix}…</code> · used ${day(k.last_used)}`, rowButton("/settings/keys/revoke", "Revoke", k.id, true)))}
-      ${addRow("Create API key", "/settings/keys/new", html`<input name="name" placeholder="CI" aria-label="Key name" required />`)}`,
+  // Keys: agents and the CLI add their own; this is mostly for removing them
+  const keys = section(
+    "Keys",
+    "",
+    html`${d.newKey ? copyBlock("New API key, shown once", d.newKey) : ""}
+      ${d.sshKeys.map((k) => item(k.name, html`SSH · <code>${k.key.slice(0, 20)}…</code> · ${day(k.created)}`, rowButton("/settings/ssh/remove", "Remove", k.id, true)))}
+      ${d.apiKeys.map((k) => item(k.name, html`API · <code>${k.prefix}…</code> · used ${day(k.last_used)}`, rowButton("/settings/keys/revoke", "Revoke", k.id, true)))}
+      ${addRow("Add SSH key", "/settings/ssh/add", html`<input name="key" placeholder="ssh-ed25519 AAAA… you@laptop" aria-label="Public key" required />`)}
+      ${addRow("Create API key", "/settings/keys/new", html`<input name="name" placeholder="Name, like CI" aria-label="Key name" required />`)}`,
   );
 
   const account = user.guest
-    ? section("Account", "You're a guest: your project is deleted a day after your last visit. Signing in keeps it.", item("Guest", "", html`<a class="button small primary" href="/auth/login">Sign in</a>`))
+    ? section("Account", "", item("Guest", "", html`<a class="button small primary" href="/auth/login">Sign in</a>`))
     : section("Account", "", item(user.email, "", html`<form method="post" action="/auth/logout"><button class="small">Sign out</button></form>`));
 
-  const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${computers}${runpod}${usage}${ssh}${api}${account}`;
+  const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${machines}${keys}${account}`;
   return page("Settings", body, 200, user);
 }
