@@ -395,8 +395,11 @@ outputs/
   "label"}]}`). Any kind may carry `"info"`: facts about the output
   (material, mass, ...), shown as rows under the view. The viewer shows
   info, the value scale and an overlay's legend in a strip under the view,
-  never over the part. Later: per-vertex data (stress) and `variants` (side
-  by side).
+  never over the part. An overlay's `"fields"` color the whole surface
+  (stress, displacement): each is a node grid in a `.npy` file of the output
+  (`origin`, `step`; a vector deforms the shape `deform` times), sampled at
+  the mesh's vertices by the viewer and `tule screenshot --field` alike;
+  buttons in the strip switch fields. Later: `variants` (side by side).
 - **The JSON is optional.** Without it the viewer infers the kind: one file is
   a part, several an assembly, numbered files a sequence.
 - **Formats:** STEP (B-rep) and STL, 3MF, OBJ, glTF (meshes).
@@ -603,7 +606,7 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   views, detail views, surface finish and GD&T symbols, hole tables, hole
   patterns (bolt circles) found automatically, threads (an agent writes
   `M5` as callout text).
-- Later: per-vertex results (stress), variants side by side.
+- Later: variants side by side.
 
 ### Isolation and quotas
 
@@ -750,8 +753,7 @@ work inside them (the same limit as RunPod).
 
 - `tule build` (or any script, any tool); results go to `outputs/`.
 - `tule screenshot`, `tule docs [topic]`, `tule inspect <file>`.
-- The libraries: `tule` (modeling), `tule.topopt`, `tule.outputs`,
-  later `tule.fea`.
+- The libraries: `tule` (modeling), `tule.topopt`, `tule.fea`, `tule.outputs`.
 
 ### Skills and the Claude plugin
 
@@ -925,13 +927,26 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 - **Not now:** design-for-manufacturing checks (CNC, 3D printing). A `tule.dfm`
   v0 was built and removed on 2026-11-01 to keep the feature set small;
   overlays with a `severity` per face still show checks an agent writes itself.
-- **Later:** `tule.fea` (linear static, gmsh + scikit-fem), cost estimates.
+- **`tule.fea`** v0: linear static analysis of one part on the same voxel
+  grid and solver (no mesher to fail on CAD). Voxels cut by the surface are
+  finite cells integrated exactly over their inside (moments from rays along
+  z), hexahedra carry Wilson's incompatible modes so bending is right a few
+  voxels thick, and the multigrid coarse levels store only voxels with
+  material. `fea.static(part, "PETG", fixed="mount", loads=[fea.force("load",
+  (0, 0, -30))], accel=(0, 0, -3 * fea.g))`: forces, pressure, moments,
+  self-weight, clamped or one-direction supports, materials by name. The
+  result gives peak and 99.5th-percentile surface stress (the peak at sharp
+  corners is singular), displacement, safety factor, reactions and mass;
+  `.show()` writes an overlay with stress and displacement fields. The tests
+  check it against hand calculations: a cantilever and a bar within 1 %, a
+  shaft in torsion within 5 % (6 voxels across its radius).
+- **Later:** cost estimates, nonlinear analysis (contact, plasticity, buckling).
 
 ## Repository layout
 
 ```
 tule/
-  python/tule/        modeling API + outputs, topopt (pip package)
+  python/tule/        modeling API + outputs, topopt, fea (pip package)
   python/tests/
   cli/                the `tule` CLI (Python, pip package `tule-cli`)
   runtime/            Dockerfiles (cpu, later cuda), tule-agent
@@ -984,7 +999,8 @@ tule/
    code editor is not built (the files browser and snapshot history were
    dropped, see "Viewer").
 6. **Engineering libraries:** `tule.topopt` v0. **Done** (2026-11-01): see
-   "Engineering libraries". `tule.dfm` was built and then removed
+   "Engineering libraries". `tule.fea` v0 (linear static) **done**
+   (2026-11-02). `tule.dfm` was built and then removed
    (2026-11-01): a small feature set done well comes first.
 7. **GPU:** RunPod backend (settings, encrypted key, `tule up --gpu`),
    agent-provisioned pods via join tokens, then `tule.remote`. The backend,

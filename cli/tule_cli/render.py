@@ -46,12 +46,14 @@ class Part:
     color: tuple | None = None
     tags: dict = field(default_factory=dict)  # face id -> [tag, ...]
     faces: int = 0  # B-rep faces in the part (0: a mesh without faces, e.g. STL)
+    colors: np.ndarray | None = None  # (n, 3) rgb per vertex (a field): replaces the part's and the overlay's colors
 
 
 @dataclass
 class Overlay:
     faces: dict = field(default_factory=dict)  # (part index, face id) -> {"color": rgb, "label": str}
     arrows: list = field(default_factory=list)  # {"at": xyz, "dir": xyz, "label": str}
+    scale: dict | None = None  # the color bar: {"label", "unit", "min", "max", "note"}, ramp as RAMP
 
 
 def _unit(v) -> np.ndarray:
@@ -267,9 +269,15 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     half = _unit(key + np.array([0, 0, 1.0]))
     shade = 0.30 + 0.62 * np.clip(n @ key, 0, 1) + 0.20 * np.clip(n @ fill, 0, 1)
     spec = 0.10 * np.clip(n @ half, 0, 1) ** 40
+    color = tri_color[t]
+    if any(p.colors is not None for p in parts):  # a field: colors per vertex, interpolated in each triangle
+        C = np.concatenate([p.colors if p.colors is not None else np.full((len(p.positions), 3), np.nan) for p in parts])
+        own = np.array([p.colors is not None for p in parts])[tri_part[t]]
+        w2 = 1 - w0 - w1
+        color[own] = (w0[:, None] * C[i0] + w1[:, None] * C[i1] + w2[:, None] * C[i2])[own]
     img = np.empty((Ws * Hs, 3))
     img[:] = (1.0, 1.0, 1.0) if plain else BACKGROUND
-    img[fg] = np.clip(tri_color[t] * shade[:, None] + spec[:, None], 0, 1)
+    img[fg] = np.clip(color * shade[:, None] + spec[:, None], 0, 1)
 
     # lines: face boundaries (CAD edges), silhouettes, depth jumps; creases on meshes without faces
     fkey = np.full(Ws * Hs, -1, dtype=np.int64)
@@ -360,10 +368,41 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
         return out, report
     _triad(draw, R, font, H)
 
-    out = Image.new("RGB", (W, H + fs + 14), (232, 234, 237))
+    bar = overlay.scale if overlay is not None and overlay.scale else None
+    out = Image.new("RGB", (W, H + (fs + 14) * (2 if bar else 1)), (232, 234, 237))
     out.paste(im, (0, 0))
-    ImageDraw.Draw(out).text((8, H + 6), f"{caption} · view {view}" if caption else f"view {view}", fill=(40, 44, 50), font=font)
+    od = ImageDraw.Draw(out)
+    od.text((8, H + 6), f"{caption} · view {view}" if caption else f"view {view}", fill=(40, 44, 50), font=font)
+    if bar:
+        _color_bar(od, font, bar, 8, H + fs + 18, fs)
     return out, report
+
+
+def _color_bar(draw, font, s, x, y, fs):
+    """The legend of a value scale, as in the viewer: label, min, the ramp, max and unit, a note."""
+    def fmt(v):
+        return f"{v:.4g}"
+
+    unit = f" {s['unit']}" if s.get("unit") else ""
+    ink = (40, 44, 50)
+    draw.text((x, y), s.get("label") or "value", fill=ink, font=font)
+    x += _text_size(font, s.get("label") or "value")[0] + 14
+    draw.text((x, y), fmt(s["min"]) + unit, fill=(90, 96, 104), font=font)
+    x += _text_size(font, fmt(s["min"]) + unit)[0] + 8
+    stops = np.asarray(s["colors"], dtype=np.float64)
+    w, h = 16 * fs, max(8, fs - 2)
+    tt = np.linspace(0, 1, w) * (len(stops) - 1)
+    i = np.minimum(len(stops) - 2, tt.astype(int))
+    rgb = stops[i] + (stops[i + 1] - stops[i]) * (tt - i)[:, None]
+    for k in range(w):
+        draw.line([(x + k, y + 2), (x + k, y + 2 + h)], fill=tuple(int(255 * c + 0.5) for c in rgb[k]))
+    draw.rectangle([x, y + 2, x + w, y + 2 + h], outline=(150, 154, 160))
+    x += w + 8
+    draw.text((x, y), fmt(s["max"]) + unit, fill=(90, 96, 104), font=font)
+    x += _text_size(font, fmt(s["max"]) + unit)[0] + 14
+    note = "; ".join(filter(None, [s.get("note"), f"shape exaggerated {s['deform']:g} times" if s.get("deform") else ""]))
+    if note:
+        draw.text((x, y), note, fill=(90, 96, 104), font=font)
 
 
 def _labels(im, draw, font, parts, Kf, visible, names, overlay, labels, report) -> list:

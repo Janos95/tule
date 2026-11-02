@@ -202,7 +202,10 @@ class _Level:
                 term = self.coef[i::2, j::2, k::2][..., None, None] * G
             else:
                 term = Pc.T @ self.Ke[i::2, j::2, k::2] @ Pc
-            Kc = term if Kc is None else Kc + term
+            if Kc is None:
+                Kc = term
+            else:
+                Kc += term  # in place: these are the biggest arrays of a solve
         # a coarse dof is fixed when any fine dof it interpolates to is: supports that fall between
         # coarse nodes (a bolt hole) must not vanish, or the coarse problem floats
         free = (_restrict(1.0 - self.free, xp) <= 1e-12).astype(self.free.dtype)
@@ -261,6 +264,8 @@ def _sparse_stiffness(level: _Level):
     """The coarsest operator as a sparse matrix (on the host), fixed dofs as identity rows."""
     from scipy.sparse import coo_matrix, diags
 
+    if hasattr(level, "assemble"):  # a level that stores only its voxels with material (tule.fea)
+        return level.assemble()
     free = _host(level.free).reshape(-1)
     nx, ny, nz = level.shape
     if level.Ke is None:
@@ -314,11 +319,11 @@ class _Multigrid:
     small right-hand side and solution cross the bus.
     """
 
-    def __init__(self, xp, KE, coef, free, levels: int, sweeps: int = 2, omega: float = 0.6):
+    def __init__(self, xp, KE, coef, free, levels: int, sweeps: int = 2, omega: float = 0.6, fine: "_Level | None" = None):
         from scipy.sparse.linalg import splu
 
         self.xp, self.sweeps, self.omega = xp, sweeps, omega
-        self.levels = [_Level(xp, free, KE=KE, coef=coef)]
+        self.levels = [fine or _Level(xp, free, KE=KE, coef=coef)]  # fine: a level of its own (tule.fea's cut cells)
         P = xp.asarray(_P_CHILD)
         for _ in range(levels - 1):
             self.levels.append(self.levels[-1].coarsen(P))

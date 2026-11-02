@@ -53,6 +53,24 @@ A face with only a ``value`` is colored on a blue-to-red scale from
 ``scale.min`` to ``scale.max`` (default: the values' range), with a legend
 bar labelled ``scale.label`` in ``scale.unit``.
 
+**Fields** (overlay): values on the part's surface, not per face (stress,
+displacement), from a grid of nodes in a NumPy ``.npy`` file next to the part::
+
+      "fields": [
+        {"label": "von Mises stress", "unit": "MPa", "file": "von-mises-stress.npy",
+         "origin": [x, y, z], "step": 0.5, "min": 0, "max": 31,   # node (i, j, k) at origin + step·(i, j, k)
+         "note": "peak 40.2 MPa"},                                # optional: a line in the legend
+        {"label": "displacement", "unit": "mm", "file": "displacement.npy", "origin": [x, y, z], "step": 0.5,
+         "min": 0, "max": 0.21, "deform": 50}                     # a vector field: shape moved 50 × the vectors
+      ]
+
+The file holds little-endian float32 values, shape ``(nx, ny, nz)`` (a number
+per node) or ``(nx, ny, nz, 3)`` (a vector, colored by its length). The
+viewer and ``tule screenshot`` interpolate it (trilinear) at the part's
+surface and color it on the scale from ``min`` to ``max``. The first field
+is shown; the legend switches between them. Nodes outside the part should
+carry the nearest inside value.
+
 **Info** (any kind): ``"info": {"material": "aluminium 6061", "mass": "20.8 g"}``
 are facts about the output, shown as rows under the view. Values are text,
 numbers or booleans.
@@ -61,12 +79,15 @@ numbers or booleans.
 from __future__ import annotations
 
 import atexit
+import io
 import json
 import os
 import time
 from pathlib import Path
 import re
 from typing import Any, Union
+
+import numpy as np
 
 from .assembly import Assembly
 from .errors import TuleError
@@ -394,14 +415,56 @@ def _face_entries(shape: Shape, data) -> dict:
     return faces
 
 
+FIELD_KEYS = {"label", "values", "origin", "step", "unit", "min", "max", "deform", "note"}
+
+
+def _fields(fields) -> list[tuple[dict, np.ndarray]]:
+    """Checks overlay fields; returns (output.json entry, float32 grid) pairs."""
+    out, files = [], set()
+    for f in fields or ():
+        if not isinstance(f, dict) or not {"label", "values", "origin", "step"} <= set(f) or set(f) - FIELD_KEYS:
+            raise TuleError("a field is a dict with label, values, origin and step (unit, min, max, deform, note optional)",
+                            op="overlay", hint='{"label": "temperature", "unit": "°C", "values": grid, "origin": (0, 0, 0), "step": 0.5}')
+        v = np.asarray(f["values"], dtype=np.float32)
+        if v.ndim not in (3, 4) or (v.ndim == 4 and v.shape[3] != 3) or min(v.shape[:3]) < 2:
+            raise TuleError(f"field {f['label']!r}: values must be a grid of nodes, (nx, ny, nz) or (nx, ny, nz, 3); got {v.shape}",
+                            op="overlay", hint="a number per grid node, or a vector (a displacement)")
+        if not np.isfinite(v).all():
+            raise TuleError(f"field {f['label']!r} has NaN or infinite values", op="overlay")
+        if not float(f["step"]) > 0 or len(f["origin"]) != 3:
+            raise TuleError(f"field {f['label']!r}: origin is a point, step a positive length", op="overlay")
+        mag = np.linalg.norm(v, axis=3) if v.ndim == 4 else v
+        base = _slug(str(f["label"])).lower()
+        fname, i = f"{base}.npy", 2
+        while fname in files:
+            fname, i = f"{base}-{i}.npy", i + 1
+        files.add(fname)
+        entry: dict[str, Any] = {"label": str(f["label"]), "file": fname,
+                                 "origin": [float(x) for x in f["origin"]], "step": float(f["step"])}
+        if f.get("unit"):
+            entry["unit"] = str(f["unit"])
+        entry["min"] = float(f["min"]) if f.get("min") is not None else float(mag.min())
+        entry["max"] = float(f["max"]) if f.get("max") is not None else float(mag.max())
+        if f.get("deform"):
+            if v.ndim != 4:
+                raise TuleError(f"field {f['label']!r}: only a vector field can deform the shape", op="overlay")
+            entry["deform"] = float(f["deform"])
+        if f.get("note"):
+            entry["note"] = str(f["note"])
+        out.append((entry, np.ascontiguousarray(v, dtype="<f4")))
+    return out
+
+
 def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None = None,
-            scale: dict | None = None, info: dict | None = None) -> str:
+            scale: dict | None = None, info: dict | None = None, fields=()) -> str:
     """Write a part with per-face data: ``outputs/<name>/<part>.step`` plus an overlay ``output.json``.
 
     ``faces`` maps a face id or a face selection (``part.faces["load"]``) to a number, a label, or a
     dict (``severity``, ``role``, ``label``, ``value``). ``arrows`` are dicts ``{"at": point, "dir": vector, "label": text}``.
     ``scale`` names the values' color scale: ``{"label", "unit", "min", "max"}``
-    (all optional). ``info``: facts shown under the view.
+    (all optional). ``info``: facts shown under the view. ``fields``: values on the surface from a
+    grid of nodes, dicts ``{"label", "values": (nx, ny, nz) or (nx, ny, nz, 3) array, "origin": point,
+    "step": spacing, "unit", "min", "max", "deform", "note"}`` (``tule.fea`` writes them).
     The format is described at the top of this module. Returns the folder.
     """
     if not isinstance(part, Shape):
@@ -413,9 +476,14 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
                             hint='{"label": "wall thickness", "unit": "mm", "min": 0, "max": 3}')
         scale = {k: (float(v) if k in ("min", "max") else str(v)) for k, v in scale.items() if v is not None}
     entries = _face_entries(part, faces)
+    grids = _fields(fields)
     folder = _folder(name)
     fname = f"{_slug(name.rsplit('/', 1)[-1])}.step"
     _write_geometry(os.path.join(folder, fname), part)
+    for entry, v in grids:
+        buf = io.BytesIO()
+        np.save(buf, v)
+        write_atomic(os.path.join(folder, entry["file"]), buf.getvalue())
     meta: dict[str, Any] = {"kind": "overlay", "file": fname}
     if title:
         meta["title"] = title
@@ -430,6 +498,8 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
         meta["arrows"] = out
     if scale:
         meta["scale"] = scale
+    if grids:
+        meta["fields"] = [e for e, _ in grids]
     if info:
         meta["info"] = info
     _write_json(folder, meta)

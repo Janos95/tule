@@ -11,7 +11,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 ```
 """
 
-from . import drawing, outputs, topopt
+from . import drawing, fea, outputs, topopt
 from .assembly import Assembly
 from .errors import TuleError
 from .gears import GearPair, gear_pair, internal_gear, spur_gear
@@ -29,7 +29,7 @@ __all__ = [
     "Assembly", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN", "Profile", "Selection", "Shape",
     "TuleError", "Vec", "Vertices", "X", "Y", "Z", "box", "circle", "cone", "cube", "cylinder",
     "difference", "drawing", "ellipse", "export_gltf", "export_step", "export_stl", "extrude",
-    "gear_pair", "import_step", "internal_gear", "intersection", "loft", "outputs", "polygon",
-    "polyhedron", "rect", "regular_polygon", "revolve", "slot", "sphere", "spur_gear", "tessellate",
-    "text", "topopt", "torus", "union", "wedge",
+    "fea", "gear_pair", "import_step", "internal_gear", "intersection", "loft", "outputs",
+    "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "slot", "sphere", "spur_gear",
+    "tessellate", "text", "topopt", "torus", "union", "wedge",
 ]
