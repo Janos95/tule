@@ -215,7 +215,8 @@ def test_outputs_that_read_each_other_fail(project):
     (project / "src" / "a.py").write_text(one.format("b"))
     (project / "src" / "b.py").write_text(one.format("a"))
     code, err = build(project, "a", "b")
-    assert code == 1 and "outputs/a and outputs/b read each other (a → b → a)" in err
+    assert code == 1 and ("outputs/a and outputs/b read each other (a → b → a)" in err
+                          or "outputs/b and outputs/a read each other (b → a → b)" in err)
 
     # a read b, now b reads a: the old record is no reason to fail
     (project / "src" / "a.py").write_text('from tule import outputs\nopen(outputs.folder() + "/x.txt", "w").write("x")\n')
