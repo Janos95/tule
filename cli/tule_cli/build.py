@@ -12,6 +12,11 @@ output is stale without running it.
 A script that reads another output (``outputs/bracket/…``) gets that one built first: if it
 is not up to date yet, the run stops, the other is built, and the script runs again.
 
+On a Tule machine every output built is also uploaded to the project's build cache
+(cache.py), and an output that is out of date here is downloaded from it instead of run when
+some machine built it from the same files: so outputs travel between machines (a study run on
+a GPU is on the others too) while outputs/ stays out of git.
+
 Agent work is never re-run: its result lives in ``work/`` and ``tule based-on`` records
 what it was based on (``work/.based-on.json``: each source's fingerprint). When a source
 changes, the result is reported as possibly out of date until someone redoes it or confirms
@@ -191,14 +196,15 @@ def why_stale(root: str, name: str, hashes: Hashes, env: dict) -> str | None:
 
 
 class Build:
-    def __init__(self, root: str):
+    def __init__(self, root: str, cache=None):
         self.root = root
+        self.cache = cache  # cache.Cache on a Tule machine
         self.force: set[str] = set()  # run even if up to date
         self.skip: set[str] = set()  # left as they are
         self.all = targets(root)
         self.env = env_stamp()
         self.hashes = Hashes(root)
-        self.done: dict[str, str] = {}  # name -> "built" | "up to date" | "failed" | "skipped"
+        self.done: dict[str, str] = {}  # name -> "built" | "fetched" | "up to date" | "failed" | "skipped"
         self.stack: list[str] = []  # being checked or run
         self.running: list[str] = []  # being run (and building what they need first)
 
@@ -244,6 +250,8 @@ class Build:
                 if rec and rec.pop("failed", None):  # back to what last built: the failure is moot
                     write_record(self.root, name, rec)
                 return
+            if self.cache and name not in self.force and self.fetch(name, why):
+                return
             self.running.append(name)
             try:
                 while needs := self.run(name, why):
@@ -268,7 +276,7 @@ class Build:
         shutil.rmtree(stage, ignore_errors=True)
         os.makedirs(stage)
         result = os.path.join(state, f"result-{name}-{os.getpid()}.json")
-        pending = [t for t in self.all if self.done.get(t) not in ("built", "up to date", "skipped")]
+        pending = [t for t in self.all if self.done.get(t) not in ("built", "fetched", "up to date", "skipped")]
         log(f"{name}: building ({why})")
         t0 = time.time()
         env = dict(os.environ, TULE_OUTPUTS=stage, TULE_BUILD_TARGET=name, TULE_BUILD_ROOT=self.root,
@@ -306,11 +314,17 @@ class Build:
             moved = {rel for rel, st in res.get("reads", {}).items() if stamp(os.path.join(self.root, rel)) != st}
             self.publish(name, os.path.join(stage, name))
             reads = {rel: "changed while it ran" if rel in moved else self.hashes.of(rel) for rel in sorted(res.get("reads", {}))}
-            write_record(self.root, name, {"target": name, "script": f"src/{name}.py", "env": self.env,
-                                           "reads": reads, "built": int(time.time() * 1000),
-                                           "seconds": round(time.time() - t0, 2)})
+            rec = {"target": name, "script": f"src/{name}.py", "env": self.env, "reads": reads,
+                   "built": int(time.time() * 1000), "seconds": round(time.time() - t0, 2)}
+            write_record(self.root, name, rec)
             self.done[name] = "built"
             log(f"{name}: built in {time.time() - t0:.1f} s")
+            if self.cache and not moved:
+                try:
+                    self.cache.upload(self.root, name, rec)
+                except Exception as e:  # the output is here either way
+                    log(f"build cache: {e}; not uploading this build's outputs")
+                    self.cache = None
             return []
         finally:
             shutil.rmtree(stage, ignore_errors=True)
@@ -318,6 +332,47 @@ class Build:
                 os.unlink(result)
             except OSError:
                 pass
+
+    def fetch(self, name: str, why: str) -> bool:
+        """Downloads outputs/<name> from the build cache when some machine built it from the
+        files here (what it read is built here first); False when none did."""
+        try:
+            entries = self.cache.entries(name)
+        except Exception as e:
+            log(f"build cache: {e}")
+            self.cache = None
+            return False
+        for e in entries:
+            rec = e.get("record") or {}
+            reads = rec.get("reads")
+            if rec.get("env") != self.env or not isinstance(reads, dict):
+                continue
+            if any(self.hashes.of(rel) != h for rel, h in reads.items() if not output_of(rel)):
+                continue  # a script, module or input differs: no need to look at outputs
+            for rel in reads:
+                o = output_of(rel)
+                if o and o != name and o in self.all and o not in self.stack:
+                    self.ensure(o)
+            if any(self.hashes.of(rel) != h for rel, h in reads.items()):
+                continue
+            stage = os.path.join(self.root, "outputs", STATE, f"stage-{name}-{os.getpid()}")
+            shutil.rmtree(stage, ignore_errors=True)
+            t0 = time.time()
+            try:
+                self.cache.download(e, os.path.join(stage, name))
+                self.publish(name, os.path.join(stage, name))
+            except Exception as err:
+                log(f"{name}: could not download it from the build cache ({err})")
+                return False
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
+            write_record(self.root, name, {**rec, "target": name, "script": f"src/{name}.py",
+                                           "fetched": {"from": e.get("machine"), "at": int(time.time() * 1000)}})
+            self.done[name] = "fetched"
+            took = f"; its run took {rec['seconds']:g} s" if rec.get("seconds") is not None else ""
+            log(f"{name}: downloaded in {time.time() - t0:.1f} s, as built on {machine_label(e.get('machine'))} ({why}{took})")
+            return True
+        return False
 
     def publish(self, name: str, new: str):
         """Swaps the staged folder in (the old one is out of the way for a moment only)."""
@@ -370,7 +425,9 @@ def build(root: str, names: list[str] | None = None, force: bool = False,
                 shutil.rmtree(os.path.join(state, n), ignore_errors=True)
             elif n.startswith("result-"):
                 os.unlink(os.path.join(state, n))
-        b = Build(root)
+        from .cache import Cache
+
+        b = Build(root, Cache.here())
         if not b.all:
             raise BuildError("nothing to build: src/ has no scripts (src/<name>.py makes outputs/<name>/)")
         b.skip = set(select(b.all, skip or []))
@@ -420,6 +477,40 @@ def status(root: str, hashes: Hashes | None = None) -> list[dict]:
             row["seconds"] = rec["seconds"]
         out.append(row)
     return out
+
+
+def machine_label(slot: str | None) -> str:
+    """A machine slot as people say it: "cloud", "joined", "gpu-rtx4090", a computer's name."""
+    return {"cloud": "Tule cloud", "joined": "another machine", None: "another machine", "": "another machine"}.get(slot, slot)
+
+
+def cached_on(root: str, name: str, cache, hashes: Hashes | None = None) -> str | None:
+    """The machine whose upload of outputs/<name> matches the files here, if any (for --check).
+    An output it read may be missing here too, as long as the cache has it with the same bytes."""
+    h = hashes or Hashes(root)
+    env = env_stamp()
+
+    def match(n: str, seen: tuple) -> dict | None:
+        for e in cache.entries(n):
+            rec = e.get("record") or {}
+            reads = rec.get("reads")
+            if rec.get("env") != env or not isinstance(reads, dict):
+                continue
+            if all(h.of(rel) == x or same_upstream(rel, x, seen + (n,)) for rel, x in reads.items()):
+                return e
+        return None
+
+    def same_upstream(rel: str, x: str, seen: tuple) -> bool:
+        o = output_of(rel)
+        if not o or o in seen:
+            return False
+        up = match(o, seen)
+        f = (up or {}).get("files", {}).get(rel.split("/", 2)[2] if rel.count("/") >= 2 else "")
+        # a file under 16 MiB is one chunk, whose sha256 starts like the build's hash
+        return bool(f) and len(f.get("chunks", [])) == 1 and f["chunks"][0][:32] == x
+
+    e = match(name, ())
+    return machine_label(e.get("machine")) if e else None
 
 
 # ---------------------------------------------------------------- what agent work was based on

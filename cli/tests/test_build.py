@@ -22,8 +22,9 @@ with open(outputs.folder() + "/bom.csv", "w") as f:
 """
 
 
-def build(root, *args):
+def build(root, *args, machine="/nonexistent/machine.json"):
     env = {k: v for k, v in os.environ.items() if k not in ("TULE_WORKSPACE", "TULE_OUTPUTS")}
+    env["TULE_MACHINE_FILE"] = str(machine)  # off a Tule machine: no build cache
     r = subprocess.run([sys.executable, "-m", "tule_cli", "build", *args], cwd=root, env=env,
                        capture_output=True, text=True, timeout=300)
     return r.returncode, r.stderr
@@ -283,3 +284,78 @@ def test_a_repo_with_src_is_not_a_project_without_tule_toml(project):
     (project / "tule.toml").unlink()
     assert find_root(str(project / "src")) is None
 
+
+@pytest.fixture
+def control(tmp_path_factory):
+    """A stand-in for the control plane's blobs and build cache; yields a machine.json."""
+    import hashlib
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    blobs, entries = {}, {}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def reply(self, code, body=b"{}"):
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path.endswith("/cache"):
+                es = sorted(entries.values(), key=lambda e: -e["at"])
+                return self.reply(200, json.dumps({"entries": es}).encode())
+            h = path.rsplit("/", 1)[1]
+            return self.reply(200, blobs[h]) if h in blobs else self.reply(404)
+
+        def do_POST(self):
+            b = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path.endswith("/blobs/missing"):
+                return self.reply(200, json.dumps({"missing": [h for h in b["hashes"] if h not in blobs]}).encode())
+            entries[(b["name"], b["key"])] = {**b, "machine": "cpu-1", "at": len(entries)}
+            return self.reply(200)
+
+        def do_PUT(self):
+            data = self.rfile.read(int(self.headers["Content-Length"]))
+            assert hashlib.sha256(data).hexdigest() == self.path.rsplit("/", 1)[1]
+            blobs[self.path.rsplit("/", 1)[1]] = data
+            return self.reply(200)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    m = tmp_path_factory.mktemp("etc") / "machine.json"
+    m.write_text(json.dumps({"url": f"http://127.0.0.1:{srv.server_port}", "project": "p_test", "token": "t"}))
+    yield m
+    srv.shutdown()
+
+
+def test_outputs_built_on_one_machine_are_downloaded_on_another(project, tmp_path_factory, control):
+    import shutil
+
+    code, err = build(project, machine=control)
+    assert code == 0 and "build cache" not in err
+    other = tmp_path_factory.mktemp("other") / "p"  # another machine's copy: the same saved files, no outputs
+    shutil.copytree(project, other, ignore=shutil.ignore_patterns("outputs"))
+    check = subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=other, capture_output=True, text=True,
+                           env={**os.environ, "TULE_MACHINE_FILE": str(control)}).stdout
+    assert "plate  out of date  never built (built on cpu-1: tule build downloads it)" in check
+    assert "bom    out of date  never built (built on cpu-1" in check
+    code, err = build(other, machine=control)
+    assert code == 0 and "2 fetched" in err and "building" not in err
+    assert (other / "outputs" / "bom" / "bom.csv").read_text() == (project / "outputs" / "bom" / "bom.csv").read_text()
+    assert "2 up to date" in build(other, machine=control)[1]
+    (other / "lib" / "params.py").write_text("WALL = 7\n")  # changed here: run, not downloaded
+    code, err = build(other, machine=control)
+    assert "plate: building" in err and "2 built" in err
+
+
+
+def test_builds_without_the_control_plane(project, tmp_path_factory):
+    m = tmp_path_factory.mktemp("etc") / "machine.json"
+    m.write_text(json.dumps({"url": "http://127.0.0.1:9", "project": "p_test", "token": "t"}))
+    code, err = build(project, machine=m)
+    assert code == 0 and "2 built" in err and err.count("build cache") == 1

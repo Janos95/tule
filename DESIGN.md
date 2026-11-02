@@ -483,6 +483,22 @@ rest:
   `--dependents` (also what reads them: the BOM after the plate), `--skip
   study` (leave a long run as it is).
 
+**Outputs travel through a build cache** (decided 2026-11-02). Outputs are
+not in git, so a study built on one machine (a GPU pod, one of the user's
+computers) used to stay on that machine's copy. Now every output a machine
+builds is uploaded with its record: the files as chunks in the project's
+blob store (shared with snapshots, so only new bytes move) and the record
+under `projects/<id>/cache/<script>/` (the newest 5 per script). When an
+output is out of date on another machine, `tule build` looks for an upload
+whose record matches the files there (same script, modules, inputs, outputs
+read, and tule and Python versions) and downloads it instead of running the
+script; `--check` says so ("built on gpu-rtx4090: tule build downloads
+it"); `--force` runs it anyway. Every output is uploaded, not only slow
+ones: a slow output records the bytes of the outputs it read, so those must
+be the same bytes on the other machine. Considered and not done: outputs in
+git (every rerun of a big study in history, and merges of files nobody
+edits), and showing a stopped machine's outputs (it would have to start).
+
 **The agent keeps outputs current; nothing rebuilds by itself** (decided
 2026-11-02). Rebuilding on every change was considered (after a pause in
 edits, only for quick scripts): it would keep the viewer always current,

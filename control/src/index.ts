@@ -25,7 +25,7 @@
 //   POST /api/device/code, /api/device/token  `tule login` (device code; no auth)
 //
 // Machines (join token), by project id: /api/projects/<p_id>/agent (WSS),
-//   /blobs/missing, /blobs/<sha256> (PUT/GET), /snapshots (POST, GET).
+//   /blobs/missing, /blobs/<sha256> (PUT/GET), /snapshots (POST, GET), /cache (POST, GET).
 //
 // MCP: /mcp, behind the OAuth provider (tokens from /authorize, or an API key).
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
@@ -126,6 +126,57 @@ async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[]
   if (!sid || !SNAP.test(sid)) return error("no snapshot yet", 404);
   const o = await env.WORKSPACES.get(snapshotKey(id, sid));
   return o ? new Response(o.body, { headers: { "Content-Type": "application/json" } }) : error(`no snapshot ${sid}`, 404);
+}
+
+// ------------------------------------------------------------ the build cache
+//
+// An output built on one machine, for the others (cli/tule_cli/cache.py): its build record
+// (what the script read, with hashes) and its files as chunks in the blob store. `tule build`
+// elsewhere downloads it instead of running the script when the files it read are the same.
+//   GET  /cache[?name=<script>]    {entries: [{name, key, record, files, machine, at}]}, newest first
+//   POST /cache                    {name, key, record, files}; the newest KEEP per script are kept
+
+const cacheKey = (id: string, name: string, key: string) => `projects/${id}/cache/${name}/${key}.json`;
+const SCRIPT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const KEEP = 5;
+const MAX_ENTRY = 4 << 20;
+
+async function cacheRoute(req: Request, env: Env, id: string, machine: string, url: URL): Promise<Response> {
+  if (req.method === "POST") {
+    if (Number(req.headers.get("Content-Length") ?? 0) > MAX_ENTRY) return error(`a cache entry is at most ${MAX_ENTRY} bytes`, 413);
+    const text = await req.text();
+    if (text.length > MAX_ENTRY) return error(`a cache entry is at most ${MAX_ENTRY} bytes`, 413);
+    let b: Record<string, unknown>;
+    try {
+      b = JSON.parse(text);
+    } catch {
+      return error("expected JSON", 400);
+    }
+    const { name, key, record, files } = b ?? {};
+    if (typeof name !== "string" || !SCRIPT.test(name) || typeof key !== "string" || !HASH.test(key))
+      return error("expected {name, key: sha256 hex, record, files}", 400);
+    if (!record || typeof record !== "object" || !files || typeof files !== "object") return error("expected {record, files}", 400);
+    const chunks = Object.values(files as Record<string, { chunks?: unknown }>).flatMap((f) => (Array.isArray(f?.chunks) ? f.chunks : [null]));
+    if (!chunks.every((h) => typeof h === "string" && HASH.test(h))) return error("each file is {chunks: [sha256 hex, ...], size}", 400);
+    const at = Date.now();
+    await env.WORKSPACES.put(cacheKey(id, name, key), JSON.stringify({ name, key, record, files, machine, at }));
+    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name}/` });
+    const old = l.objects.sort((x, y) => y.uploaded.getTime() - x.uploaded.getTime()).slice(KEEP);
+    if (old.length) await env.WORKSPACES.delete(old.map((o) => o.key));
+    return json({ stored: key });
+  }
+  if (req.method !== "GET") return error("method not allowed", 405);
+  const name = url.searchParams.get("name");
+  if (name !== null && !SCRIPT.test(name)) return error("no such script", 400);
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name ? name + "/" : ""}`, cursor, limit: 1000 });
+    keys.push(...l.objects.map((o) => o.key));
+    cursor = l.truncated ? l.cursor : undefined;
+  } while (cursor && keys.length < 2000);
+  const entries = (await Promise.all(keys.map(async (k) => (await env.WORKSPACES.get(k))?.json<{ at: number }>()))).filter((e) => !!e);
+  return json({ entries: entries.sort((a, b) => b.at - a.at) });
 }
 
 // ------------------------------------------------------------ git and Git LFS (saves)
@@ -260,7 +311,8 @@ async function machineRoute(req: Request, env: Env, url: URL, id: string, what: 
   if (!slot) return error("invalid join token", 401);
   if (what === "blobs") return blobs(req, env, id, rest, true);
   if (what === "snapshots") return snapshotsRoute(req, env, id, rest, slot, url);
-  return error("machines may only use agent, blobs, snapshots, git and lfs", 403);
+  if (what === "cache") return cacheRoute(req, env, id, slot, url);
+  return error("machines may only use agent, blobs, snapshots, cache, git and lfs", 403);
 }
 
 // ------------------------------------------------------------ the user's API
