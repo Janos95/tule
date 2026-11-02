@@ -620,6 +620,20 @@ def cmd_turn(a):
     save_state(run, st)
 
 
+def cmd_quota(a):
+    """How much of the ChatGPT account's Codex quota is used: the newest Codex session's last reading."""
+    files = sorted(Path.home().glob(".codex/sessions/*/*/*/*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    for f in files[:50]:
+        found = re.findall(r'"(primary|secondary)":(\{[^}]*\})', f.read_text(errors="replace"))
+        found = [(k, json.loads(v)) for k, v in found if "used_percent" in v]
+        if found:
+            for k, v in dict(found).items():
+                print(f"{k}: {v['used_percent']:g}% used of the {v['window_minutes'] // 60} h window, "
+                      f"resets {time.strftime('%a %d %b %H:%M', time.localtime(v['resets_at']))}")
+            return
+    print("no reading yet: no Codex session has reported its limits")
+
+
 def cmd_wait(a):
     run = Path(a.run).resolve()
     end = time.time() + a.max
@@ -722,7 +736,7 @@ def cmd_tunnel(a):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in ("serve", "stop", "start", "say", "_turn", "wait", "shell", "shot", "finish", "tunnel"):
+    if len(sys.argv) > 1 and sys.argv[1] in ("serve", "stop", "start", "say", "_turn", "wait", "quota", "shell", "shot", "finish", "tunnel"):
         ap = argparse.ArgumentParser()
         sub = ap.add_subparsers(dest="cmd")
         p = sub.add_parser("serve"); p.add_argument("--night"); p.add_argument("--no-image", action="store_true"); p.add_argument("--restart", action="store_true")
@@ -732,12 +746,13 @@ def main():
         p = sub.add_parser("say"); p.add_argument("run"); p.add_argument("message")
         p = sub.add_parser("_turn"); p.add_argument("run")
         p = sub.add_parser("wait"); p.add_argument("run"); p.add_argument("--max", type=int, default=540)
+        sub.add_parser("quota")
         p = sub.add_parser("shell"); p.add_argument("run"); p.add_argument("command"); p.add_argument("--timeout", type=int, default=600)
         p = sub.add_parser("shot"); p.add_argument("run"); p.add_argument("path", nargs="?")
         p = sub.add_parser("finish"); p.add_argument("run")
         p = sub.add_parser("tunnel"); p.add_argument("host")
         a = ap.parse_args()
-        {"serve": cmd_serve, "stop": cmd_stop, "start": cmd_start, "say": cmd_say, "_turn": cmd_turn, "wait": cmd_wait,
+        {"serve": cmd_serve, "stop": cmd_stop, "start": cmd_start, "say": cmd_say, "_turn": cmd_turn, "wait": cmd_wait, "quota": cmd_quota,
          "shell": cmd_shell, "shot": cmd_shot, "finish": cmd_finish, "tunnel": cmd_tunnel}[a.cmd](a)
         return
     auto()
