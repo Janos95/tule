@@ -6,7 +6,7 @@ How to work on a Tule machine so that the user can follow along and nothing is l
 
 1. **Edit** a script in `src/` (start from `src/part.py`; keep parameters at the top). It writes its output with `tule.outputs`, named like the script (`src/part.py` → `outputs.part("part", …)`; other files into `outputs.folder()`).
 2. **Build**: `tule build` runs the scripts whose inputs changed (`tule build part` for one); the viewer updates live. Fix `TuleError`s from their message and hint (`tule docs occt`). Nothing rebuilds by itself: keeping outputs current is your job.
-3. **Look**: `tule screenshot -o view.png --labels`, then read the PNG. Check other sides with `--view top|front|right|bottom`. Do not claim a feature is there until you have seen it.
+3. **Look**: `tule screenshot -o /tmp/view.png --labels`, then read the PNG. Check other sides with `--view top|front|right|bottom`. Do not claim a feature is there until you have seen it.
 4. **Check numbers**: `tule inspect outputs/<name>/<file>.step` (size, volume, faces, tags), or print measurements in the script (`part.size`, `part.volume`, `part.is_valid`).
 5. **Iterate** until it matches the request; then tell the user what to look at in the viewer.
 

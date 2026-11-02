@@ -34,7 +34,7 @@ outputs.overlay("bracket-bc", part, title="Boundary conditions from your sketch:
                 arrows=[{"at": (0, 6, 18), "dir": (0, 0, -1), "label": "500 N"}])
 ```
 
-Then `tule screenshot -o bc.png --output bracket-bc` to check it yourself, and tell the user what you understood ("500 N down on the boss top f11, bolted on the bottom face f13; see bracket-bc in the viewer").
+Then `tule screenshot -o /tmp/bc.png --output bracket-bc` to check it yourself, and tell the user what you understood ("500 N down on the boss top f11, bolted on the bottom face f13; see bracket-bc in the viewer").
 
 ## Make it last
 

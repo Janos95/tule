@@ -695,7 +695,7 @@ tule save [-m "what changed"]  # commit, merge the latest save, push it
 tule ssh [cmd]                 # shell or command on the machine (also: plain ssh via ProxyCommand)
 tule build [names] [--check]   # run the scripts in src/ whose inputs changed; --check: what needs it
 tule sync [--pull]             # copy /workspace to or from a local folder
-tule screenshot -o view.png [--output bracket] [--labels] [--view iso]
+tule screenshot -o /tmp/view.png [--output bracket] [--labels] [--view iso]
 tule open                      # open the viewer for this project
 tule snapshot | down | forget | ls | logs   # --machine picks one when several run
 ```

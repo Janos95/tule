@@ -43,9 +43,9 @@ outputs.overlay("bracket-loads", part, title=f"{LOAD_N} N down at the boss, 4 x 
 ```
 
 ```sh
-tule build                                               # bracket first: bracket-loads reads it
-tule screenshot -o loads.png --output bracket-loads      # read it: load and bolts where the user meant?
-tule inspect outputs/bracket/bracket.step                # tags: load f.., fixed f.., f.., f.., f..
+tule build                                                # bracket first: bracket-loads reads it
+tule screenshot -o /tmp/loads.png --output bracket-loads  # read it: load and bolts where the user meant?
+tule inspect outputs/bracket/bracket.step                 # tags: load f.., fixed f.., f.., f.., f..
 ```
 
 Tell the user to check `bracket-loads` in the viewer; once confirmed, `tule save`, then optimize (`tule docs topopt`).

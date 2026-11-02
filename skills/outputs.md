@@ -81,9 +81,9 @@ No HTML or network: chart data is a file beside it or inline `values`; no stylin
 ## Looking at outputs yourself
 
 ```sh
-tule screenshot -o view.png                              # the most recently changed output
-tule screenshot -o view.png --output bracket --labels    # f12 · load on every visible face
-tule screenshot -o top.png --output bracket --view top   # iso front back left right top bottom
+tule screenshot -o /tmp/view.png                             # the most recently changed output
+tule screenshot -o /tmp/view.png --output bracket --labels   # f12 · load on every visible face
+tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
 tule inspect outputs/bracket/bracket.step                # faces, ids, types, areas, tags
 ```
 
