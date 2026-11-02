@@ -401,3 +401,11 @@ def test_models_too_big_for_the_viewer_are_flagged(tmp_path):
     assert round(models_mb(str(tmp_path / "a"))) == 3
     (tmp_path / "a" / "output.json").write_text('{"kind": "sequence"}')
     assert models_mb(str(tmp_path / "a")) == 0  # one frame at a time
+
+
+def test_an_opencascade_error_says_where_in_the_project(project):
+    (project / "src" / "edge.py").write_text(
+        "from OCP.BRep import BRep_Builder\nfrom OCP.BRepAdaptor import BRepAdaptor_Curve\nfrom OCP.TopoDS import TopoDS_Edge\n"
+        "e = TopoDS_Edge()\nBRep_Builder().MakeEdge(e)\nBRepAdaptor_Curve(e)\n")
+    code, err = build(project, "edge")
+    assert code and "OpenCascade failed at src/edge.py:6 (Standard_Failure: BRepAdaptor_Curve::No geometry)" in err

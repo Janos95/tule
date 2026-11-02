@@ -301,7 +301,7 @@ class Sequence:
         self.fmt = fmt
         self.folder = _folder(name)
         self.frames: list[dict] = []
-        self._parts: list[tuple] = []  # (geometry, name, color, file): each part's file, written once
+        self._parts: list[tuple] = []  # (geometry, name, color, file, geometry hash): each part's file, written once
         self._bytes = 0  # written so far, for the warning when frames carry their geometry each time
         self._warned = False
         self.status = "running"
@@ -369,14 +369,18 @@ class Sequence:
 
         loc = part.wrapped.Location()
         base = part.wrapped.Located(TopLoc_Location())
-        fname = next((f for g, n, c, f in self._parts if g.IsPartner(base) and n == name and c == part.color), None)
+        fname = next((f for g, n, c, f, _ in self._parts if g.IsPartner(base) and n == name and c == part.color), None)
+        sig = None
+        if fname is None:  # the same solid made again (cylinder(12, 1) each frame): the same geometry, moved
+            sig = _brep_hash(base)
+            fname = next((f for _, n, c, f, h in self._parts if h == sig and n == name and c == part.color), None)
         if fname is None:
-            stem, used = _slug(name), {f for *_, f in self._parts}
+            stem, used = _slug(name), {p[3] for p in self._parts}
             fname, k = f"{stem}.step", 2
             while fname in used:
                 fname, k = f"{stem}_{k}.step", k + 1
             _write_geometry(os.path.join(self.folder, fname), Shape(base, name=name, color=part.color))
-            self._parts.append((base, name, part.color, fname))
+            self._parts.append((base, name, part.color, fname, sig))
             entry: dict[str, Any] = {"file": fname, "name": name, "new": True}
         else:
             entry = {"file": fname, "name": name}
@@ -405,6 +409,18 @@ class Sequence:
 
     def __exit__(self, exc_type, exc, tb):
         self.done("failed" if exc_type else "done")
+
+
+def _brep_hash(shape) -> str:
+    """The solid's geometry as text, hashed: equal for two shapes made the same way."""
+    import hashlib
+    import io
+
+    from OCP.BRepTools import BRepTools
+
+    f = io.BytesIO()
+    BRepTools.Write_s(shape, f)
+    return hashlib.sha1(f.getvalue()).hexdigest()
 
 
 def sequence(name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None) -> Sequence:

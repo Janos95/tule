@@ -568,6 +568,9 @@ body.resizing.v * {
   margin: 2px 0 8px 15px;
   padding-left: 6px;
   border-left: 2px solid var(--line);
+  max-height: 45vh; /* a long list scrolls by itself: the output's files stay in view below it */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   font-size: 12.5px;
   user-select: none;
   -webkit-user-select: none;

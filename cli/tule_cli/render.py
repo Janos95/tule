@@ -98,7 +98,7 @@ def camera(view, direction=None) -> np.ndarray:
 # ---------------------------------------------------------------- rasterizer
 
 
-def rasterize(X, Y, Z, tris, W, H, limit=3_000_000):
+def rasterize(X, Y, Z, tris, W, H, limit=1_000_000):
     """Z-buffer: per pixel the nearest triangle (-1: none) and barycentrics of its first two corners."""
     zbuf = np.full(W * H, -np.inf)
     tbuf = np.full(W * H, -1, dtype=np.int64)

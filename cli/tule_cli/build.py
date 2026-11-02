@@ -815,6 +815,12 @@ def _run_script(script: str):
             while tb and (tb.tb_frame.f_code.co_filename == __file__ or tb.tb_frame.f_code.co_filename.startswith("<frozen")):
                 tb = tb.tb_next
             traceback.print_exception(type(e), e, tb or e.__traceback__)
+            if type(e).__module__.startswith("OCP"):  # OpenCascade's own error: say where, in the project's code
+                full = lambda f: os.path.abspath(os.path.join(root, f.filename))
+                here = [f for f in traceback.extract_tb(e.__traceback__) if full(f).startswith(root + os.sep)]
+                at = f"{os.path.relpath(full(here[-1]), root)}:{here[-1].lineno}" if here else script
+                print(f"OpenCascade failed at {at} ({type(e).__name__}: {e}): an operation got an empty or "
+                      "degenerate shape there; check what goes into it (tule docs occt)", file=sys.stderr)
         code = 1
     report(code)
 

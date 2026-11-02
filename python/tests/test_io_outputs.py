@@ -230,3 +230,14 @@ def test_sequence_warns_when_frames_rebuild_their_parts(outdir, monkeypatch, cap
     err = capsys.readouterr().err
     assert err.count("sequence 'rebuilt'") == 1 and "make each part once and move it" in err
     assert "new" not in json.load(open(outdir / "rebuilt" / "output.json"))["frames"][0]["parts"][0]
+
+
+def test_sequence_writes_a_part_made_again_each_frame_once(outdir):
+    from tule import cylinder
+    with outputs.sequence("winding") as seq:
+        for a in range(5):
+            seq.add([cylinder(12, 1).named("horn").rotate(z=10 * a).at(a, 0, 0)])
+    files = [p.name for p in (outdir / "winding").iterdir() if p.suffix == ".step"]
+    assert files == ["horn.step"]
+    frames = json.load(open(outdir / "winding" / "output.json"))["frames"]
+    assert len({json.dumps(f["parts"][0]["transform"]) for f in frames[1:]}) == 4

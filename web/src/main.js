@@ -324,12 +324,17 @@ function prepare(list) {
 /** What an entry can show: its geometry in 3D, each other file, and a failed build's log. */
 function views(o) {
   const v = [];
-  if (o.files.length) v.push({ id: "3d", label: "3D", type: "geometry" });
+  // a document named after the output is what it is for (shopping-list/shopping-list.md): it opens first, the 3D after it
+  const named = o.files.length && o.docs.find((f) => f.type !== "file" && f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop());
+  if (o.files.length && !named) v.push({ id: "3d", label: "3D", type: "geometry" });
   // the file named after the output first (parts-list/parts-list.csv), then documents; beside a model,
   // files with no view of their own (an STL, a .3mf) are only in Download
   const rank = (f) => (f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop() ? 0 : ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(f.type) + 1 || 9);
   const docs = [...o.docs].sort((a, b) => rank(a) - rank(b));
-  for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) v.push({ id: f.file, label: f.file, type: f.type, f });
+  for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) {
+    v.push({ id: f.file, label: f.file, type: f.type, f });
+    if (f === named) v.push({ id: "3d", label: "3D", type: "geometry" });
+  }
   if (o.build?.state === "failed" && o.build.log) v.push({ id: "log", label: "build log", type: "log" });
   return v;
 }

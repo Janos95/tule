@@ -294,12 +294,24 @@ export function initOverlay({ viewer, legend, marks }) {
   }
 
   // the arrows' labels, at their tails, follow the view
+  // a label that would cover one placed before it moves up, above it: arrows close together keep readable labels
   function place() {
+    const taken = []; // [left, top, right, bottom] of the labels placed so far
     chips.forEach((c, i) => {
       const tail = viewer.arrowTail(i);
       const p = tail && viewer.project(tail);
-      c.hidden = !p?.front;
-      if (p) c.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -130%)`;
+      c.hidden = !p?.front || !arrows[i]?.label;
+      if (!p || c.hidden) return;
+      const w = c.offsetWidth, h = c.offsetHeight;
+      let top = p.y - 1.3 * h;
+      const left = p.x - w / 2;
+      for (let k = 0; k < chips.length; k++) {
+        const hit = taken.find(([l, t, r, b]) => left < r && left + w > l && top < b && top + h > t);
+        if (!hit) break;
+        top = hit[1] - h - 2;
+      }
+      taken.push([left, top, left + w, top + h]);
+      c.style.transform = `translate(${left}px, ${top}px)`;
     });
   }
   viewer.listeners.add(place);
