@@ -282,6 +282,50 @@ def load_field(path: str, spec: dict, jpath: str):
     return grid.astype(np.float64)
 
 
+def refine(part, longest: float, cap: int = 400_000):
+    """Splits the triangles of a render Part until no edge is longer than ``longest`` (or the mesh has
+    ``cap`` triangles), so a field sampled at the vertices shows as it is on a coarse mesh (a flat face
+    is two triangles). Split edges are shared: no cracks."""
+    import numpy as np
+
+    P, N, T, F = (part.positions.astype(np.float64), part.normals.astype(np.float64),
+                       part.indices.astype(np.int64).reshape(-1, 3), part.face_ids.astype(np.int64))
+    while len(T) < cap:
+        a, b = T, np.roll(T, -1, axis=1)  # edge k of a triangle: corner k to corner k+1
+        long_ = np.linalg.norm(P[a] - P[b], axis=2) > longest
+        if not long_.any():
+            break
+        lo, hi = np.minimum(a, b)[long_], np.maximum(a, b)[long_]
+        keys, inv = np.unique(lo * len(P) + hi, return_inverse=True)
+        i, j = keys // len(P), keys % len(P)
+        mid = np.full(T.shape, -1)
+        mid[long_] = len(P) + inv
+        nm = N[i] + N[j]
+        P = np.vstack([P, (P[i] + P[j]) / 2])
+        N = np.vstack([N, nm / np.maximum(np.linalg.norm(nm, axis=1, keepdims=True), 1e-12)])
+        out, faces = [], []
+        for t, m, f in zip(T, mid, F):
+            k = int((m >= 0).sum())
+            if k == 0:
+                tris = [t]
+            elif k == 3:
+                tris = [(t[0], m[0], m[2]), (m[0], t[1], m[1]), (m[2], m[1], t[2]), (m[0], m[1], m[2])]
+            else:
+                r = int(np.argmax(m >= 0)) if k == 1 else int(np.argmin(m >= 0))  # the split (k=1) or kept (k=2) edge
+                c = [t[(r + q) % 3] for q in range(3)]
+                e = [m[(r + q) % 3] for q in range(3)]
+                if k == 1:
+                    tris = [(c[0], e[0], c[2]), (e[0], c[1], c[2])]
+                else:  # edges 1 and 2 split, edge 0 (c0-c1) kept
+                    tris = [(c[0], c[1], e[1]), (c[0], e[1], e[2]), (e[2], e[1], c[2])]
+            out += tris
+            faces += [f] * len(tris)
+        T, F = np.array(out, dtype=np.int64), np.array(faces, dtype=np.int64)
+    part.positions, part.normals = P.astype(np.float32), N.astype(np.float32)
+    part.indices, part.face_ids = T.astype(np.uint32), F.astype(part.face_ids.dtype)
+    return part
+
+
 def sample_grid(grid, origin, step: float, points):
     """Trilinear interpolation of a node grid at points (clamped to the grid), as the viewer does."""
     import numpy as np
@@ -383,6 +427,7 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
                 grid = load_field(file_in(str(spec.get("file"))), spec, jpath)
                 deform = float(spec.get("deform") or 0) if grid.ndim == 4 else 0.0
                 for p in parts:
+                    refine(p, 1.5 * float(spec["step"]))
                     v = sample_grid(grid, spec["origin"], float(spec["step"]), p.positions)
                     mag = np.linalg.norm(v, axis=1) if v.ndim == 2 else v
                     flo, fhi = float(spec.get("min", mag.min())), float(spec.get("max", mag.max()))
