@@ -102,7 +102,7 @@ The machine stops after 30 minutes without SSH sessions or traffic; a job runnin
 
 ## Housekeeping
 
-- Install packages with `pip install`; add them to `tule.toml` (`[packages] pip = [...]`) so they are there after a restart.
+- Install packages with `pip install`, system ones with `apt-get update && apt-get install -y prusa-slicer`; list them in `tule.toml` (`[packages] pip = [...]`, `apt = [...]`) so they are there after a restart.
 - Keep big generated data under `/workspace` only if it must persist; scratch goes to `/tmp`.
 - Put notes for the next session (decisions, open questions) in `NOTES.md` and save it.
 

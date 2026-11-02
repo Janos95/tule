@@ -45,6 +45,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -720,22 +721,31 @@ def new_project(root: str):
 
 
 def install_packages(root: str):
-    """pip packages from tule.toml, in the background (logged to BOOT_LOG)."""
+    """apt and pip packages from tule.toml ([packages] apt = [...], pip = [...]), in the
+    background (logged to BOOT_LOG)."""
     try:
         import tomllib
 
         with open(os.path.join(root, "tule.toml"), "rb") as f:
-            pkgs = tomllib.load(f).get("packages", {}).get("pip", [])
-    except (OSError, ValueError, ImportError):
+            want = tomllib.load(f).get("packages", {})
+        apt = [str(p) for p in want.get("apt", [])]
+        pip = [str(p) for p in want.get("pip", [])]
+    except (OSError, ValueError, ImportError, AttributeError, TypeError):
         return
-    if not pkgs:
+    steps = []
+    if apt and shutil.which("apt-get"):
+        steps.append("apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "
+                     + " ".join(shlex.quote(p) for p in apt))
+    if pip:
+        steps.append(f"{shlex.quote(sys.executable)} -m pip install --quiet " + " ".join(shlex.quote(p) for p in pip))
+    if not steps:
         return
     try:
         out = open(BOOT_LOG, "a")
     except OSError:
         out = subprocess.DEVNULL
-    subprocess.Popen([sys.executable, "-m", "pip", "install", "--quiet", *pkgs], stdout=out, stderr=out)
-    log("installing from tule.toml:", " ".join(pkgs))
+    subprocess.Popen(["sh", "-c", "; ".join(steps)], stdout=out, stderr=out)
+    log("installing from tule.toml:", " ".join(apt + pip))
 
 
 def main():

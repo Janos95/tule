@@ -277,8 +277,8 @@ machine is rebuilt from the image every boot.
   Tule; a save is a commit pushed to it (see "Several machines per project,
   saves in git"). Snapshots catch everything git does not, so nothing is lost
   even if the agent never saves.
-- **`tule.toml`:** extra packages to install at boot (the heavy stack is in
-  the image).
+- **`tule.toml`:** extra packages to install at boot, pip and apt (a slicer;
+  the heavy stack is in the image).
 - **New projects** start from a template: `AGENTS.md`/`CLAUDE.md` with the
   agent instructions, `tule.toml`, `src/part.py`, empty `outputs/`.
 
