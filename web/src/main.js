@@ -418,8 +418,9 @@ let scrolledTo = null; // the selected entry the list last scrolled to (phones s
 function renderList() {
   // a link's output may not be in the list yet (the machine is starting): show the first meanwhile, keep wanting it
   const all = state.outputs;
-  // without a link to one: the output that changed last
-  const newest = all.filter((o) => o.root === "outputs").sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0))[0];
+  // without a link to one: the model that changed last (else the output): a check's report is rebuilt after the model
+  const recent = all.filter((o) => o.root === "outputs").sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0));
+  const newest = recent.find((o) => o.files.length) ?? recent[0];
   if (state.wanted == null && newest) state.wanted = newest.id; // once: the view doesn't jump while the agent works
   state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (newest?.id ?? all[0]?.id ?? null);
   const outs = all.filter((o) => o.root === "outputs");

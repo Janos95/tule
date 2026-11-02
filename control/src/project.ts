@@ -297,7 +297,7 @@ export class Project extends DurableObject<Env> {
    * the computer, pod or container stopped or crashed, e.g. out of memory. */
   lost(m: Machine): string | null {
     if (m.kind === "cloud" || !m.on || !m.lostAt || Date.now() - m.lostAt < 90_000 || this.agent(m.id)) return null;
-    return `lost contact at ${new Date(m.lostAt).toISOString().slice(11, 16)} UTC: the machine stopped or crashed (out of memory?); start it again (tule up --machine ${m.id})`;
+    return `lost contact at ${new Date(m.lostAt).toISOString().slice(11, 16)} UTC: the machine stopped or crashed (out of memory?); start it again (${m.kind === "joined" ? "where it ran" : `tule up --machine ${m.id}`})`;
   }
 
   machineStatus(m: Machine): Result {
@@ -352,6 +352,12 @@ export class Project extends DurableObject<Env> {
   /** Starts the project on a machine (or resizes the cloud one); other machines keep running. */
   async up(machine: string, origin: string): Promise<Result> {
     const owner = this.state.owner ? await this.accounts().user(this.state.owner) : null;
+    const joined = this.machines[machine === "external" ? "joined" : machine];
+    if (joined?.kind === "joined")
+      return {
+        error: `${joined.id} is a machine that joined this project itself (tule join): Tule cannot start it`,
+        hint: `start it again where it ran (its container or computer), or use a Tule machine: --machine cpu-1`,
+      };
     if (owner?.guest && machine !== "cpu-1") return { error: `guests can use cpu-1 machines only`, hint: "sign in for bigger machines and GPUs" };
     if (machine.startsWith("gpu-")) return this.upGpu(machine, origin);
     if (!own(MACHINES, machine) && this.state.owner) {

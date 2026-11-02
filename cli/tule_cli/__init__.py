@@ -513,6 +513,8 @@ def cmd_build(args):
     if root is None:
         return _over_ssh(args, ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else [])
                          + (["--dependents"] if args.dependents else []) + [x for n in args.skip for x in ("--skip", n)])
+    if not args.check and not os.environ.get("TULE_BUILD_CHILD"):
+        return _build_detached(root, sys.argv[sys.argv.index("build") + 1:] if "build" in sys.argv else [])
     try:
         if args.check:
             return _check(root, args.names)
@@ -524,6 +526,45 @@ def cmd_build(args):
     _maybe_stale(root)
     if counts["failed"]:
         sys.exit(1)
+
+
+def _build_detached(root: str, argv: list[str]):
+    """tule build in a session of its own, its log followed here: the build goes on when the SSH
+    command that started it ends (a tool timeout, a dropped connection); tule build again waits
+    for it. Ctrl-C stops it."""
+    import signal
+
+    from . import build
+
+    state = os.path.join(root, "outputs", build.STATE)
+    os.makedirs(state, exist_ok=True)
+    path = os.path.join(state, "build.log")
+    with open(path, "ab") as out:
+        if out.tell() > 8 << 20:
+            out.truncate(0)
+        start = out.tell()
+        child = subprocess.Popen([sys.executable, "-m", "tule_cli", "build", *argv], cwd=root, stdin=subprocess.DEVNULL,
+                                 stdout=out, stderr=out, start_new_session=True, env={**os.environ, "TULE_BUILD_CHILD": "1"})
+    signal.signal(signal.SIGINT, lambda *_: os.killpg(child.pid, signal.SIGTERM))
+    for sig in (signal.SIGHUP, signal.SIGPIPE):
+        signal.signal(sig, signal.SIG_IGN)
+    shown = True
+    with open(path, "rb") as log_:
+        log_.seek(start)
+        while True:
+            done = child.poll() is not None
+            chunk = log_.read()
+            if chunk and shown:
+                try:
+                    sys.stderr.buffer.write(chunk)
+                    sys.stderr.flush()
+                except (BrokenPipeError, OSError):
+                    shown = False  # nobody reads any more: the build goes on by itself
+            if done and not chunk:
+                break
+            if not chunk:
+                time.sleep(0.2)
+    sys.exit(child.returncode)
 
 
 def cmd_based_on(args):

@@ -5,11 +5,12 @@
 FROM python:3.13-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq curl wget fonts-dejavu-core poppler-utils \
- && for p in mesa-libgallium libllvm19 libz3-4 libgl1-mesa-dri libglx-mesa0; do dpkg -L $p 2>/dev/null | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
+ && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq curl wget fonts-dejavu-core poppler-utils tini \
+ && for p in mesa-libgallium libllvm19 libgl1-mesa-dri libglx-mesa0; do dpkg -L $p 2>/dev/null | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
 # (OCP only needs libGL.so.1 to load; the Mesa drivers, 200 MB, are for rendering. Their files go but the
-# packages stay installed, so apt keeps working: `apt-get install --reinstall` brings them back)
+# packages stay installed, so apt keeps working: `apt-get install --reinstall` brings them back; libz3 stays,
+# PrusaSlicer needs it)
 
 # OCP links against VTK libraries at import (vtk is its only heavy dependency)
 COPY runtime/prune_vtk.sh /tmp/prune_vtk.sh
@@ -36,4 +37,4 @@ RUN git config --system init.defaultBranch main \
 
 ENV TULE_WORKSPACE=/workspace PYTHONUNBUFFERED=1
 WORKDIR /workspace
-ENTRYPOINT ["python", "/opt/tule/tule_agent.py"]
+ENTRYPOINT ["tini", "--", "python", "/opt/tule/tule_agent.py"]

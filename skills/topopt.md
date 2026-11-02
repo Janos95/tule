@@ -13,4 +13,4 @@ Find the stiffest shape for given loads and supports within a design space. (Pla
 1. Model the design space and the parts that must stay (bolt bosses, mating faces).
 2. Tag the boundary conditions on faces: `fixed` (bolted, clamped), `load` (where forces act), with the load values in your script.
 3. Show them to the user as an overlay output with arrows and get a yes before running a study (`tule docs golden-paths`, "bracket from load cases").
-4. Run long studies in the background (`nohup ... &`, `tule docs loop`).
+4. Long studies: `tule build` goes on if the SSH command ends (`tule docs loop`).

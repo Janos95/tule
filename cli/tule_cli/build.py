@@ -360,7 +360,7 @@ class Build:
             if code != 0 or problems:
                 for p in problems[:5]:
                     log(f"{name}: {p}")
-                why = {15: " (SIGTERM: the SSH session that ran tule build ended? run long builds with nohup, see tule docs loop)",
+                why = {15: " (SIGTERM: stopped)",
                        9: f" (SIGKILL: out of memory{memory()}? lighter purchased parts or fewer faces, or a bigger machine: tule up --machine cpu-4)"}.get(-code, "")
                 error = f"killed by signal {-code}{why}" if code < 0 else f"exit status {code}" if code else problems[0]
                 self.fail(name, error, "\n".join(tail))
@@ -473,7 +473,7 @@ def build(root: str, names: list[str] | None = None, force: bool = False,
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        log("another tule build is running here; waiting for it")
+        log(f"another tule build is running here (its log: outputs/{STATE}/build.log); waiting for it")
         fcntl.flock(lock, fcntl.LOCK_EX)
     try:
         for n in os.listdir(state):  # left by a build that was killed (the viewer would show it building)

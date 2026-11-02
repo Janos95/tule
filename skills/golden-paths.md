@@ -76,8 +76,7 @@ with outputs.sequence("plate-study", "Plate thickness vs. 99.9 % stress") as seq
 ```
 
 ```sh
-nohup tule build plate-study > study.log 2>&1 &
-tail -f study.log                                        # the viewer plots stress and mass per frame
+tule build plate-study      # goes on if this command ends; run it again to follow it. The viewer plots stress and mass per frame
 ```
 
 4. When it is done: `tule save` on it, `tule down --machine gpu-rtx4090` so the GPU stops billing, and summarize the result with numbers. Its outputs are in the build cache: after a `tule save` on the other machine, `tule build study` there downloads them instead of running the study.

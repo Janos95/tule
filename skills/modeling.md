@@ -29,7 +29,7 @@ outputs.part("bracket", part)
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)`.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
-- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching). `asm.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`, `asm.gaps(below=0.5)` closer ones: run them on every frame of a motion study.
+- Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching). `asm.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`, `asm.gaps(below=0.5)` closer ones: run them on every frame of a motion study (gears: a step that is not a whole number of teeth, or every frame checks the same mesh phase).
 - Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference, then `pair.place(gear2, angle=)` meshes gear 2 at `pair.distance`.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 

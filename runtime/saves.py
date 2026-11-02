@@ -130,6 +130,7 @@ def save(root: str, message: str = "", who: str = "") -> dict:
     unmerged = git(root, "diff", "--name-only", "--diff-filter=U").stdout.split()
     if any(_markers(root, f) for f in unmerged):
         return _conflict(root)
+    _track_large(root)
     git(root, "add", "-A", check=True)
     committed = False
     if git(root, "diff", "--cached", "--quiet").returncode:
@@ -155,6 +156,23 @@ def save(root: str, message: str = "", who: str = "") -> dict:
         if "non-fast-forward" not in p.stderr and "moved on the remote" not in p.stderr and "fetch first" not in p.stderr:
             raise RuntimeError((p.stderr or p.stdout).strip())
     raise RuntimeError("main kept moving while saving; try again")
+
+
+LARGE = int(os.environ.get("TULE_MAX_BLOB", str(5 << 20)))  # the remote refuses plain blobs over this
+
+
+def _track_large(root: str):
+    """New or changed files over LARGE go to Git LFS (.gitattributes), as the remote wants them."""
+    out = git(root, "ls-files", "-z", "--others", "--modified", "--exclude-standard").stdout
+    for path in sorted(set(filter(None, out.split("\0")))):
+        try:
+            if os.path.getsize(os.path.join(root, path)) <= LARGE:
+                continue
+        except OSError:
+            continue
+        if git(root, "check-attr", "filter", "--", path).stdout.strip().endswith(": lfs"):
+            continue
+        git(root, "lfs", "track", "--filename", "--", path)
 
 
 def _markers(root: str, path: str) -> bool:

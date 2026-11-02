@@ -53,12 +53,7 @@ Autosaves keep everything (including outputs and unsaved work) every few seconds
 
 ## Long jobs
 
-The SSH session may end; jobs should not depend on it. Run long builds in the background, log to a file, and write progress as a sequence output:
-
-```sh
-nohup tule build study > study.log 2>&1 &
-tail -n 20 study.log          # check back later
-```
+`tule build` goes on when the SSH command that started it ends (a timeout, a dropped connection); `tule build study` again waits for it (log: `outputs/.build/build.log`). Write progress as a sequence output.
 
 The machine stops after 30 minutes without SSH sessions or traffic; a job running in the background does not keep it alive by itself, so keep a session open (or check in) during long runs. Everything in `/workspace` is autosaved when it stops; save before you leave work for another machine or session.
 

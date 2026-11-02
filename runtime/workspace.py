@@ -177,23 +177,36 @@ class Workspace:
         m = self.manifest()
         if not force and self.last is not None and _same(m, self.last):
             return None
-        where = {}
+        where = {}  # chunk -> every (file, index) that has it
         for rel, f in m["files"].items():
             for i, h in enumerate(f["h"]):
-                where.setdefault(h, (rel, i))
+                where.setdefault(h, []).append((rel, i))
         missing = self.api.missing(sorted(where)) if where else set()
 
+        moved = set()  # files that changed while this ran (a build writing): the next snapshot has them
+
         def upload(h):
-            rel, i = where[h]
-            with open(os.path.join(self.root, rel), "rb") as fh:
-                fh.seek(i * CHUNK)
-                data = fh.read(CHUNK)
-            if hashlib.sha256(data).hexdigest() != h:
-                raise RuntimeError(f"{rel} changed while saving")  # the next snapshot picks it up
-            self.api.put(h, data)
-            return len(data)
+            for rel, i in where[h]:
+                try:
+                    with open(os.path.join(self.root, rel), "rb") as fh:
+                        fh.seek(i * CHUNK)
+                        data = fh.read(CHUNK)
+                except FileNotFoundError:
+                    data = b""
+                if hashlib.sha256(data).hexdigest() == h:
+                    self.api.put(h, data)
+                    return len(data)
+            moved.update(rel for rel, _ in where[h])
+            return 0
 
         sent = sum(self.pool.map(upload, sorted(missing)))
+        for rel in moved:  # keep what the last snapshot had of it (or leave it out)
+            self.cache.pop(rel, None)
+            old = (self.last or {}).get("files", {}).get(rel)
+            if old:
+                m["files"][rel] = old
+            else:
+                m["files"].pop(rel, None)
         sid = self.api.snapshot(m, reason)
         self.last, self.last_id = m, sid
         self.log(f"snapshot {sid} ({reason}): {len(m['files'])} files, {len(missing)} new chunks, {sent >> 10} KiB, {time.time() - t0:.1f} s")
