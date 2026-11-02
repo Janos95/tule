@@ -445,10 +445,14 @@ def _maybe_stale(root: str):
     """Agent work whose sources changed, said once after a build or check."""
     from . import build
 
-    for r in build.based_on_status(root):
-        if r["changed"]:
-            print(f"tule: check {r['path']} again ({', '.join(r['changed'])} changed): "
-                  f"redo it, or if it still holds: tule based-on {r['path']}", file=sys.stderr)
+    stale = [r for r in build.based_on_status(root) if r["changed"]]
+    if len(stale) > 3:  # one line for many
+        print(f"tule: check {len(stale)} files in work/ again ({', '.join(r['path'] for r in stale)}): "
+              f"their sources changed; redo each, or if it still holds: tule based-on <file>", file=sys.stderr)
+        return
+    for r in stale:
+        print(f"tule: check {r['path']} again ({', '.join(r['changed'])} changed): "
+              f"redo it, or if it still holds: tule based-on {r['path']}", file=sys.stderr)
 
 
 def _check(root: str, names: list[str] | None = None):

@@ -304,9 +304,14 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     Kf = K[SS // 2::SS, SS // 2::SS][:H, :W]
     keys, counts = np.unique(Kf[Kf >= 0], return_counts=True)
     visible = {(int(k >> 32), int(k & 0xFFFFFFFF)): int(cnt) for k, cnt in zip(keys, counts)}
+    report["hidden_tagged"] = []
+    marked = set(overlay.faces) if overlay is not None else set()
     for k in names:
         if k not in visible:
             report["hidden"].append(names[k])
+            tags = (parts[k[0]].tags or {}).get(k[1])
+            if tags or k in marked:
+                report["hidden_tagged"].append(names[k] + (" " + ",".join(tags) if tags else ""))
 
     draw = ImageDraw.Draw(im)
     fs = max(11, round(W / 85))

@@ -303,7 +303,11 @@ function prepare(list) {
 function views(o) {
   const v = [];
   if (o.files.length) v.push({ id: "3d", label: "3D", type: "geometry" });
-  for (const f of o.docs) v.push({ id: f.file, label: f.file, type: f.type, f });
+  // documents first; files with no view of their own (.3mf, .zip) only in Download, unless that is all there is
+  const rank = (t) => ["document", "pdf", "table", "data", "chart", "image", "text"].indexOf(t) + 1 || 9;
+  const docs = [...o.docs].sort((a, b) => rank(a.type) - rank(b.type));
+  const seen = docs.filter((f) => f.type !== "file");
+  for (const f of seen.length || o.files.length ? seen : docs) v.push({ id: f.file, label: f.file, type: f.type, f });
   if (o.build?.state === "failed" && o.build.log) v.push({ id: "log", label: "build log", type: "log" });
   return v;
 }
@@ -411,7 +415,8 @@ function fill(list, entries) {
     const [text, tone] = fact(o);
     const vs = views(o);
     const v = selected ? viewOf(o) : null;
-    const tree = o.files.length && kindOf(o) === "assembly";
+    // parts: an assembly's, or a sequence's whose frames are STEP assemblies
+    const tree = o.files.length && (kindOf(o) === "assembly" || (kindOf(o) === "sequence" && /\.(step|stp)$/i.test(o.files[0].file)));
     const foldable = vs.length > 1 || tree;
     const open = foldable && selected && !folded.has(o.id);
     b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${iconOf(o)}</svg><span class="output-name"></span><small></small>${foldable ? '<svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>' : ""}`;
@@ -554,7 +559,7 @@ async function showPage(o, v) {
     clearStage();
   }
   if (key === pageKey) return;
-  offerDownload(v?.f ? [v.f] : []);
+  offerDownload(v?.f ? [v.f, ...extras(o).filter((f) => f !== v.f)] : extras(o));
   pageKey = key;
   const run = (pageRun = {});
   pageCleanup?.();
@@ -648,7 +653,7 @@ async function show() {
     state.meshes = all;
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
     // a part's or assembly's folder may hold more than the model (an STL to print, a 3MF): offer them all, the shown ones first
-    offerDownload(kind === "sequence" ? shownFiles : [...shownFiles, ...o.files.filter((f) => !shownFiles.includes(f) && f.file !== "output.json")]);
+    offerDownload(kind === "sequence" ? [...shownFiles, ...extras(o)] : [...shownFiles, ...o.files.filter((f) => !shownFiles.includes(f) && f.file !== "output.json"), ...extras(o)]);
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles${grid}`;
@@ -735,6 +740,9 @@ function save(bytes, name) {
 
 let downloads = [];
 /** The Download button offers the shown output's geometry files, or the file shown. */
+/** An output's files with no view of their own (.3mf, .zip): offered in Download from every view. */
+const extras = (o) => o.docs.filter((f) => f.type === "file");
+
 function offerDownload(list) {
   downloads = list;
   $("download").hidden = !list.length;

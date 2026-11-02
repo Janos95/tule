@@ -5,7 +5,7 @@
 FROM python:3.13-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq fonts-dejavu-core \
+ && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq curl wget fonts-dejavu-core \
  && for p in mesa-libgallium libllvm19 libz3-4 libgl1-mesa-dri libglx-mesa0; do dpkg -L $p 2>/dev/null | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
 # (OCP only needs libGL.so.1 to load; the Mesa drivers, 200 MB, are for rendering. Their files go but the

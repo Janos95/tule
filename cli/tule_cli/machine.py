@@ -343,8 +343,13 @@ def cmd_screenshot(args):
         lines.append(f"  labeled: {_ids(rep['labeled'])}")
         if rep["small"]:
             lines.append(f"  visible but too small to label: {_ids(rep['small'])}")
-    if rep["hidden"]:
-        lines.append(f"  not visible from {args.view}: {_ids(rep['hidden'])} (try another --view)")
+    hidden = rep["hidden"]
+    if len(hidden) > 12:  # a count, and the faces that matter by name
+        tagged = rep.get("hidden_tagged") or []
+        lines.append(f"  {len(hidden)} faces not visible from {args.view}" + (f", tagged: {_ids(tagged)}" if tagged else "")
+                     + " (try another --view)")
+    elif hidden:
+        lines.append(f"  not visible from {args.view}: {_ids(hidden)} (try another --view)")
     print("\n".join(lines), file=sys.stderr if args.o == "-" else sys.stdout)
 
 

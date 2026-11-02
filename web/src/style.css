@@ -1671,6 +1671,8 @@ table.data th, table.data td { padding: 6px 12px; text-align: left; border-botto
 table.data tbody tr:last-child td { border-bottom: 0; }
 table.data th { position: sticky; top: 0; background: var(--panel); font-weight: 500; }
 table.data .num { text-align: right; }
+table.data td.long { white-space: normal; min-width: 14em; max-width: 36em; }
+.page-body:has(> .table-wrap) { max-width: none; }
 table.data th button { all: unset; cursor: pointer; color: var(--muted); font-size: 12px; }
 table.data th button:hover { color: var(--text); }
 table.data th[data-sort="up"] button::after { content: " ↑"; }

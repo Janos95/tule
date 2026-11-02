@@ -50,6 +50,36 @@ def test_assembly_step_roundtrip(tmp_path):
     assert parts["demo/block"].center_of_mass.x == pytest.approx(b.center_of_mass.x)
 
 
+def test_step_moved_part_keeps_name_and_tags(tmp_path):
+    part = box(10).named("plate — ü", "#4a8")
+    part = part.tag("top", part.faces["top"]).rotate(x=90).at(5, 0, 0)  # a placement, not new geometry
+    path = str(tmp_path / "m.step")
+    part.export_step(path)
+    back = import_step(path)
+    assert back.name == "plate — ü" and back.tags == ["top"]
+    assert back.faces["top"].info()[0]["center"][1] == pytest.approx(-10)
+
+
+def test_step_copies_under_other_names_and_compound_parts(tmp_path):
+    b = box(10)
+    cord = cylinder(1, 5)
+    for i in range(1, 4):
+        cord = cord | cylinder(1, 5).at(6 * i, 0, 0)  # several solids in one part
+    asm = Assembly(b.named("left"), b.named("right").at(20, 0, 0), b.named("left").at(40, 0, 0),
+                   cord.named("cord"), name="row")
+    path = str(tmp_path / "row.step")
+    asm.export_step(path)
+    names = [n for n, _ in import_step(path).parts()]
+    assert names == ["row/left", "row/right", "row/left", "row/cord"]
+    assert open(path).read().count("MANIFOLD_SOLID_BREP") == 2 + 4
+
+
+def test_import_step_missing_file(tmp_path):
+    (tmp_path / "a.step").write_text("")
+    with pytest.raises(TuleError, match="no such file.*STEP files in .*: a.step"):
+        import_step(str(tmp_path / "b.step"))
+
+
 def test_tessellate_ids_and_normals():
     part = tagged_bracket()
     m = part.tessellate()
@@ -99,6 +129,12 @@ def test_outputs_part_assembly_sequence(outdir):
     assert [f["file"] for f in meta["frames"]] == ["frame_0000.stl", "frame_0001.stl"]
     assert meta["frames"][0]["values"] == {"volume": 1.0}
     assert not [f for f in os.listdir(outdir / "grow") if f.startswith(".")]  # no temp files left
+
+    seq = outputs.sequence("move")  # an assembly's frames keep parts and colors
+    seq.add([box(1).named("a", "#f00"), box(1).named("b").at(2, 0, 0)])
+    meta = json.load(open(outdir / "move" / "output.json"))
+    assert meta["frames"][0]["file"] == "frame_0000.step"
+    assert (outputs.folder("bom") / "x.csv").parent.name == "bom"
 
 
 def test_sequence_context_marks_failure(outdir):

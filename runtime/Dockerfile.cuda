@@ -9,7 +9,7 @@ FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq fonts-dejavu-core \
+ && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq curl wget fonts-dejavu-core \
  && dpkg-query -W -f '${Package}\n' | grep -E '^(mesa-libgallium|libgallium.*|libgl1-mesa-dri|libglx-mesa0|libllvm[0-9]+|libz3-4)$' \
     | while read -r p; do dpkg -L $p | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*

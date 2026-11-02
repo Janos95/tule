@@ -30,6 +30,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import time
 import tomllib
 import urllib.error
@@ -348,7 +349,7 @@ def simulated_user(sc: dict, run: Path, conversation: str, shot: str) -> dict:
 def screenshot(path: Path, key: str, next_: str):
     """The page as the guest sees it, once settled (shot.mjs; /__dev/as signs the browser in with
     the key, dev only). Whether it settled and its console errors go next to it (.json)."""
-    r = subprocess.run(["node", str(QA / "shot.mjs"), f"{URL}/__dev/as?key={key}&next={next_}", str(path)],
+    r = subprocess.run(["node", str(QA / "shot.mjs"), f"{URL}/__dev/as?key={key}&next={urllib.parse.quote(next_, safe='/')}", str(path)],
                        capture_output=True, text=True, timeout=120)
     path.with_suffix(".json").write_text(r.stdout.strip() or json.dumps({"error": r.stderr.strip()[-1000:]}))
 

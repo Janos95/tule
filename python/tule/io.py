@@ -28,6 +28,7 @@ from OCP.TDF import TDF_Label
 from OCP.TDocStd import TDocStd_Document
 from OCP.TopAbs import TopAbs_REVERSED
 from OCP.TopLoc import TopLoc_Location
+from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy, BRepBuilderAPI_Transform
 from OCP.XCAFApp import XCAFApp_Application
 from OCP.XCAFDoc import XCAFDoc_ColorGen, XCAFDoc_ColorSurf, XCAFDoc_DocumentTool
 
@@ -135,13 +136,20 @@ def _set_name(label, name: str):
 
 
 def _get_name(label) -> str | None:
+    gid = static(TDataStd_Name, "GetID")()
+    if label.IsNull() or not label.IsAttribute(gid):
+        return None  # (FindAttribute on a label without one crashes OCP)
     attr = TDataStd_Name()
-    if label.FindAttribute(static(TDataStd_Name, "GetID")(), attr):
-        return attr.Get().ToExtString()
+    if label.FindAttribute(gid, attr):
+        n = attr.Get().ToExtString()
+        try:  # STEP names are written as UTF-8 and read back byte by byte
+            return n.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            return n
     return None
 
 
-def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False):
+def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False, instances: list | None = None):
     """Add a part to an XDE document with its name, color and tags.
 
     With ``prototype``, the part's placement is stripped (returned separately)
@@ -149,9 +157,25 @@ def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False
     """
     src = shape.wrapped
     loc = src.Location()
-    proto = src.Located(TopLoc_Location()) if prototype else src
-    label = st.AddShape(proto, False)
-    _set_name(label, shape.name or default_name)
+    proto = src.Located(TopLoc_Location())
+    if prototype or loc.IsIdentity():
+        target_shape = proto if prototype else src
+    else:
+        # a moved part: bake the placement into the geometry, or the writer makes it an
+        # assembly instance and drops the part's name and tags
+        target_shape = BRepBuilderAPI_Transform(proto, loc.Transformation(), True).Shape()
+    name = shape.name or default_name
+    if instances is not None:
+        same = [(n, lab) for other, n, lab in instances if other.IsPartner(proto)]
+        for other_name, other_label in same:
+            if other_name == name:
+                return other_label, loc  # another instance of the same part
+        if same:  # the same solid under another name (e.g. a moved copy) is a part of its own
+            target_shape = BRepBuilderAPI_Copy(target_shape).Shape()
+    label = st.AddShape(target_shape, False)
+    if instances is not None:
+        instances.append((proto, name, label))
+    _set_name(label, name)
     rgb = parse_color(shape.color)
     if rgb:
         ct.SetColor(label, Quantity_Color(*rgb, Quantity_TOC_RGB), XCAFDoc_ColorGen)
@@ -168,10 +192,11 @@ def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False
                 names_of.append([name])
             else:
                 names_of[i].append(name)
-    proto_subs = {k: subshapes(proto, k) for k in ("face", "edge", "vertex")} if prototype else None
+    remap = target_shape is not src
+    proto_subs = {k: subshapes(target_shape, k) for k in ("face", "edge", "vertex")} if remap else None
     for x, names in zip(seen, names_of):
         target = x
-        if prototype:
+        if remap:
             kind = kind_of(x)
             i = shape._sub(kind).index(x)
             if i < 0:
@@ -191,8 +216,9 @@ def export_step(item: Union["Shape", "Assembly"], path: str) -> str:
     if isinstance(item, Assembly):
         root = st.NewShape()
         _set_name(root, item.name or os.path.splitext(os.path.basename(path))[0])
+        instances: list = []
         for i, (pname, part) in enumerate(item.parts()):
-            lab, loc = _add_part(st, ct, part, pname.rsplit("/", 1)[-1], prototype=True)
+            lab, loc = _add_part(st, ct, part, pname.rsplit("/", 1)[-1], prototype=True, instances=instances)
             st.AddComponent(root, lab, loc)
         st.UpdateAssemblies()
     else:
@@ -221,6 +247,11 @@ def import_step(path: str):
     _enable_subshape_names()
     r.SetNameMode(True)
     r.SetColorMode(True)
+    if not os.path.isfile(path):
+        d = os.path.dirname(path) or "."
+        there = sorted(f for f in os.listdir(d) if f.lower().endswith((".step", ".stp"))) if os.path.isdir(d) else []
+        raise TuleError(f"no such file: {path}", op="import_step",
+                        hint=f"STEP files in {d}/: {', '.join(there)}" if there else f"{d}/ does not exist" if not os.path.isdir(d) else f"no STEP files in {d}/")
     if r.ReadFile(path) != IFSelect_RetDone:
         raise TuleError("could not read the STEP file", op="import_step", hint=path)
     doc, st, ct = _new_doc()

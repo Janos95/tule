@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 from typing import Any, Union
 
@@ -101,7 +102,14 @@ def _folder(name: str) -> str:
     return d
 
 
-def folder(name: str | None = None) -> str:
+class Folder(str):
+    """A folder path: a str that also takes ``/`` like a Path (``outputs.folder() / "bom.csv"``)."""
+
+    def __truediv__(self, other) -> Path:
+        return Path(self) / other
+
+
+def folder(name: str | None = None) -> "Folder":
     """The folder to write an output's files into (a CSV table, a chart): ``outputs/<name>/``.
 
     Under ``tule build`` the name defaults to the script's own (``src/bom.py`` → ``bom``)
@@ -110,7 +118,7 @@ def folder(name: str | None = None) -> str:
     name = name or os.environ.get("TULE_BUILD_TARGET")
     if not name:
         raise TuleError("which output?", op="outputs.folder", hint="outputs.folder(\"bom\"); under tule build it defaults to the script's name")
-    return _folder(name)
+    return Folder(_folder(name))
 
 
 def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
@@ -227,7 +235,7 @@ class Sequence:
     ``"status": "running"``; ``done()`` marks it finished.
     """
 
-    def __init__(self, name: str, title: str | None = None, fmt: str = "stl"):
+    def __init__(self, name: str, title: str | None = None, fmt: str | None = None):
         self.name = name
         self.title = title
         self.fmt = fmt
@@ -246,7 +254,11 @@ class Sequence:
             P, I = _mesh_arrays(mesh)
             write_stl_mesh(os.path.join(self.folder, fname), P, I)
         elif shape is not None:
-            fname = f"frame_{i:04d}.{self.fmt}"
+            if isinstance(shape, (list, tuple)):
+                shape = Assembly(*shape, name=self.name)
+            # an assembly's frames keep their parts' names and colors (STEP); a lone shape is light (STL)
+            fmt = self.fmt or ("step" if isinstance(shape, Assembly) else "stl")
+            fname = f"frame_{i:04d}.{fmt}"
             _write_geometry(os.path.join(self.folder, fname), shape)
         else:
             raise TuleError("add a shape or a mesh", op="sequence")
@@ -276,7 +288,7 @@ class Sequence:
         self.done("failed" if exc_type else "done")
 
 
-def sequence(name: str, title: str | None = None, fmt: str = "stl") -> Sequence:
+def sequence(name: str, title: str | None = None, fmt: str | None = None) -> Sequence:
     return Sequence(name, title, fmt)
 
 

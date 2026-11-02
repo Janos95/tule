@@ -153,6 +153,8 @@ function fromRecords(list) {
 }
 
 const isNum = (v) => v !== "" && Number.isFinite(Number(v));
+// float noise from computed tables (3.999999999999999 → 4); the exact value is in the cell's tooltip
+const tidy = (v) => (/\.\d{10,}/.test(v) ? String(Number(Number(v).toPrecision(10))) : v);
 
 function table(into, { head, body }, c) {
   const numeric = head.map((_, i) => body.some((r) => (r[i] ?? "") !== "") && body.every((r) => (r[i] ?? "") === "" || isNum(r[i])));
@@ -195,12 +197,14 @@ function table(into, { head, body }, c) {
         const v = r[i] ?? "";
         const td = el("td");
         if (numeric[i]) td.className = "num";
+        else if (v.length > 40) td.className = "long"; // long text wraps instead of widening the table
         if (c.link(v)) {
           const a = el("button", "link", v);
           a.type = "button";
           a.addEventListener("click", () => c.open(v));
           td.append(a);
-        } else td.textContent = v;
+        } else td.textContent = numeric[i] ? tidy(v) : v;
+        if (td.textContent !== v) td.title = v;
         row.append(td);
       });
       tbody.append(row);
