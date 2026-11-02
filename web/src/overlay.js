@@ -23,9 +23,14 @@
 // A field is a value per node of a grid (a .npy file in the output, float32,
 // (nx, ny, nz) or a vector (nx, ny, nz, 3); node (i, j, k) at origin + step·(i, j, k)):
 // it colors the surface on the scale instead (trilinear, per pixel; a vector by its
-// length), with "deform" the shape moves that many times the vector. Buttons
-// in the strip switch fields; hover shows the value under the pointer.
-// Extra fields are ignored.
+// length), with "deform" the shape moves that many times the vector. Or a value per
+// vertex of its own surface mesh, drawn in place of the part (a finite-element mesh's
+// boundary: thin slots and blades as they are):
+//   {"label": ..., "file": "stress.npy" (n,) or (n, 3), "mesh": {"vertices": "s.vertices.npy"
+//    (n, 3) float32, "triangles": "s.triangles.npy" (m, 3) int32, "faces": "s.faces.npy" (m,) int32}}
+// "animate": true swings the shape through its vectors (a vibration mode). Buttons
+// in the strip switch fields, a slider scales the motion; hover shows the value
+// under the pointer. Extra fields are ignored.
 
 import { color } from "./colors.js";
 
@@ -54,7 +59,7 @@ const RAMP_RGB = RAMP.map((h) => h.match(/\w\w/g).map((x) => parseInt(x, 16) / 2
 
 const fmt = (v) => (typeof v === "number" ? +v.toPrecision(4) : String(v));
 
-/** A .npy file's float32 array: {shape, data}. */
+/** A .npy file's array (little-endian float32, int32 or uint32, C order): {shape, data}. */
 function parseNpy(buf) {
   const b = new Uint8Array(buf);
   if (b[0] !== 0x93 || String.fromCharCode(...b.subarray(1, 6)) !== "NUMPY") throw new Error("not a .npy file");
@@ -62,11 +67,16 @@ function parseNpy(buf) {
   const len = v2 ? new DataView(buf).getUint32(8, true) : new DataView(buf).getUint16(8, true);
   const start = (v2 ? 12 : 10) + len;
   const head = new TextDecoder().decode(b.subarray(v2 ? 12 : 10, start));
-  if (!/'descr':\s*'<f4'/.test(head) || /'fortran_order':\s*True/.test(head)) throw new Error("a field must be little-endian float32 in C order");
+  const type = { f4: Float32Array, i4: Int32Array, u4: Uint32Array }[head.match(/'descr':\s*'<([fiu]4)'/)?.[1]];
+  if (!type || /'fortran_order':\s*True/.test(head)) throw new Error("a field must be little-endian float32 (int32 for triangles) in C order");
   const shape = (head.match(/'shape':\s*\(([^)]*)\)/)?.[1] ?? "").split(",").filter((s) => s.trim()).map(Number);
   const n = shape.reduce((a, x) => a * x, 1);
-  return { shape, data: new Float32Array(buf.slice(start, start + 4 * n)) };
+  return { shape, data: new type(buf.slice(start, start + 4 * n)) };
 }
+
+// the slider's motion: these multiples of the field's "deform"
+const GAINS = [0, 0.1, 0.2, 0.5, 1, 2, 5, 10];
+const PERIOD = 1.6; // s, one swing of an animated mode
 
 /** Trilinear interpolation of a node grid at points (xyz, clamped to the grid), as `tule screenshot` does:
  * {values: per point (a vector's length), vectors: Float32Array (xyz per point) | null}. */
@@ -99,9 +109,9 @@ function sampleGrid({ shape, data }, origin, step, points) {
   return { values, vectors };
 }
 
-/** A grid's value per node (a vector's length). */
+/** A field's value per node or vertex (a vector's length). */
 function sampleNodes({ shape, data }) {
-  if (shape.length === 3) return data;
+  if (shape.length === 1 || shape.length === 3) return data; // scalars: per vertex (n,) or a grid (nx, ny, nz)
   const out = new Float32Array(data.length / 3);
   for (let i = 0; i < out.length; i++) out[i] = Math.hypot(data[3 * i], data[3 * i + 1], data[3 * i + 2]);
   return out;
@@ -123,6 +133,10 @@ export function initOverlay({ viewer, legend, marks }) {
   let token = 0; // the field load in flight; a newer one wins
   let fielded = false; // the viewer shows a field
   let current = [null, false]; // the last apply's meta and isOverlay, for redrawing the strip
+  let gain = 4; // GAINS index: 1 × the field's deform
+  let swing = true; // an animated field swings (the button pauses it)
+  let surfAt = null; // on a surface field: the value at a pick's {tri, bary}
+  let anim = 0; // the animation frame in flight
 
   function parse(meta) {
     const roles = new Map();
@@ -161,7 +175,10 @@ export function initOverlay({ viewer, legend, marks }) {
     byFace = new Map(rows.flatMap((r) => r.faces.map((f) => [f, r])));
     const was = fields.map((f) => f.label).join("|");
     fields = (Array.isArray(meta.fields) ? meta.fields : []).filter(
-      (f) => f && typeof f.file === "string" && Array.isArray(f.origin) && f.origin.length === 3 && f.origin.every(Number.isFinite) && f.step > 0,
+      (f) =>
+        f && typeof f.file === "string" &&
+        ((Array.isArray(f.origin) && f.origin.length === 3 && f.origin.every(Number.isFinite) && f.step > 0) ||
+          (f.mesh && typeof f.mesh.vertices === "string" && typeof f.mesh.triangles === "string")),
     );
     if (fields.map((f) => f.label).join("|") !== was) active = 0; // the same fields again (a rerun): keep the one shown
   }
@@ -173,42 +190,84 @@ export function initOverlay({ viewer, legend, marks }) {
     viewer.setFaces("overlay", [...valueFaces, ...shown.map((r) => ({ part: null, faces: r.faces, color: r.color, hatch: r.hatch }))]);
   }
 
+  const load = (file) => {
+    if (!grids.has(file)) grids.set(file, read(file).then(parseNpy));
+    return grids.get(file);
+  };
+
+  /** The shown motion: the field's deform × the slider, swinging if the field is animated. */
+  function deformation() {
+    cancelAnimationFrame(anim);
+    const f = fields[active];
+    const d = (fielded && Number.isFinite(f?.deform) ? f.deform : 0) * GAINS[gain];
+    if (!f?.animate || !swing || !d) return viewer.setDeform(d);
+    const t0 = performance.now();
+    const step = (t) => {
+      viewer.setDeform(d * Math.sin((2 * Math.PI * (t - t0)) / 1000 / PERIOD));
+      anim = requestAnimationFrame(step);
+    };
+    anim = requestAnimationFrame(step);
+  }
+
   /** Colors the parts by the active field (loaded once per apply), on the moved shape if it deforms. */
   async function showField() {
     const run = ++token;
     const f = fields[active];
-    at = null;
+    at = surfAt = null;
     fieldError = "";
+    cancelAnimationFrame(anim);
     if (!f || !read) {
       if (fielded) viewer.setField(null);
       fielded = false;
+      viewer.setDeform(0);
       return;
     }
     try {
-      if (!grids.has(f.file)) grids.set(f.file, read(f.file).then(parseNpy));
-      const grid = await grids.get(f.file);
-      if (run !== token) return;
-      const { shape } = grid;
-      if (!(shape.length === 3 || (shape.length === 4 && shape[3] === 3)) || Math.min(...shape.slice(0, 3)) < 2)
-        throw new Error(`a field is an (nx, ny, nz) or (nx, ny, nz, 3) grid, not (${shape.join(", ")})`);
-      const deform = shape.length === 4 && Number.isFinite(f.deform) ? f.deform : 0;
-      const moved = (pts, s) => Float32Array.from(pts, (x, i) => x + deform * s.vectors[i]);
       const lo = Number.isFinite(f.min) ? f.min : 0;
       const hi = Number.isFinite(f.max) ? f.max : 1;
-      const node = sampleNodes(grid); // the value at each node (a vector's length)
-      const values = Float32Array.from(node, (v) => (hi > lo ? (v - lo) / (hi - lo) : 0.5));
-      at = (p) => sampleGrid(grid, f.origin, f.step, p).values[0];
-      viewer.setField((mesh) => {
-        if (!deform) return {};
-        const edges = mesh.edges?.length ? moved(mesh.edges, sampleGrid(grid, f.origin, f.step, mesh.edges)) : null;
-        return { positions: moved(mesh.positions, sampleGrid(grid, f.origin, f.step, mesh.positions)), edges };
-      }, { values, shape: shape.slice(0, 3), origin: f.origin, step: f.step, ramp: RAMP_RGB });
+      const norm = (v) => (hi > lo ? (v - lo) / (hi - lo) : 0.5);
+      if (f.mesh) {
+        const [vs, ts, fs, val] = await Promise.all([load(f.mesh.vertices), load(f.mesh.triangles), f.mesh.faces ? load(f.mesh.faces) : null, load(f.file)]);
+        if (run !== token) return;
+        const n = vs.shape[0];
+        if (vs.shape.length !== 2 || vs.shape[1] !== 3 || ts.shape.length !== 2 || ts.shape[1] !== 3)
+          throw new Error(`a surface is vertices (n, 3) and triangles (m, 3), not (${vs.shape}) and (${ts.shape})`);
+        if (!(val.shape[0] === n && (val.shape.length === 1 || (val.shape.length === 2 && val.shape[1] === 3))))
+          throw new Error(`values (${val.shape.join(", ")}) are not one per vertex (${n})`);
+        if (fs && fs.shape[0] !== ts.shape[0]) throw new Error("faces must give one face id per triangle");
+        const raw = sampleNodes(val); // a vector's length
+        surfAt = ({ tri, bary }) => tri.reduce((a, v, k) => a + bary[k] * raw[v], 0);
+        viewer.setSurfaceField({
+          index: 0,
+          positions: vs.data instanceof Float32Array ? vs.data : Float32Array.from(vs.data),
+          indices: Uint32Array.from(ts.data),
+          faceIds: fs ? Uint32Array.from(fs.data) : null,
+          values: Float32Array.from(raw, norm),
+          vectors: val.shape.length === 2 ? val.data : null,
+          ramp: RAMP_RGB,
+        });
+      } else {
+        const grid = await load(f.file);
+        if (run !== token) return;
+        const { shape } = grid;
+        if (!(shape.length === 3 || (shape.length === 4 && shape[3] === 3)) || Math.min(...shape.slice(0, 3)) < 2)
+          throw new Error(`a field is an (nx, ny, nz) or (nx, ny, nz, 3) grid, not (${shape.join(", ")})`);
+        const vector = shape.length === 4 && Number.isFinite(f.deform) && f.deform > 0;
+        at = (p) => sampleGrid(grid, f.origin, f.step, p).values[0];
+        viewer.setField((mesh) => {
+          if (!vector) return {};
+          const edges = mesh.edges?.length ? sampleGrid(grid, f.origin, f.step, mesh.edges).vectors : null;
+          return { vectors: sampleGrid(grid, f.origin, f.step, mesh.positions).vectors, edges };
+        }, { values: Float32Array.from(sampleNodes(grid), norm), shape: shape.slice(0, 3), origin: f.origin, step: f.step, ramp: RAMP_RGB });
+      }
       fielded = true;
+      deformation();
     } catch (e) {
       if (run !== token) return;
-      grids.delete(f.file);
+      for (const x of [f.file, ...Object.values(f.mesh ?? {})]) grids.delete(x);
       if (fielded) viewer.setField(null);
       fielded = false;
+      viewer.setDeform(0);
       fieldError = `cannot show ${f.file}: ${e.message}`;
       render(...current);
     }
@@ -245,10 +304,11 @@ export function initOverlay({ viewer, legend, marks }) {
         const seg = el("div", "seg");
         seg.setAttribute("role", "group");
         seg.setAttribute("aria-label", "Field");
+        seg.style.cssText = "flex-wrap: wrap; row-gap: 4px; max-width: 100%"; // many modes wrap on a phone
         fields.forEach((x, i) => {
           const b = el("button", "", String(x.label ?? `field ${i + 1}`));
           b.type = "button";
-          b.style.cssText = "height: 24px; font-size: 12px; padding: 0 8px";
+          b.style.cssText = "height: 24px; font-size: 12px; padding: 0 8px; white-space: nowrap";
           b.setAttribute("aria-pressed", String(i === active));
           b.addEventListener("click", () => {
             if (i === active) return;
@@ -265,8 +325,9 @@ export function initOverlay({ viewer, legend, marks }) {
         Object.assign(el("span", "legend-ramp"), { style: `background: linear-gradient(90deg, ${RAMP.join(", ")})` }),
         el("small", "", `${fmt(s.max)}${unit}`),
       );
-      const note = f ? [fieldError, f.note, f.deform > 0 ? `shape exaggerated ${fmt(f.deform)} times` : ""].filter(Boolean).join("; ") : "";
+      const note = f ? [fieldError, f.note].filter(Boolean).join("; ") : "";
       if (note) bar.append(el("small", "", note));
+      if (f?.deform > 0) bar.append(motionControls(f));
       legend.append(bar);
     }
     if (isOverlay && (rows.length || arrows.length)) {
@@ -291,6 +352,41 @@ export function initOverlay({ viewer, legend, marks }) {
       legend.append(list);
     }
     legend.hidden = false;
+  }
+
+  /** The motion's slider (a multiple of the field's deform) and, for an animated field, pause/play. */
+  function motionControls(f) {
+    const box = el("span", "legend-motion");
+    box.style.cssText = "display: inline-flex; align-items: center; gap: 6px";
+    const label = el("small", "");
+    const say = () => {
+      const d = f.deform * GAINS[gain];
+      label.textContent = f.animate ? `swing ${fmt(d)} mm` : d ? `shape exaggerated ${fmt(d)} times` : "undeformed";
+    };
+    const slider = Object.assign(document.createElement("input"), { type: "range", min: 0, max: GAINS.length - 1, step: 1, value: gain });
+    slider.style.cssText = "width: 96px; height: 16px; margin: 0";
+    slider.setAttribute("aria-label", "Deformation scale");
+    slider.addEventListener("input", () => {
+      gain = +slider.value;
+      say();
+      deformation();
+    });
+    box.append(slider, label);
+    if (f.animate) {
+      const b = el("button", "", swing ? "Pause" : "Play");
+      b.type = "button";
+      b.style.cssText = "height: 22px; font-size: 12px; padding: 0 8px";
+      b.setAttribute("aria-pressed", String(!swing));
+      b.addEventListener("click", () => {
+        swing = !swing;
+        b.textContent = swing ? "Pause" : "Play";
+        b.setAttribute("aria-pressed", String(!swing));
+        deformation();
+      });
+      box.append(b);
+    }
+    say();
+    return box;
   }
 
   // the arrows' labels, at their tails, follow the view
@@ -325,6 +421,7 @@ export function initOverlay({ viewer, legend, marks }) {
       current = [meta, isOverlay];
       read = readFile;
       grids = new Map();
+      cancelAnimationFrame(anim);
       fielded = false; // the viewer's meshes are new (setMeshes comes first)
       viewer.setDim(isOverlay && !!meta && !fields.length);
       paint();
@@ -346,7 +443,7 @@ export function initOverlay({ viewer, legend, marks }) {
       if (hit.arrow !== undefined) return [`load arrow${arrows[hit.arrow]?.label ? ": " + arrows[hit.arrow].label : ""}`];
       const r = byFace.get(hit.face);
       const cond = r ? [`${r.kind}${r.label ? ": " + r.label : ""}`] : [];
-      const fv = at && hit.rest ? at(hit.rest) : undefined;
+      const fv = surfAt && hit.surf ? surfAt(hit.surf) : at && hit.rest ? at(hit.rest) : undefined;
       if (fv !== undefined) {
         const f = fields[active];
         return [`${f.label}: ${fmt(fv)}${f.unit ? " " + f.unit : ""}`, ...cond];

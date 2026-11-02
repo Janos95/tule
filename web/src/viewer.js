@@ -12,7 +12,9 @@
 // later layer wins): each part's triangles are sorted by face id once, so a
 // face is one range of the index and a style is a geometry group with its own
 // material; nothing is copied. setDim greys every face no layer colors.
-// setField colors by a field instead (a stress field, per pixel), optionally on a moved shape.
+// setField colors by a field instead (a stress field, per pixel), optionally on a moved shape;
+// setSurfaceField draws a field's own surface mesh in place of a part (values per vertex: a
+// finite-element mesh's boundary, so slots thinner than any grid stay open). setDeform scales either's motion.
 // Arrows (setArrows) are 3D glyphs whose tip touches the point they act on.
 // A part may carry a placement (mesh.matrix, 16 numbers, row-major).
 import * as THREE from "three";
@@ -89,6 +91,19 @@ export class Viewer {
         .replace("#include <common>", "#include <common>\nprecision highp sampler3D;\nuniform sampler3D fieldTex;\nuniform sampler2D fieldRamp;\nuniform vec3 fieldOrigin;\nuniform float fieldStep;\nuniform vec3 fieldSize;\nvarying vec3 vRest;")
         .replace("#include <color_fragment>", "vec3 fq = (vRest - fieldOrigin) / fieldStep;\nfloat fv = texture(fieldTex, (fq.zyx + 0.5) / fieldSize).r;\ndiffuseColor.rgb = texture2D(fieldRamp, vec2(clamp(fv, 0.0, 1.0) * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).rgb;");
     };
+    // a surface field: a value per vertex (0..1 on the ramp), interpolated per pixel
+    this.surfMaterial = new THREE.MeshStandardMaterial({ roughness: 0.62, side: THREE.DoubleSide, ...BEHIND });
+    this.surfMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.fieldRamp = this.fieldUniforms.fieldRamp;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nattribute float fvalue;\nvarying float vFv;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvFv = fvalue;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nuniform sampler2D fieldRamp;\nvarying float vFv;")
+        .replace("#include <color_fragment>", "diffuseColor.rgb = texture2D(fieldRamp, vec2(clamp(vFv, 0.0, 1.0) * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).rgb;");
+    };
+    this.surfMaterial.customProgramCacheKey = () => "tule-surface-field";
+    this.deformScale = 0; // the shown motion: rest + deformScale × vectors
     this.style = { hidden: null, lit: null };
     this.layers = new Map(); // layer -> [{part: index | null (all), faces: [ids], color, hatch}]
     this.dim = false;
@@ -193,6 +208,8 @@ export class Viewer {
     for (const part of this.group.children) {
       part.userData.geometry.dispose();
       part.userData.lines?.dispose();
+      part.userData.surface?.geometry.dispose();
+      part.userData.surface?.lines.dispose();
     }
     this.group.clear();
     meshes.forEach((m, index) => {
@@ -328,12 +345,32 @@ export class Viewer {
     this.paintFaces();
   }
 
+  /** The color ramp as a texture: [[r, g, b] sRGB 0..1, low to high]. */
+  setRamp(colors) {
+    const rgba = new Uint8Array(256 * 4);
+    for (let i = 0; i < 256; i++) {
+      const x = (i / 255) * (colors.length - 1);
+      const j = Math.min(colors.length - 2, Math.floor(x));
+      for (let k = 0; k < 3; k++) rgba[4 * i + k] = Math.round(255 * (colors[j][k] + (colors[j + 1][k] - colors[j][k]) * (x - j)));
+      rgba[4 * i + 3] = 255;
+    }
+    const u = this.fieldUniforms;
+    u.fieldRamp.value?.dispose();
+    const ramp = new THREE.DataTexture(rgba, 256, 1);
+    ramp.colorSpace = THREE.SRGBColorSpace;
+    ramp.minFilter = ramp.magFilter = THREE.LinearFilter;
+    ramp.needsUpdate = true;
+    u.fieldRamp.value = ramp;
+  }
+
   /** A field instead of a color per face (a stress field). volume: {values: Float32Array, one per grid
    * node (nx, ny, nz, z fastest) on the scale (0 low, 1 high), shape, origin, step, ramp: [[r, g, b] sRGB
-   * 0..1, low to high]}; fn(mesh, part index) returns {positions?: Float32Array (a deformed shape),
-   * edges?: Float32Array} or null (the part as it is). setField(null) restores the parts. Face layers still win. */
+   * 0..1, low to high]}; fn(mesh, part index) returns {vectors?: Float32Array (a motion per vertex),
+   * edges?: Float32Array (one per edge point)} or null (the part as it is), drawn moved by setDeform's scale.
+   * setField(null) restores the parts. Face layers still win. */
   setField(fn, volume) {
     const u = this.fieldUniforms;
+    this.setSurfaceField(null);
     if (volume) {
       const [nx, ny, nz] = volume.shape;
       u.fieldTex.value?.dispose();
@@ -344,35 +381,77 @@ export class Viewer {
       tex.unpackAlignment = 1;
       tex.needsUpdate = true;
       u.fieldTex.value = tex;
-      const rgba = new Uint8Array(256 * 4);
-      for (let i = 0; i < 256; i++) {
-        const x = (i / 255) * (volume.ramp.length - 1);
-        const j = Math.min(volume.ramp.length - 2, Math.floor(x));
-        for (let k = 0; k < 3; k++) rgba[4 * i + k] = Math.round(255 * (volume.ramp[j][k] + (volume.ramp[j + 1][k] - volume.ramp[j][k]) * (x - j)));
-        rgba[4 * i + 3] = 255;
-      }
-      u.fieldRamp.value?.dispose();
-      const ramp = new THREE.DataTexture(rgba, 256, 1);
-      ramp.colorSpace = THREE.SRGBColorSpace;
-      ramp.minFilter = ramp.magFilter = THREE.LinearFilter;
-      ramp.needsUpdate = true;
-      u.fieldRamp.value = ramp;
+      this.setRamp(volume.ramp);
       u.fieldOrigin.value.set(...volume.origin);
       u.fieldStep.value = volume.step;
       u.fieldSize.value.set(nz, ny, nx);
     }
     for (const part of this.group.children) {
-      const { index, mesh, geometry, lines } = part.userData;
+      const { index, mesh, geometry } = part.userData;
       const f = fn && volume ? fn(mesh, index) ?? {} : null;
       part.userData.field = !!f;
+      part.userData.motion = f?.vectors ? { vectors: f.vectors, edges: f.edges ?? null } : null;
       if (f) geometry.setAttribute("rest", new THREE.BufferAttribute(mesh.positions, 3));
       else geometry.deleteAttribute("rest");
-      geometry.setAttribute("position", new THREE.BufferAttribute(f?.positions ?? mesh.positions, 3));
-      if (lines && mesh.edges) lines.setAttribute("position", new THREE.BufferAttribute(f?.edges ?? mesh.edges, 3));
+    }
+    this.setDeform(this.deformScale);
+    this.paintFaces();
+  }
+
+  /** Draws a field's own surface in place of part `surf.index` (an overlay's part): {index, positions:
+   * Float32Array (rest), indices: Uint32Array, faceIds: Uint32Array (a B-rep face per triangle) | null,
+   * values: Float32Array (per vertex, 0..1 on the ramp), vectors: Float32Array | null (a motion per vertex),
+   * ramp}. Lines are drawn where the face id changes. null puts the parts back. */
+  setSurfaceField(surf) {
+    for (const part of this.group.children) {
+      const s = part.userData.surface;
+      if (!s) continue;
+      const [solid] = part.children;
+      solid.geometry = part.userData.geometry;
+      const lines = part.children.find((c) => c.userData.edges);
+      if (lines && part.userData.lines) lines.geometry = part.userData.lines;
+      else if (lines) part.remove(lines);
+      s.geometry.dispose();
+      s.lines?.dispose();
+      part.userData.surface = null;
+    }
+    const part = surf && this.group.children.find((p) => p.userData.index === surf.index);
+    if (part) {
+      this.setRamp(surf.ramp);
+      part.userData.surface = surfaceGeometry(surf);
+      part.userData.field = false;
+      part.userData.motion = null;
+      part.userData.geometry.deleteAttribute("rest");
+      const [solid] = part.children;
+      solid.geometry = part.userData.surface.geometry;
+      let lines = part.children.find((c) => c.userData.edges);
+      if (!lines) {
+        lines = new THREE.LineSegments(part.userData.surface.lines, this.edgeMaterial);
+        lines.userData.edges = true;
+        part.add(lines);
+      } else lines.geometry = part.userData.surface.lines;
+      this.setStyle(this.style);
+    }
+    this.setDeform(this.deformScale);
+    this.paintFaces();
+  }
+
+  /** Moves shapes with a motion (setField's vectors, a surface field's) to rest + scale × motion. */
+  setDeform(scale) {
+    this.deformScale = scale;
+    for (const part of this.group.children) {
+      const { mesh, geometry, lines, motion, surface } = part.userData;
+      if (surface) {
+        surface.move(scale);
+        continue;
+      }
+      const moved = (rest, vec) => (vec && scale ? Float32Array.from(rest, (x, i) => x + scale * vec[i]) : rest);
+      geometry.setAttribute("position", new THREE.BufferAttribute(moved(mesh.positions, motion?.vectors), 3));
+      if (lines && mesh.edges) lines.setAttribute("position", new THREE.BufferAttribute(moved(mesh.edges, motion?.edges), 3));
       geometry.computeBoundingBox();
       geometry.computeBoundingSphere();
     }
-    this.paintFaces();
+    this.dirty = true;
   }
 
   /** Greys every face that no layer colors (an overlay's "the rest"). */
@@ -383,13 +462,14 @@ export class Viewer {
 
   paintFaces() {
     for (const part of this.group.children) {
-      const { index, color, mesh, geometry } = part.userData;
+      const { index, color, mesh, surface } = part.userData;
+      const geometry = surface?.geometry ?? part.userData.geometry;
       const solid = part.children[0];
       const pick = new Map(); // face id -> material
       for (const layer of LAYERS)
         for (const s of this.layers.get(layer) ?? [])
           if (s.part == null || s.part === index) for (const f of s.faces) pick.set(+f, this.faceMaterial(s.color, s.hatch));
-      const base = part.userData.field ? this.fieldMaterial : this.dim ? this.material(palette(DIM)) : this.material(color);
+      const base = surface ? this.surfMaterial : part.userData.field ? this.fieldMaterial : this.dim ? this.material(palette(DIM)) : this.material(color);
       geometry.clearGroups();
       if (!pick.size) {
         solid.material = base;
@@ -397,7 +477,7 @@ export class Viewer {
       }
       const mats = [base];
       const slot = (m) => (mats.includes(m) ? mats.indexOf(m) : mats.push(m) - 1);
-      const ids = mesh.faceIds;
+      const ids = surface?.faceIds ?? mesh.faceIds;
       let start = 0;
       let cur = -1;
       for (let t = 0; t <= ids.length; t++) {
@@ -606,7 +686,7 @@ export class Viewer {
     if (!hit) return null;
     const arrow = hit.object.parent?.userData.arrow;
     if (arrow !== undefined) return { arrow };
-    const { index, mesh } = hit.object.parent.userData;
+    const { index, mesh, surface } = hit.object.parent.userData;
     // the triangle's corner nearest the point (a field's value there)
     const pos = hit.object.geometry.attributes.position;
     const local = hit.object.worldToLocal(hit.point.clone());
@@ -619,7 +699,10 @@ export class Viewer {
       const b = hit.barycoord;
       at = [0, 1, 2].map((d) => b.x * rest.getComponent(hit.face.a, d) + b.y * rest.getComponent(hit.face.b, d) + b.z * rest.getComponent(hit.face.c, d));
     }
-    return { index, mesh, face: mesh.faceIds[hit.faceIndex], vertex, rest: at, point: [hit.point.x, hit.point.y, hit.point.z] };
+    // on a surface field: the triangle's vertices (the field's own numbering) and the point's weights
+    const surf = surface && hit.barycoord ? { tri: [hit.face.a, hit.face.b, hit.face.c].map((v) => surface.vertexOf[v]), bary: [hit.barycoord.x, hit.barycoord.y, hit.barycoord.z] } : null;
+    const face = surface ? surface.faceIds?.[hit.faceIndex] ?? -1 : mesh.faceIds[hit.faceIndex];
+    return { index, mesh, face, vertex, rest: at, surf, point: [hit.point.x, hit.point.y, hit.point.z] };
   }
 
   /** The view as drawn, on a plain background: a canvas at the device's resolution. */
@@ -665,4 +748,83 @@ export function sortByFace(m) {
   m.faceIds = ids;
   m.sorted = true;
   return m;
+}
+
+// A surface field's mesh for drawing: vertices split per B-rep face (sharp edges, smooth faces),
+// triangles sorted by face (as sortByFace), lines where the face changes or the surface ends,
+// and move(scale) to draw it at rest + scale × the vectors.
+function surfaceGeometry({ positions, indices, faceIds, values, vectors }) {
+  const nt = indices.length / 3;
+  const ids = faceIds ?? new Uint32Array(nt);
+  const order = Array.from({ length: nt }, (_, i) => i).sort((a, b) => ids[a] - ids[b] || a - b);
+  const key = new Map(); // (vertex, face) -> new vertex
+  const vertexOf = [];
+  const index = new Uint32Array(3 * nt);
+  const sortedIds = new Uint32Array(nt);
+  order.forEach((t, i) => {
+    const f = ids[t];
+    sortedIds[i] = f;
+    for (let c = 0; c < 3; c++) {
+      const v = indices[3 * t + c];
+      const k = v * 4294967296 + f;
+      let n = key.get(k);
+      if (n === undefined) {
+        n = vertexOf.length;
+        key.set(k, n);
+        vertexOf.push(v);
+      }
+      index[3 * i + c] = n;
+    }
+  });
+  const g = new THREE.BufferGeometry();
+  const nv = vertexOf.length;
+  const rest = new Float32Array(3 * nv);
+  const vec = vectors ? new Float32Array(3 * nv) : null;
+  const val = new Float32Array(nv);
+  vertexOf.forEach((v, i) => {
+    for (let d = 0; d < 3; d++) {
+      rest[3 * i + d] = positions[3 * v + d];
+      if (vec) vec[3 * i + d] = vectors[3 * v + d];
+    }
+    val[i] = values[v];
+  });
+  g.setIndex(new THREE.BufferAttribute(index, 1));
+  g.setAttribute("position", new THREE.BufferAttribute(rest.slice(), 3));
+  g.setAttribute("fvalue", new THREE.BufferAttribute(val, 1));
+  // lines: triangle edges (in the field's own numbering) with one triangle, or two of different faces
+  const seen = new Map();
+  for (let t = 0; t < nt; t++)
+    for (let c = 0; c < 3; c++) {
+      const a = indices[3 * t + c], b = indices[3 * t + ((c + 1) % 3)];
+      const k = Math.min(a, b) * 4294967296 + Math.max(a, b);
+      const e = seen.get(k);
+      if (e === undefined) seen.set(k, ids[t]);
+      else seen.set(k, e === ids[t] ? -1 : -2); // -1: inside a face, -2: between faces
+    }
+  const segs = [];
+  for (const [k, e] of seen) if (e !== -1) segs.push(Math.floor(k / 4294967296), k % 4294967296);
+  const lineRest = new Float32Array(3 * segs.length);
+  const lineVec = vectors ? new Float32Array(3 * segs.length) : null;
+  segs.forEach((v, i) => {
+    for (let d = 0; d < 3; d++) {
+      lineRest[3 * i + d] = positions[3 * v + d];
+      if (lineVec) lineVec[3 * i + d] = vectors[3 * v + d];
+    }
+  });
+  const lines = new THREE.BufferGeometry();
+  lines.setAttribute("position", new THREE.BufferAttribute(lineRest.slice(), 3));
+  const move = (scale) => {
+    const p = g.attributes.position.array;
+    const lp = lines.attributes.position.array;
+    for (let i = 0; i < p.length; i++) p[i] = rest[i] + (vec ? scale * vec[i] : 0);
+    for (let i = 0; i < lp.length; i++) lp[i] = lineRest[i] + (lineVec ? scale * lineVec[i] : 0);
+    g.attributes.position.needsUpdate = true;
+    lines.attributes.position.needsUpdate = true;
+    g.computeVertexNormals();
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+    lines.computeBoundingSphere();
+  };
+  move(0);
+  return { geometry: g, lines, faceIds: faceIds ? sortedIds : null, vertexOf: Uint32Array.from(vertexOf), move };
 }

@@ -1,4 +1,5 @@
-"""Linear static finite-element analysis: stress, deflection and safety factor of a part under loads.
+"""Linear finite-element analysis of a part: stress, deflection and safety factor under loads
+(``static``), natural frequencies and mode shapes (``modes``), and buckling load factors (``buckling``).
 
 ```python
 from tule import *
@@ -10,11 +11,22 @@ r = fea.static(part, material="PETG",
                accel=(0, 0, -3 * fea.g))                     # self-weight under 3 g (mm/s²)
 print(r)                  # peak and 99.5th-percentile stress, safety factor, deflection, reactions, mass
 r.show("bracket-fea")     # an overlay: von Mises stress and displacement on the part, loads, supports
+
+md = fea.modes(stage, "aluminium", fixed="base", n=6)          # md.frequencies (Hz), md.shapes
+bk = fea.buckling(col, "steel", fixed="base", loads=[fea.force("top", (0, 0, -1e3))])  # bk.factor
 ```
 
 Units: mm, N, MPa, g/cm³ (density), g (mass), mm/s² (acceleration; ``fea.g`` is 9810).
 
-**Mesh.** A voxel grid fitted to the part's bounding box: 8-node hexahedra,
+**Two meshes.** ``mesh="auto"`` measures the thinnest wall and narrowest gap
+(``thinnest``: rays along each face's normals) and uses voxels unless a wall
+is under 3 voxels or a gap under 2 at the DOF budget; then (and for
+``mesh="tet"``, ``size=``, ``modes`` and ``buckling``) quadratic tetrahedra
+from gmsh (``tule.tetfe``: 10-node elements, local sizes of half a thin
+face's thickness, conjugate gradients with a P2→P1 two-level preconditioner,
+fields on the mesh's own surface). Both return the same result API.
+
+**Voxel mesh.** A voxel grid fitted to the part's bounding box: 8-node hexahedra,
 all the same cube. A voxel the surface cuts is integrated over its inside
 only (the finite-cell method): rays along z through each column give exact
 lengths inside, a few columns per voxel in x and y (quadrature exact for
@@ -609,25 +621,8 @@ class Result:
         percentile; displacement on the shape deformed ``deform`` times, by default to about 6 % of
         its size), the supports and loads, and the numbers. Returns the folder."""
         from . import outputs
-        from .selection import face_area, face_center
 
-        faces: dict[int, dict] = {}
-        for sel, dirs in self.supports:
-            for i in sel.ids:
-                faces[i] = {"role": "fixed", "label": "fixed" if dirs == "xyz" else f"fixed in {dirs}"}
-        arrows = []
-        for load, sel in self.loads:
-            label = load.label()
-            for i in sel.ids:
-                both = faces.get(i, {}).get("role") == "load"  # a second load on the same faces
-                faces[i] = {"role": "load", "label": f"{faces[i]['label']}; {label}" if both else label}
-            w = [face_area(x) for x in sel.items]
-            c = sum((np.array(face_center(x)) * a for x, a in zip(sel.items, w)), np.zeros(3)) / max(sum(w), 1e-30)
-            c = np.round(c, 6) + 0.0  # 0, not -8.9e-16
-            if load.kind == "force":
-                arrows.append({"at": c.tolist(), "dir": list(load.value.normalized()), "label": label})
-            elif load.kind == "moment":
-                arrows.append({"at": c.tolist(), "dir": list(load.value.normalized()), "label": f"moment {label}"})
+        faces, arrows = _conditions(self.supports, self.loads)
         size = np.array(self.part.size)
         if deform is None:
             deform = _nice(0.06 * float(size.max()) / self.max_displacement) if self.max_displacement > 0 else 0.0
@@ -643,21 +638,7 @@ class Result:
             {"label": "displacement", "unit": "mm", "values": disp, "origin": self.origin,
              "step": dstep, "min": 0.0, "max": float(self.max_displacement), "deform": float(deform)},
         ]
-        info = {
-            "material": str(self.material.name),
-            "mass": f"{self.mass:.3g} g",
-            # the percentile first: it is the number to judge by (a peak at a sharp corner grows with refinement)
-            "stress, 99.5th pct": f"{self.stress_p995:.3g} MPa",
-            "safety factor": (f"{self.material.yield_strength / self.stress_p995:.3g} on the 99.5th pct"
-                              if self.stress_p995 > 0 else "∞") + f" (yield {self.material.yield_strength:g} MPa)",
-            "peak stress": f"{self.max_stress:.3g} MPa at {_pt(self.max_stress_at)}: safety factor {self.safety_factor:.3g}; "
-                           "at a sharp corner, add a fillet there or refine before trusting it",
-            "max displacement": f"{self.max_displacement:.3g} mm at {_pt(self.max_displacement_at)}",
-            "loads, total": f"{_vec(self.applied)} N" + (f" with self-weight at {self.accel.length / g:.3g} g"
-                                                         if self.accel is not None and self.accel.length else ""),
-            "reactions": f"{_vec(self.reaction)} N (balance {100 * self.imbalance:.2g} %)",
-            "mesh": f"{self.elements:,} voxels of {self.voxel:.3g} mm, {self.dofs:,} DOFs",
-        }
+        info = _static_info(self, f"{self.elements:,} voxels of {self.voxel:.3g} mm, {self.dofs:,} DOFs")
         return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
                                title=title or f"Static analysis: {self.part.name or name}, {self.material.name}")
 
@@ -679,6 +660,49 @@ class Result:
         return "\n".join(lines)
 
     __repr__ = __str__
+
+
+def _conditions(supports, loads) -> tuple[dict, list]:
+    """The overlay's faces (fixed, loaded) and arrows (forces, moments) for supports and loads."""
+    from .selection import face_area, face_center
+
+    faces: dict[int, dict] = {}
+    for sel, dirs in supports:
+        for i in sel.ids:
+            faces[i] = {"role": "fixed", "label": "fixed" if dirs == "xyz" else f"fixed in {dirs}"}
+    arrows = []
+    for load, sel in loads:
+        label = load.label()
+        for i in sel.ids:
+            both = faces.get(i, {}).get("role") == "load"  # a second load on the same faces
+            faces[i] = {"role": "load", "label": f"{faces[i]['label']}; {label}" if both else label}
+        w = [face_area(x) for x in sel.items]
+        c = sum((np.array(face_center(x)) * a for x, a in zip(sel.items, w)), np.zeros(3)) / max(sum(w), 1e-30)
+        c = np.round(c, 6) + 0.0  # 0, not -8.9e-16
+        if load.kind == "force":
+            arrows.append({"at": c.tolist(), "dir": list(load.value.normalized()), "label": label})
+        elif load.kind == "moment":
+            arrows.append({"at": c.tolist(), "dir": list(load.value.normalized()), "label": f"moment {label}"})
+    return faces, arrows
+
+
+def _static_info(r, mesh: str) -> dict:
+    """The facts under a static analysis in the viewer."""
+    return {
+        "material": str(r.material.name),
+        "mass": f"{r.mass:.3g} g",
+        # the percentile first: it is the number to judge by (a peak at a sharp corner grows with refinement)
+        "stress, 99.5th pct": f"{r.stress_p995:.3g} MPa",
+        "safety factor": (f"{r.material.yield_strength / r.stress_p995:.3g} on the 99.5th pct"
+                          if r.stress_p995 > 0 else "∞") + f" (yield {r.material.yield_strength:g} MPa)",
+        "peak stress": f"{r.max_stress:.3g} MPa at {_pt(r.max_stress_at)}: safety factor {r.safety_factor:.3g}; "
+                       "at a sharp corner, add a fillet there or refine before trusting it",
+        "max displacement": f"{r.max_displacement:.3g} mm at {_pt(r.max_displacement_at)}",
+        "loads, total": f"{_vec(r.applied)} N" + (f" with self-weight at {r.accel.length / g:.3g} g"
+                                                  if r.accel is not None and r.accel.length else ""),
+        "reactions": f"{_vec(r.reaction)} N (balance {100 * r.imbalance:.2g} %)",
+        "mesh": mesh,
+    }
 
 
 def _pt(p) -> str:
@@ -936,6 +960,66 @@ class _CutLevel(_Level):
         return _Level(xp, self.free, Ke=Ke.reshape(self.shape + (24, 24)))
 
 
+def _inputs(part, material, fixed, loads, accel, op: str, need_fixed: bool = True):
+    """Checks an analysis' inputs: (part, Material, [(Faces, dirs)], [(Load, Faces)], accel Vec or None)."""
+    if not isinstance(part, Shape):
+        raise TuleError(f"{op} needs a Shape, got {type(part).__name__}", op="fea")
+    mat = _material(material)
+    sups = [] if fixed is None and not need_fixed else fixed if isinstance(fixed, (list, tuple)) else [fixed]
+    supports = []
+    for s in sups:
+        s = s if isinstance(s, Support) else Support(s)
+        supports.append((_faces(part, s.faces, "fixed"), s.dirs))
+    if not supports and need_fixed:
+        raise TuleError("nothing holds the part", op="fea", hint='fixed="mount" (a tag) or fixed=part.faces["mount"]')
+    if isinstance(loads, Load):
+        loads = [loads]
+    resolved = []
+    for ld in loads or ():
+        if not isinstance(ld, Load):
+            raise TuleError(f"loads are fea.force, fea.pressure or fea.moment, got {type(ld).__name__}", op="fea",
+                            hint='loads=[fea.force("load", (0, 0, -30))]')
+        resolved.append((ld, _faces(part, ld.faces, f"the {ld.kind}")))
+    a = vec(accel) if accel is not None else None
+    if a is not None and a.length > 0 and mat.density == 0:
+        raise TuleError("accel needs a density", op="fea", hint="give the material a density (g/cm³)")
+    return part, mat, supports, resolved, a
+
+
+def thinnest(part: Shape) -> "tetfe.Thickness":
+    """The part's thinnest wall and narrowest gap (mm, and where), and per face (``.wall``,
+    ``.gap``, by face id): rays along each face's normals at a few points, the median per face."""
+    from . import tetfe
+
+    return tetfe.thickness(part)
+
+
+def _choose_mesh(part, mesh: str, voxel, size, dofs: int, say) -> str:
+    from . import tetfe
+
+    if mesh not in ("auto", "voxel", "tet"):
+        raise TuleError(f"mesh={mesh!r}", op="fea", hint='"auto", "voxel" or "tet"')
+    if mesh != "auto":
+        if mesh == "voxel" and size:
+            raise TuleError("size= is for tetrahedra", op="fea", hint="voxel= sets the voxel edge")
+        return mesh
+    if voxel:
+        return "voxel"
+    if size:
+        return "tet"
+    if not tetfe.find_gmsh():
+        return "voxel"
+    th = tetfe.thickness(part)
+    h = (part.volume / (dofs / 4.5)) ** (1 / 3)  # about the voxel the budget gives
+    if th.min_wall < 3 * h or th.min_gap < 2 * h:
+        what = (f"a {th.min_wall:.3g} mm wall" if th.min_wall < 3 * h else "") + \
+               (" and " if th.min_wall < 3 * h and th.min_gap < 2 * h else "") + \
+               (f"a {th.min_gap:.3g} mm gap" if th.min_gap < 2 * h else "")
+        say(f"fea: {what} against voxels of about {h:.2g} mm: quadratic tetrahedra (mesh=\"voxel\" keeps voxels)")
+        return "tet"
+    return "voxel"
+
+
 def static(
     part: Shape,
     material: str | Material = "aluminium 6061-T6",
@@ -945,42 +1029,33 @@ def static(
     accel=None,
     voxel: float | None = None,
     dofs: int = 300_000,
+    mesh: str = "auto",
+    size: float | None = None,
     device: str = "auto",
     tol: float = 1e-6,
     verbose: bool = True,
-) -> Result:
-    """Linear static analysis of ``part``: returns a ``Result`` (print it; ``.show(name)`` for the viewer).
+):
+    """Linear static analysis of ``part``: returns a result (print it; ``.show(name)`` for the viewer).
 
     ``fixed``: faces held in place (a tag, a face selection, ``fea.fix(faces, "z")``, or a list).
     ``loads``: ``fea.force``, ``fea.pressure``, ``fea.moment``. ``accel``: an acceleration
-    (mm/s²) acting on the part's own mass, e.g. ``(0, 0, -3 * fea.g)``. ``voxel`` (mm) overrides the
-    grid from the ``dofs`` budget. ``device``: ``"auto"`` (CuPy on a GPU), ``"cpu"``, ``"gpu"``.
+    (mm/s²) acting on the part's own mass, e.g. ``(0, 0, -3 * fea.g)``.
+
+    ``mesh``: ``"voxel"`` (a grid of cut voxels, ``Result``), ``"tet"`` (quadratic tetrahedra
+    refined in thin walls, ``TetResult``; needs gmsh), or ``"auto"``: tetrahedra when a wall
+    is under 3 voxels thick or a gap under 2 voxels wide (``fea.thinnest(part)``), else voxels.
+    ``dofs``: the budget of unknowns for either. ``voxel`` (mm) sets the grid (and picks voxels);
+    ``size`` (mm) the largest tetrahedron (and picks them). ``device``: ``"auto"`` (CuPy on a
+    GPU), ``"cpu"``, ``"gpu"`` (voxels only).
     """
     t_start = time.time()
     say = (lambda msg: print(f"{msg} [{time.time() - t_start:.1f} s]", flush=True)) if verbose else (lambda *a, **k: None)
-    if not isinstance(part, Shape):
-        raise TuleError(f"fea.static needs a Shape, got {type(part).__name__}", op="fea")
-    mat = _material(material)
-    sups = fixed if isinstance(fixed, (list, tuple)) else [fixed]
-    supports = []
-    for s in sups:
-        s = s if isinstance(s, Support) else Support(s)
-        supports.append((_faces(part, s.faces, "fixed"), s.dirs))
-    if not supports:
-        raise TuleError("nothing holds the part", op="fea", hint='fixed="mount" (a tag) or fixed=part.faces["mount"]')
-    if isinstance(loads, Load):
-        loads = [loads]
-    resolved = []
-    for ld in loads:
-        if not isinstance(ld, Load):
-            raise TuleError(f"loads are fea.force, fea.pressure or fea.moment, got {type(ld).__name__}", op="fea",
-                            hint='loads=[fea.force("load", (0, 0, -30))]')
-        resolved.append((ld, _faces(part, ld.faces, f"the {ld.kind}")))
-    a = vec(accel) if accel is not None else None
+    part, mat, supports, resolved, a = _inputs(part, material, fixed, loads, accel, "fea.static")
     if not resolved and (a is None or a.length == 0):
         raise TuleError("no loads", op="fea", hint='loads=[fea.force("load", (0, 0, -30))] or accel=(0, 0, -fea.g)')
-    if a is not None and a.length > 0 and mat.density == 0:
-        raise TuleError("accel needs a density", op="fea", hint="give the material a density (g/cm³)")
+    kind = _choose_mesh(part, mesh, voxel, size, dofs, say)
+    if kind == "tet":
+        return _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=min(tol, 1e-8))
 
     xp = backend(device)
     dev = "gpu" if xp is not np else "cpu"
@@ -1172,3 +1247,511 @@ def static(
         mass=float(part.volume * mat.density / 1000), elements=n_el, dofs=ndof, cg_iterations=int(iters),
         seconds=time.time() - t_start, device=dev, notes=tuple(notes),
     )
+
+
+# ---------------------------------------------------------------- tetrahedra (thin walls, modes, buckling)
+
+TONNE_PER_MM3 = 1e-9  # a density in g/cm³ in t/mm³: masses in tonnes keep N, mm and s consistent
+
+
+def _tet_mesh(part: Shape, dofs: int, size: float | None, say, notes: list):
+    """Thickness, sizes, and gmsh's quadratic tetrahedra."""
+    from . import tetfe
+
+    th = tetfe.thickness(part)
+    H, faces, plan_notes = tetfe.plan(part, th, dofs, size)
+    notes += plan_notes
+    thin = min(faces.values()) if faces else None
+    say(f"fea: meshing {part.name or 'the part'} with gmsh: elements up to {H:.3g} mm"
+        + (f", {thin:.3g} mm on {len(faces)} thin face(s) (walls down to {th.min_wall:.3g} mm)" if faces else "") + " …")
+    m = tetfe.mesh(part, H, faces, smallest=min(thin / 2 if thin else H, H / 25))
+    notes += m.notes
+    if 3 * len(m.nodes) > 2.5 * dofs:
+        notes.append(f"the mesh has {3 * len(m.nodes):,} DOFs, over the budget of {dofs:,}: thin walls and small "
+                     "curved faces need small elements; size= coarsens the rest")
+    return m
+
+
+def _tet_fixed(m, supports) -> np.ndarray:
+    fixed = np.zeros((len(m.nodes), 3), dtype=bool)
+    for sel, dirs in supports:
+        tri = np.isin(m.tri_face, sel.ids)
+        if not tri.any():
+            raise TuleError("the mesh has no triangles on the fixed faces", op="fea", faces=sel.ids)
+        nodes = np.unique(m.tris[tri])
+        for d, c in enumerate("xyz"):
+            if c in dirs:
+                fixed[nodes, d] = True
+    return fixed
+
+
+def _tet_pieces(m, fixed, need: bool = True):
+    """Refuses pieces of the mesh that no support holds (they would float)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    n = len(m.nodes)
+    a = np.repeat(m.tets[:, 0], 9)
+    b = m.tets[:, 1:].reshape(-1)
+    npieces, lab = connected_components(coo_matrix((np.ones(len(a)), (a, b)), shape=(n, n)), directed=False)
+    if npieces <= 1 or not need:
+        return
+    used = np.zeros(n, dtype=bool)
+    used[m.tets.reshape(-1)] = True
+    held = set(np.unique(lab[fixed.any(1)]).tolist())
+    loose = [p for p in np.unique(lab[used]) if p not in held]
+    if loose:
+        at = m.nodes[np.flatnonzero(lab == loose[0])[0]]
+        raise TuleError(f"{len(loose)} piece(s) of the part touch no fixed face, e.g. at {_pt(at)}", op="fea",
+                        hint="hold every piece, or join them (union) where they touch")
+
+
+def _tet_loads(m, model, resolved, mat: Material, a) -> np.ndarray:
+    from . import tetfe
+
+    f = np.zeros((len(m.nodes), 3))
+
+    def add(tris, nodal):  # nodal (k, 6, 3)
+        idx = tris.reshape(-1)
+        for c in range(3):
+            f[:, c] += np.bincount(idx, weights=nodal[..., c].reshape(-1), minlength=len(f))
+
+    for ld, sel in resolved:
+        tris = m.tris[np.isin(m.tri_face, sel.ids)]
+        if not len(tris):
+            raise TuleError("the mesh has no triangles on the load's faces", op="fea", faces=sel.ids)
+        pts, N, wn = tetfe.surface_quadrature(m.nodes, tris)
+        w = np.linalg.norm(wn, axis=2)  # (k, g) area weights
+        if ld.kind == "force":
+            share = np.einsum("kg,ga->ka", w, N) / w.sum()
+            add(tris, share[..., None] * np.array(ld.value))
+        elif ld.kind == "pressure":
+            add(tris, -ld.value * np.einsum("kgi,ga->kai", wn, N))
+        else:
+            c = (pts * w[..., None]).sum((0, 1)) / w.sum()
+            d = pts - c
+            J = (w * (d * d).sum(-1)).sum() * np.eye(3) - np.einsum("kg,kgi,kgj->ij", w, d, d)
+            omega = np.linalg.lstsq(J, np.array(ld.value), rcond=None)[0]
+            add(tris, np.einsum("kg,kgi,ga->kai", w, np.cross(omega, d), N))
+    if a is not None and a.length > 0:
+        f += model.body_force(mat.density * TONNE_PER_MM3, np.array(a) * 1.0)
+    return f
+
+
+def _tet_setup(part, mat, supports, dofs, size, say, notes, need_fixed: bool = True):
+    """Mesh, model, stiffness and the CG solver on the free DOFs."""
+    from . import tetfe
+
+    m = _tet_mesh(part, dofs, size, say, notes)
+    model = tetfe.Model(m)
+    fixed = _tet_fixed(m, supports)
+    _tet_pieces(m, fixed, need_fixed)
+    say(f"fea: {len(m.tets):,} quadratic tetrahedra ({m.smallest:.2g} to {m.size:.2g} mm), {3 * len(m.nodes):,} DOFs; assembling …")
+    K = model.stiffness(mat.E, mat.nu)
+    free = ~fixed.reshape(-1)
+    solver = tetfe.Solver(m, K, free)
+    return m, model, fixed, K, solver
+
+
+def _surface_stats(m, values: np.ndarray):
+    """On the boundary: (vertex node ids, flat triangles, face ids, area per vertex)."""
+    used, tri, face = m.surface
+    P = m.nodes[used]
+    ar = 0.5 * np.linalg.norm(np.cross(P[tri[:, 1]] - P[tri[:, 0]], P[tri[:, 2]] - P[tri[:, 0]]), axis=1)
+    area = np.bincount(tri.reshape(-1), weights=np.repeat(ar / 3, 3), minlength=len(used))
+    return used, tri, face, area
+
+
+def _p995(values, area) -> float:
+    order = np.argsort(values)
+    cum = np.cumsum(area[order])
+    return float(values[order[min(int(np.searchsorted(cum, 0.995 * cum[-1])), len(order) - 1)]])
+
+
+def _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=1e-9, keep: dict | None = None):
+    notes: list[str] = []
+    m, model, fixed, K, solver = _tet_setup(part, mat, supports, dofs, size, say, notes)
+    if keep is not None:  # buckling goes on with them
+        keep.update(model=model, solver=solver)
+    f = _tet_loads(m, model, resolved, mat, a)
+    applied = f.sum(0)
+    total_abs = float(np.linalg.norm(f, axis=1).sum())
+    on_fixed = float(np.linalg.norm(f * fixed, axis=1).sum())
+    if total_abs > 0 and on_fixed > 0.02 * total_abs:
+        notes.append(f"{100 * on_fixed / total_abs:.0f} % of the load acts on fixed nodes and goes straight into the supports")
+    free = solver.free
+    t_solve = time.time()
+    say(f"fea: solving for {int(free.sum()):,} unknowns (conjugate gradients; {solver.pre.coarse:,} on the linear tetrahedra) …")
+    x, iters, res = solver.solve(f.reshape(-1)[free], tol)
+    if not res <= 10 * tol:
+        raise TuleError(f"the solve did not converge (residual {res:.1e} after {iters} iterations)", op="fea",
+                        hint="is every piece held against sliding and turning? fea.fix(faces, \"z\") alone lets a part "
+                             "slide sideways; fix more faces or more directions")
+    say(f"fea: solved in {iters} CG iterations, {time.time() - t_solve:.1f} s")
+    u = np.zeros(3 * len(m.nodes))
+    u[free] = x
+    react = (K @ u - f.reshape(-1)).reshape(-1, 3) * fixed
+    reaction = react.sum(0)
+    imbalance = float(np.linalg.norm(reaction + applied)) / max(total_abs, 1e-300)
+    u = u.reshape(-1, 3)
+    gp = model.gauss_stress(u, mat.E, mat.nu)
+    sigma = model.nodal(gp)
+    vm = von_mises(sigma.T)
+    used, tri, face, area = _surface_stats(m, vm)
+    s_vm = vm[used]
+    i_max = int(np.argmax(s_vm))
+    dmag = np.linalg.norm(u, axis=1)
+    j_max = int(np.argmax(dmag))
+    return TetResult(
+        part=part, material=mat, supports=tuple(supports), loads=tuple(resolved), accel=a, mesh=m,
+        stress=vm.astype(np.float32), stress_tensor=sigma.astype(np.float32), displacement=u,
+        max_stress=float(s_vm[i_max]), max_stress_at=Vec(*m.nodes[used[i_max]]), stress_p995=_p995(s_vm, area),
+        max_displacement=float(dmag[j_max]), max_displacement_at=Vec(*m.nodes[j_max]),
+        applied=Vec(*applied), reaction=Vec(*reaction), imbalance=imbalance,
+        mass=float(part.volume * mat.density / 1000), elements=len(m.tets), dofs=int(free.sum()),
+        cg_iterations=int(iters), seconds=time.time() - t_start, device="cpu", notes=tuple(notes),
+        _gauss=gp,
+    )
+
+
+def _surface_field(m, values, **kw) -> dict:
+    """An overlay field on the mesh's own boundary (flat triangles, B-rep face ids)."""
+    used, tri, face = m.surface
+    return {"values": np.asarray(values)[used], "mesh": (m.nodes[used], tri, face), **kw}
+
+
+@dataclass(frozen=True, repr=False)
+class TetResult:
+    """A static analysis on quadratic tetrahedra: values at the mesh's nodes (``mesh.nodes``).
+
+    ``stress`` (von Mises, MPa, per node), ``stress_tensor`` (xx yy zz xy yz zx per node),
+    ``displacement`` (mm, (n, 3)); ``stress_at(points)`` and ``displacement_at(points)``
+    interpolate them. ``max_stress``, ``stress_p995``, ``safety_factor``, ``max_displacement``,
+    reactions and mass as for the voxel ``Result``.
+    """
+
+    part: Shape
+    material: Material
+    supports: tuple
+    loads: tuple
+    accel: Vec | None
+    mesh: Any  # tetfe.TetMesh
+    stress: np.ndarray
+    stress_tensor: np.ndarray
+    displacement: np.ndarray
+    max_stress: float
+    max_stress_at: Vec
+    stress_p995: float
+    max_displacement: float
+    max_displacement_at: Vec
+    applied: Vec
+    reaction: Vec
+    imbalance: float
+    mass: float
+    elements: int
+    dofs: int
+    cg_iterations: int
+    seconds: float
+    device: str
+    notes: tuple = ()
+    _gauss: Any = None  # Gauss-point stresses (elements, 4, 6), for buckling
+
+    safety_factor = Result.safety_factor
+
+    def _interp(self, values, points) -> np.ndarray:
+        from . import tetfe
+
+        p = np.atleast_2d(np.asarray(points, dtype=np.float64))
+        if not hasattr(self, "_tree"):
+            object.__setattr__(self, "_tree", None)
+        e, L, tree = tetfe.locate(self.mesh.nodes, self.mesh.tets, p, self._tree)
+        object.__setattr__(self, "_tree", tree)
+        return np.einsum("pa,pa...->p...", tetfe.shape(L), np.asarray(values)[self.mesh.tets[e]])
+
+    def stress_at(self, points) -> np.ndarray:
+        """Von Mises stress (MPa) at points (``(n, 3)`` or one point)."""
+        return self._interp(self.stress, points)
+
+    def displacement_at(self, points) -> np.ndarray:
+        """Displacement vectors (mm) at points."""
+        return self._interp(self.displacement, points)
+
+    def show(self, name: str, title: str | None = None, deform: float | None = None) -> str:
+        """An overlay output: von Mises stress and displacement on the mesh's own surface (thin
+        walls and slots drawn as they are), supports, loads and the numbers. Returns the folder."""
+        from . import outputs
+
+        faces, arrows = _conditions(self.supports, self.loads)
+        size = float(np.array(self.part.size).max())
+        if deform is None:
+            deform = _nice(0.06 * size / self.max_displacement) if self.max_displacement > 0 else 0.0
+        fields = [
+            _surface_field(self.mesh, self.stress, label="von Mises stress", unit="MPa", min=0.0,
+                           max=_round_up(self.stress_p995),
+                           note=f"red: the top 0.5 % of the surface; peak {self.max_stress:.3g} MPa"),
+            _surface_field(self.mesh, self.displacement, label="displacement", unit="mm", min=0.0,
+                           max=float(self.max_displacement), deform=float(deform)),
+        ]
+        m = self.mesh
+        info = _static_info(self, f"{self.elements:,} quadratic tetrahedra, {m.smallest:.2g} to {m.size:.2g} mm, "
+                                  f"{self.dofs:,} DOFs")
+        return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
+                               title=title or f"Static analysis: {self.part.name or name}, {self.material.name}")
+
+    def __str__(self) -> str:
+        m = self.material
+        lines = [
+            f"fea.static: {self.part.name or 'part'} in {m.name} (E {m.E:g} MPa, yield {m.yield_strength:g} MPa), "
+            f"{self.elements:,} quadratic tetrahedra ({self.mesh.smallest:.2g} to {self.mesh.size:.2g} mm), "
+            f"{self.dofs:,} DOFs, CG {self.cg_iterations} iterations, {self.seconds:.1f} s on {self.device}",
+            f"  von Mises stress: peak {self.max_stress:.4g} MPa at {_pt(self.max_stress_at)}; "
+            f"99.5th percentile {self.stress_p995:.4g} MPa (surface)",
+            f"  safety factor against yield: {self.safety_factor:.3g} on the peak, "
+            f"{m.yield_strength / self.stress_p995 if self.stress_p995 > 0 else math.inf:.3g} on the 99.5th percentile",
+            f"  max displacement {self.max_displacement:.4g} mm at {_pt(self.max_displacement_at)}",
+            f"  loads {_vec(self.applied)} N, reactions {_vec(self.reaction)} N: balanced to {100 * self.imbalance:.2g} %",
+            f"  mass {self.mass:.4g} g",
+        ]
+        lines += [f"  note: {n}" for n in self.notes]
+        return "\n".join(lines)
+
+    __repr__ = __str__
+
+
+def _shape_fields(m, shapes, labels, size: float, deform: float | None) -> list[dict]:
+    """A field per mode: its shape (largest motion 1) on the surface, drawn moving."""
+    d = float(deform) if deform is not None else _nice(0.08 * size)
+    return [_surface_field(m, s, label=lab, unit="", min=0.0, max=1.0, deform=d, animate=True,
+                           note="relative motion (the largest is 1); the amplitude is arbitrary")
+            for s, lab in zip(shapes, labels)]
+
+
+def _normalized(m, v: np.ndarray, free: np.ndarray) -> np.ndarray:
+    """An eigenvector on the free DOFs as (n, 3), scaled to a largest motion of 1 (its sign: the largest component positive)."""
+    u = np.zeros(3 * len(m.nodes))
+    u[free] = v
+    u = u.reshape(-1, 3)
+    mag = np.linalg.norm(u, axis=1)
+    k = int(np.argmax(mag))
+    s = mag[k] if mag[k] > 0 else 1.0
+    c = int(np.argmax(np.abs(u[k])))
+    return (u / s * (1.0 if u[k, c] >= 0 else -1.0)).astype(np.float32)
+
+
+@dataclass(frozen=True, repr=False)
+class Modes:
+    """Natural frequencies (Hz) and mode shapes ((k, n, 3) at the mesh's nodes, largest motion 1).
+    ``effective_mass`` (k, 3): each mode's share of the part's mass moving with it along x, y, z."""
+
+    part: Shape
+    material: Material
+    supports: tuple
+    mesh: Any
+    frequencies: np.ndarray
+    shapes: np.ndarray
+    effective_mass: np.ndarray
+    mass: float
+    elements: int
+    dofs: int
+    seconds: float
+    notes: tuple = ()
+
+    def show(self, name: str, title: str | None = None, deform: float | None = None) -> str:
+        """An overlay output: a field per mode (the buttons under the view), each drawn swinging
+        through its shape; ``deform`` sets the drawn amplitude (mm for the largest motion)."""
+        from . import outputs
+
+        faces, _ = _conditions(self.supports, ())
+        labels = [f"mode {i + 1}: {f:.4g} Hz" for i, f in enumerate(self.frequencies)]
+        fields = _shape_fields(self.mesh, self.shapes, labels, float(np.array(self.part.size).max()), deform)
+        info = {"material": str(self.material.name), "mass": f"{self.mass:.3g} g"}
+        for i, f in enumerate(self.frequencies):
+            info[f"mode {i + 1}"] = f"{f:.4g} Hz, {_moves(self.effective_mass[i])}"
+        info["mesh"] = f"{self.elements:,} quadratic tetrahedra, {self.dofs:,} DOFs"
+        return outputs.overlay(name, self.part, faces, info=info, fields=fields,
+                               title=title or f"Vibration modes: {self.part.name or name}, {self.material.name}")
+
+    def __str__(self) -> str:
+        m = self.material
+        lines = [f"fea.modes: {self.part.name or 'part'} in {m.name} (E {m.E:g} MPa, {m.density:g} g/cm³), "
+                 f"{self.elements:,} quadratic tetrahedra, {self.dofs:,} DOFs, {self.seconds:.1f} s"]
+        for i, f in enumerate(self.frequencies):
+            lines.append(f"  mode {i + 1}: {f:10.4g} Hz   {_moves(self.effective_mass[i])}")
+        lines += [f"  note: {n}" for n in self.notes]
+        return "\n".join(lines)
+
+    __repr__ = __str__
+
+
+def _moves(frac) -> str:
+    """'moves along x (45 % of the mass)' from effective mass fractions."""
+    parts = [f"{c} {100 * v:.0f} %" for c, v in zip("xyz", frac)]
+    k = int(np.argmax(frac))
+    lead = f"moves along {'xyz'[k]}" if frac[k] >= 0.05 else "bends or twists in place"
+    return f"{lead} (effective mass {', '.join(parts)})"
+
+
+def modes(
+    part: Shape,
+    material: str | Material = "aluminium 6061-T6",
+    *,
+    fixed,
+    n: int = 6,
+    dofs: int = 100_000,
+    size: float | None = None,
+    verbose: bool = True,
+) -> Modes:
+    """The ``n`` lowest natural frequencies (Hz) and mode shapes of ``part`` held at ``fixed``
+    (as for ``static``), on quadratic tetrahedra (needs gmsh). Print it; ``.show(name)`` draws the
+    shapes. ``dofs``/``size`` as for ``static(mesh="tet")``: frequencies converge sooner than
+    stresses, so the default budget is 100,000."""
+    from scipy.sparse.linalg import eigsh
+
+    from . import tetfe
+
+    t_start = time.time()
+    say = (lambda msg: print(f"{msg} [{time.time() - t_start:.1f} s]", flush=True)) if verbose else (lambda *a, **k: None)
+    part, mat, supports, _, _ = _inputs(part, material, fixed, (), None, "fea.modes")
+    if not mat.density > 0:
+        raise TuleError("modes need a density", op="fea", hint="fea.Material(..., density=1.2)")
+    n = int(n)
+    if not 1 <= n <= 50:
+        raise TuleError(f"n={n}", op="fea.modes", hint="1 to 50 modes")
+    notes: list[str] = []
+    m, model, fixed_mask, K, solver = _tet_setup(part, mat, supports, dofs, size, say, notes)
+    rho = mat.density * TONNE_PER_MM3
+    Mfull = model.mass(rho)
+    idx = solver.idx
+    M = Mfull[idx][:, idx].tocsr()
+    say(f"fea: {n} modes of {len(idx):,} unknowns (shift-invert Lanczos) …")
+    w, v = _eigsh(eigsh, solver.K, n, M=M, sigma=0, which="LM", OPinv=solver.operator(1e-8), tol=1e-9)
+    order = np.argsort(w)
+    w, v = w[order], v[:, order]
+    freqs = np.sqrt(np.maximum(w, 0)) / (2 * np.pi)
+    total = np.array([float(np.ones(len(m.nodes)) @ Mfull[c::3, c::3] @ np.ones(len(m.nodes))) for c in range(3)])
+    eff = np.zeros((len(w), 3))
+    for k in range(len(w)):
+        phi = v[:, k] / math.sqrt(max(float(v[:, k] @ (M @ v[:, k])), 1e-300))
+        Mphi = M @ phi
+        for c in range(3):
+            r = np.zeros(3 * len(m.nodes))
+            r[c::3] = 1.0
+            eff[k, c] = float(r[idx] @ Mphi) ** 2 / total[c]
+    shapes = np.stack([_normalized(m, v[:, k], solver.free) for k in range(len(w))])
+    say(f"fea: modes in {solver.solves} solves, {solver.iterations} CG iterations")
+    return Modes(part=part, material=mat, supports=tuple(supports), mesh=m, frequencies=freqs, shapes=shapes,
+                 effective_mass=eff, mass=float(part.volume * mat.density / 1000), elements=len(m.tets),
+                 dofs=len(idx), seconds=time.time() - t_start, notes=tuple(notes))
+
+
+def _eigsh(eigsh, A, k, **kw):
+    from scipy.sparse.linalg import ArpackNoConvergence
+
+    if k >= A.shape[0] - 1:
+        raise TuleError(f"{k} modes of a model with {A.shape[0]} unknowns", op="fea", hint="fewer modes, or more dofs=")
+    try:
+        return eigsh(A, k=k, **kw)
+    except ArpackNoConvergence as e:
+        raise TuleError("the eigenvalue solver did not converge", op="fea",
+                        hint="is the part held against every rigid motion? fewer modes (n=) converge sooner") from e
+
+
+@dataclass(frozen=True, repr=False)
+class Buckling:
+    """Linear (eigenvalue) buckling: ``factors``, the multiples of the loads at which the part
+    buckles (lowest first), their ``shapes`` ((k, n, 3), largest motion 1), and the ``static``
+    result (a ``TetResult``) of the loads as given."""
+
+    part: Shape
+    material: Material
+    supports: tuple
+    loads: tuple
+    static: TetResult
+    factors: np.ndarray
+    shapes: np.ndarray
+    seconds: float
+    notes: tuple = ()
+
+    @property
+    def factor(self) -> float:
+        """The lowest load factor: the loads times this buckle the part (inf: none found)."""
+        return float(self.factors[0]) if len(self.factors) else math.inf
+
+    def show(self, name: str, title: str | None = None, deform: float | None = None) -> str:
+        """An overlay output: a field per buckling mode, drawn moving through its shape; supports and loads."""
+        from . import outputs
+
+        faces, arrows = _conditions(self.supports, self.loads)
+        labels = [f"mode {i + 1}: load × {f:.3g}" for i, f in enumerate(self.factors)]
+        fields = _shape_fields(self.static.mesh, self.shapes, labels, float(np.array(self.part.size).max()), deform)
+        info = {"material": str(self.material.name)}
+        for i, f in enumerate(self.factors):
+            info[f"mode {i + 1}"] = f"buckles at {f:.4g} × the loads"
+        info["static, 99.5th pct"] = f"{self.static.stress_p995:.3g} MPa (yield {self.material.yield_strength:g} MPa)"
+        info["mesh"] = f"{self.static.elements:,} quadratic tetrahedra, {self.static.dofs:,} DOFs"
+        return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
+                               title=title or f"Buckling: {self.part.name or name}, {self.material.name}")
+
+    def __str__(self) -> str:
+        lines = [f"fea.buckling: {self.part.name or 'part'} in {self.material.name}, {self.static.elements:,} quadratic "
+                 f"tetrahedra, {self.static.dofs:,} DOFs, {self.seconds:.1f} s"]
+        if not len(self.factors):
+            lines.append("  no buckling mode found under these loads (too little in compression)")
+        for i, f in enumerate(self.factors):
+            lines.append(f"  mode {i + 1}: load factor {f:.4g} (the loads × {f:.4g} buckle it)")
+        if len(self.factors) and self.static.stress_p995 * self.factors[0] > self.material.yield_strength:
+            lines.append(f"  note: at {self.factors[0]:.3g} × the loads the stress ({self.static.stress_p995 * self.factors[0]:.3g} MPa, "
+                         f"99.5th pct) is past yield ({self.material.yield_strength:g} MPa): it yields before it buckles")
+        lines += [f"  note: {n}" for n in self.notes]
+        return "\n".join(lines)
+
+    __repr__ = __str__
+
+
+def buckling(
+    part: Shape,
+    material: str | Material = "aluminium 6061-T6",
+    *,
+    fixed,
+    loads: Sequence[Load] = (),
+    accel=None,
+    n: int = 4,
+    dofs: int = 100_000,
+    size: float | None = None,
+    verbose: bool = True,
+) -> Buckling:
+    """Linear buckling of ``part`` under ``loads`` (and ``accel``), held at ``fixed`` (as for
+    ``static``), on quadratic tetrahedra (needs gmsh): the ``n`` lowest load factors and shapes.
+    A factor of 3 means three times the loads buckle the perfect part; real parts (imperfect,
+    plastic) buckle sooner, so keep a margin."""
+    from scipy.sparse.linalg import eigsh
+
+    t_start = time.time()
+    say = (lambda msg: print(f"{msg} [{time.time() - t_start:.1f} s]", flush=True)) if verbose else (lambda *a, **k: None)
+    part, mat, supports, resolved, a = _inputs(part, material, fixed, loads, accel, "fea.buckling")
+    if not resolved and (a is None or a.length == 0):
+        raise TuleError("no loads", op="fea", hint='loads=[fea.force("top", (0, 0, -1000))]')
+    keep: dict = {}
+    st = _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, keep=keep)
+    m, model, solver = st.mesh, keep["model"], keep["solver"]
+    Kg = model.geometric(st._gauss)
+    idx = solver.idx
+    G = -Kg[idx][:, idx].tocsr()
+    say(f"fea: {n} buckling modes (Lanczos on K⁻¹K_σ) …")
+    # the n eigenvalues μ = 1/factor of largest magnitude: they converge fast at either sign (the
+    # wanted positive end alone does not when little is in compression: it is a cluster at 0). The
+    # positive ones among them are the lowest factors under the loads; negative ones buckle under
+    # the reversed loads.
+    mu, v = _eigsh(eigsh, G, int(n), M=solver.K, Minv=solver.operator(1e-8), which="LM", tol=1e-9)
+    big = float(np.abs(mu).max()) if len(mu) else 0.0
+    pos = mu > 1e-9 * big
+    order = np.flatnonzero(pos)[np.argsort(-mu[pos])]
+    factors = 1 / mu[order]
+    shapes = np.stack([_normalized(m, v[:, k], solver.free) for k in order]) if len(order) else np.zeros((0, len(m.nodes), 3))
+    notes = list(st.notes)
+    if len(order) < len(mu) and big > 0:
+        note = ("no buckling mode" if not len(order) else f"only {len(order)} buckling mode(s)") + \
+            f" below {1 / np.abs(mu).min():.3g} × the loads"
+        notes.append(note + (f"; reversed, the loads buckle it at {-1 / mu.min():.3g} ×" if mu.min() < 0 else ""))
+    return Buckling(part=part, material=mat, supports=tuple(supports), loads=tuple(resolved), static=st,
+                    factors=factors, shapes=shapes, seconds=time.time() - t_start, notes=tuple(notes))

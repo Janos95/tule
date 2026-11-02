@@ -335,7 +335,8 @@ function prepare(list) {
       path: o.root ? f.path : `outputs/${f.path}`,
       type: typeOf(f.file),
     }));
-    const field = new Set((Array.isArray(o.meta?.fields) ? o.meta.fields : []).map((x) => x?.file)); // an overlay's field grids: drawn on the part, not a view
+    // an overlay's field grids and surface meshes: drawn on the part, not a view
+    const field = new Set((Array.isArray(o.meta?.fields) ? o.meta.fields : []).flatMap((x) => [x?.file, ...Object.values(x?.mesh && typeof x.mesh === "object" ? x.mesh : {})]));
     return { ...o, root, id: root === "outputs" ? o.name : `${root}/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry" && !field.has(f.file)), fields: all.filter((f) => field.has(f.file)) };
   });
 }

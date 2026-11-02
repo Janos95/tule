@@ -72,6 +72,22 @@ surface and color it on the scale from ``min`` to ``max``. The first field
 is shown; the legend switches between them. Nodes outside the part should
 carry the nearest inside value.
 
+A field may instead carry its own surface: values at the vertices of a
+triangle mesh (a finite-element mesh's boundary), drawn in place of the
+part's tessellation, so slots and blades thinner than any grid show as they
+are::
+
+        {"label": "von Mises stress", "unit": "MPa", "file": "von-mises-stress.npy",   # (n,) or (n, 3)
+         "mesh": {"vertices": "surface.vertices.npy",       # float32 (n, 3)
+                  "triangles": "surface.triangles.npy",     # int32 (m, 3)
+                  "faces": "surface.faces.npy"},            # optional: int32 (m,), B-rep face id per triangle
+         "min": 0, "max": 31, "deform": 50, "animate": true}
+
+Fields may share one mesh. Lines are drawn where the face id changes (the
+part's edges). ``"animate": true`` (with ``deform``) swings the shape back and
+forth through the vectors: a vibration or buckling mode. The viewer's slider
+scales ``deform``.
+
 **Info** (any kind): ``"info": {"material": "aluminium 6061", "mass": "20.8 g"}``
 are facts about the output, shown as rows under the view. Values are text,
 numbers or booleans.
@@ -493,43 +509,104 @@ def _face_entries(shape: Shape, data) -> dict:
     return faces
 
 
-FIELD_KEYS = {"label", "values", "origin", "step", "unit", "min", "max", "deform", "note"}
+FIELD_KEYS = {"label", "values", "origin", "step", "mesh", "unit", "min", "max", "deform", "note", "animate"}
 
 
-def _fields(fields) -> list[tuple[dict, np.ndarray]]:
-    """Checks overlay fields; returns (output.json entry, float32 grid) pairs."""
+def _npy(a: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    np.save(buf, a)
+    return buf.getvalue()
+
+
+def _same(a: np.ndarray, b: np.ndarray) -> bool:
+    """The same mesh array (fields on one mesh share its files)."""
+    return a is b or (a.shape == b.shape and bool(np.array_equal(a, b)))
+
+
+def _fields(fields) -> list[tuple[dict, dict]]:
+    """Checks overlay fields; returns (output.json entry, {file name: array}) pairs. A field is a
+    grid of nodes (``origin``, ``step``) or values at the vertices of a surface ``mesh``."""
     out, files = [], set()
-    for f in fields or ():
-        if not isinstance(f, dict) or not {"label", "values", "origin", "step"} <= set(f) or set(f) - FIELD_KEYS:
-            raise TuleError("a field is a dict with label, values, origin and step (unit, min, max, deform, note optional)",
-                            op="overlay", hint='{"label": "temperature", "unit": "°C", "values": grid, "origin": (0, 0, 0), "step": 0.5}')
-        v = np.asarray(f["values"], dtype=np.float32)
-        if v.ndim not in (3, 4) or (v.ndim == 4 and v.shape[3] != 3) or min(v.shape[:3]) < 2:
-            raise TuleError(f"field {f['label']!r}: values must be a grid of nodes, (nx, ny, nz) or (nx, ny, nz, 3); got {v.shape}",
-                            op="overlay", hint="a number per grid node, or a vector (a displacement)")
-        if not np.isfinite(v).all():
-            raise TuleError(f"field {f['label']!r} has NaN or infinite values", op="overlay")
-        if not float(f["step"]) > 0 or len(f["origin"]) != 3:
-            raise TuleError(f"field {f['label']!r}: origin is a point, step a positive length", op="overlay")
-        mag = np.linalg.norm(v, axis=3) if v.ndim == 4 else v
-        base = _slug(str(f["label"])).lower()
+    meshes: list[tuple] = []  # (vertices, triangles, faces, file names): each mesh written once
+
+    def name(base):
         fname, i = f"{base}.npy", 2
         while fname in files:
             fname, i = f"{base}-{i}.npy", i + 1
         files.add(fname)
-        entry: dict[str, Any] = {"label": str(f["label"]), "file": fname,
-                                 "origin": [float(x) for x in f["origin"]], "step": float(f["step"])}
+        return fname
+
+    for f in fields or ():
+        on_mesh = isinstance(f, dict) and "mesh" in f
+        need = {"label", "values", "mesh"} if on_mesh else {"label", "values", "origin", "step"}
+        if not isinstance(f, dict) or not need <= set(f) or set(f) - FIELD_KEYS or (on_mesh and {"origin", "step"} & set(f)):
+            raise TuleError("a field is a dict with label, values and either origin and step (a grid) or mesh "
+                            "(unit, min, max, deform, note, animate optional)", op="overlay",
+                            hint='{"label": "temperature", "unit": "°C", "values": grid, "origin": (0, 0, 0), "step": 0.5}; '
+                                 'or {"label": "stress", "values": per_vertex, "mesh": (vertices, triangles, face_ids)}')
+        v = np.asarray(f["values"], dtype=np.float32)
+        own: dict[str, np.ndarray] = {}
+        entry: dict[str, Any] = {"label": str(f["label"])}
+        if on_mesh:
+            mesh = f["mesh"]
+            if not isinstance(mesh, (list, tuple)) or len(mesh) not in (2, 3):
+                raise TuleError(f"field {f['label']!r}: mesh is (vertices (n, 3), triangles (m, 3)[, B-rep face id per triangle])",
+                                op="overlay")
+            P = np.asarray(mesh[0], dtype=np.float64)
+            T = np.asarray(mesh[1])
+            F = np.asarray(mesh[2]) if len(mesh) == 3 and mesh[2] is not None else None
+            if P.ndim != 2 or P.shape[1] != 3 or T.ndim != 2 or T.shape[1] != 3 or not len(T) or \
+                    (F is not None and F.shape != (len(T),)) or T.min() < 0 or T.max() >= len(P):
+                raise TuleError(f"field {f['label']!r}: mesh is (vertices (n, 3), triangles (m, 3) into them[, (m,) face ids])",
+                                op="overlay", hint=f"got {P.shape}, {T.shape}" + (f", {F.shape}" if F is not None else ""))
+            if v.shape not in ((len(P),), (len(P), 3)):
+                raise TuleError(f"field {f['label']!r}: values must be one per vertex, ({len(P)},) or ({len(P)}, 3); got {v.shape}",
+                                op="overlay")
+            known = next((m for m in meshes if _same(m[0], P) and _same(m[1], T) and
+                          (m[2] is None if F is None else m[2] is not None and _same(m[2], F))), None)
+            if known is None:
+                prefix = _slug("surface" if not meshes else f"surface-{len(meshes) + 1}")
+                names = {"vertices": name(f"{prefix}.vertices"), "triangles": name(f"{prefix}.triangles")}
+                own[names["vertices"]] = np.ascontiguousarray(P, dtype="<f4")
+                own[names["triangles"]] = np.ascontiguousarray(T, dtype="<i4")
+                if F is not None:
+                    names["faces"] = name(f"{prefix}.faces")
+                    own[names["faces"]] = np.ascontiguousarray(F, dtype="<i4")
+                known = (P, T, F, names)
+                meshes.append(known)
+            entry["mesh"] = dict(known[3])
+        else:
+            if v.ndim not in (3, 4) or (v.ndim == 4 and v.shape[3] != 3) or min(v.shape[:3]) < 2:
+                raise TuleError(f"field {f['label']!r}: values must be a grid of nodes, (nx, ny, nz) or (nx, ny, nz, 3); got {v.shape}",
+                                op="overlay", hint="a number per grid node, or a vector (a displacement)")
+            if not float(f["step"]) > 0 or len(f["origin"]) != 3:
+                raise TuleError(f"field {f['label']!r}: origin is a point, step a positive length", op="overlay")
+        if not np.isfinite(v).all():
+            raise TuleError(f"field {f['label']!r} has NaN or infinite values", op="overlay")
+        vector = v.ndim == (2 if on_mesh else 4)
+        mag = np.linalg.norm(v, axis=-1) if vector else v
+        fname = name(_slug(str(f["label"])).lower())
+        own[fname] = np.ascontiguousarray(v, dtype="<f4")
+        entry["file"] = fname
+        if not on_mesh:
+            entry["origin"] = [float(x) for x in f["origin"]]
+            entry["step"] = float(f["step"])
         if f.get("unit"):
             entry["unit"] = str(f["unit"])
         entry["min"] = float(f["min"]) if f.get("min") is not None else float(mag.min())
         entry["max"] = float(f["max"]) if f.get("max") is not None else float(mag.max())
         if f.get("deform"):
-            if v.ndim != 4:
+            if not vector:
                 raise TuleError(f"field {f['label']!r}: only a vector field can deform the shape", op="overlay")
             entry["deform"] = float(f["deform"])
+        if f.get("animate"):
+            if not entry.get("deform"):
+                raise TuleError(f"field {f['label']!r}: animate swings the shape through its deformation: give deform too",
+                                op="overlay")
+            entry["animate"] = True
         if f.get("note"):
             entry["note"] = str(f["note"])
-        out.append((entry, np.ascontiguousarray(v, dtype="<f4")))
+        out.append((entry, own))
     return out
 
 
@@ -540,9 +617,11 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     ``faces`` maps a face id or a face selection (``part.faces["load"]``) to a number, a label, or a
     dict (``severity``, ``role``, ``label``, ``value``). ``arrows`` are dicts ``{"at": point, "dir": vector, "label": text}``.
     ``scale`` names the values' color scale: ``{"label", "unit", "min", "max"}``
-    (all optional). ``info``: facts shown under the view. ``fields``: values on the surface from a
-    grid of nodes, dicts ``{"label", "values": (nx, ny, nz) or (nx, ny, nz, 3) array, "origin": point,
-    "step": spacing, "unit", "min", "max", "deform", "note"}`` (``tule.fea`` writes them).
+    (all optional). ``info``: facts shown under the view. ``fields``: values on the surface, dicts
+    ``{"label", "values", "unit", "min", "max", "deform", "note", "animate"}`` with either a grid of
+    nodes (values (nx, ny, nz) or (nx, ny, nz, 3), ``"origin"``, ``"step"``) or a surface ``"mesh"``:
+    ``(vertices (n, 3), triangles (m, 3), B-rep face id per triangle)`` with values (n,) or (n, 3)
+    (``tule.fea`` writes both kinds).
     The format is described at the top of this module. Returns the folder.
     """
     if not isinstance(part, Shape):
@@ -558,10 +637,9 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     folder = _folder(name)
     fname = f"{_slug(name.rsplit('/', 1)[-1])}.step"
     _write_geometry(os.path.join(folder, fname), part)
-    for entry, v in grids:
-        buf = io.BytesIO()
-        np.save(buf, v)
-        write_atomic(os.path.join(folder, entry["file"]), buf.getvalue())
+    for _, own in grids:
+        for fn, arr in own.items():
+            write_atomic(os.path.join(folder, fn), _npy(arr))
     meta: dict[str, Any] = {"kind": "overlay", "file": fname}
     if title:
         meta["title"] = title
