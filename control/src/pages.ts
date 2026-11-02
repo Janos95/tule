@@ -236,7 +236,7 @@ export function settingsPage(user: User, d: SettingsData): Response {
       ${user.guest ? "" : html`${d.hosts.map((h) => item(h.name, html`<span class="dot ${h.online ? "running" : ""}"></span>${h.online ? "online" : "offline"}${spec(h.specs) ? ` · ${spec(h.specs)}` : ""}`, rowButton("/settings/hosts/remove", "Remove", h.id, true)))}
       ${rp.connected ? item("RunPod", html`connected${rp.balance ? html` · ${rp.balance} balance` : ""}${gpu}`, rowButton("/settings/runpod/remove", "Disconnect", undefined, true)) : ""}
       ${d.hostKey
-        ? copyBlock("Paste this into a terminal on the computer", install(d.hostKey), "Installs what is missing and runs as a background service. Linux, macOS or WSL. Works once, for an hour.", "add-computer")
+        ? copyBlock("Paste this into a terminal on the computer", install(d.hostKey), "Works on Linux, macOS and Windows (WSL). Expires in an hour.", "add-computer")
         : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span>Add a computer</button></form>`}
       ${addRow(
         rp.connected ? "Replace RunPod key" : "Connect RunPod for GPUs",
