@@ -280,6 +280,48 @@ machine is rebuilt from the image every boot.
 - **New projects** start from a template: `AGENTS.md`/`CLAUDE.md` with the
   agent instructions, `tule.toml`, `main.py`, empty `outputs/`.
 
+#### Planned: several machines per project, saves in git (2026-11-01)
+
+Not built. Today a project has one machine and one writer. The plan lets a
+project be loaded on several machines at once, e.g. the agent iterating on
+designs on Tule cloud while an FEA run goes on a RunPod GPU, with two
+separate kinds of saving:
+
+- **A project is a history; a machine holds a working copy.** A project "in
+  progress" is one loaded on at least one machine. A stopped project is
+  loaded nowhere.
+- **Autosave is crash safety, not history.** Today's snapshots stay as they
+  are, but per working copy (project × machine) instead of per project, so
+  each machine syncs its own copy and the single-writer lock goes. Autosave
+  takes the whole `/workspace`, unsaved and unmerged work included, so
+  nothing is lost when a machine disconnects or a pod is preempted. It never
+  commits or merges.
+- **Save is git.** An explicit save is a commit and `git push` to a remote
+  Tule hosts for the project (the git smart HTTP protocol in the Worker,
+  stored in R2). Merging happens here: work on different parts (sourcing
+  parts for a BIM on one machine, FEA on another) merges cleanly, and real
+  conflicts go to the agent, which resolves them with ordinary git. Agents
+  need nothing new.
+- **Large files via Git LFS.** STEP files, scans, meshes and results go
+  through Git LFS; Tule serves its HTTP API from the same R2 store, so they
+  are never merged and never stored twice.
+- **Generated outputs are not merged.** They come from code; each output
+  records the commit it was made from, so the viewer can say "stress
+  results are from abc, 2 saves behind" and the agent can regenerate.
+- **Which state a machine gets:** a machine newly loaded with the project
+  starts from the latest save (main); a machine that comes back resumes its
+  own last snapshot. A machine that is gone for good but left unsaved work
+  shows up on the project ("unsaved changes from rechenknecht") until the
+  agent merges or discards it.
+- **Hosting:** Tule hosts the repositories so one connector is still all a
+  user sets up. Pushing to (or mirroring on) GitHub can come later as an
+  option.
+- **Open:** a merged `tule.toml` (packages) may be a combination neither
+  machine ran, so a save that touches it should rebuild before results are
+  trusted; the live viewer needs to say which copy it shows (main, or one
+  machine's); the projects list then shows every machine a project is
+  loaded on.
+
 ### Outputs
 
 The viewer renders `/workspace/outputs/`: one folder per output, holding
@@ -723,4 +765,4 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
-| Machines | one per project (2026-11-01). Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's snapshot. To revisit (2026-11-01): more than one machine per project, e.g. a long analysis on a GPU while the agent keeps iterating on designs elsewhere; the hard part is two machines sharing `/workspace`. The projects list (an icon and where it runs: Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token) assumes one machine and would change with it. |
+| Machines | one per project (2026-11-01). Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's snapshot. To change: several machines per project, each with its own autosaved working copy, saving and merging through git (see "Planned: several machines per project, saves in git"). The projects list (an icon and where it runs: Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token) assumes one machine and would change with it. |
