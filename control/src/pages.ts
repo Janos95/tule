@@ -177,7 +177,7 @@ function gpuTag(names: string[]): Html | string {
 function machineLabel(m: MachineRow): Html {
   if (m.kind === "cloud") return html`${icon("cloud")}Tule cloud`;
   if (m.kind === "gpu") return html`${icon("gpu")}RunPod${gpuTag([GPUS[m.id.slice(4)] ?? m.id.slice(4)])}`;
-  if (m.kind === "joined") return html`${icon("plug")}other machine`;
+  if (m.kind === "joined") return html`<span title="started with a join token">${icon("plug")}joined machine</span>`;
   const os = (m.os ?? "").toLowerCase();
   const kind = os.startsWith("darwin") ? "apple" : /^windows|microsoft|wsl/.test(os) ? "windows" : os.startsWith("linux") ? "server" : "desktop";
   return html`${icon(kind)}${m.computer ?? m.id}${gpuTag(m.gpus ?? [])}`;

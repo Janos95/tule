@@ -205,7 +205,7 @@ function request(file) {
 function machineName(m) {
   if (m.kind === "cloud") return "Tule cloud";
   if (m.kind === "gpu") return `RunPod ${(m.gpu ?? m.id.slice(4)).replace(/^NVIDIA (GeForce )?/, "")}`;
-  if (m.kind === "joined") return "other machine";
+  if (m.kind === "joined") return "joined machine";
   return m.computer ?? m.id;
 }
 
