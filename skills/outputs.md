@@ -1,6 +1,6 @@
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and other files. `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it at once.
+The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output: geometry files, an optional `output.json`, other files. `tule build` runs `src/<name>.py`, which writes `outputs/<name>/`; the user sees it at once.
 
 ```
 outputs/
@@ -11,11 +11,11 @@ outputs/
   print/           output.json lid.step print.3mf     a print plate: one 3MF, every part (no STLs)
 ```
 
-Geometry: STEP (faces, names, colors and tags travel inside; prefer it) or STL (meshes).
+Geometry: STEP (faces, names, colors, tags travel inside; prefer it) or STL (meshes).
 
 ## Writing them
 
-`tule.outputs` writes folders atomically (one output per script under `tule build`; here several):
+`tule.outputs` writes folders atomically (under `tule build` one per script; here several):
 
 ```python
 from tule import *
@@ -37,11 +37,11 @@ outputs.overlay("plate-loads", part, title="Load case 1",
                 arrows=[{"at": (20, 10, 5), "dir": (0, 0, -1), "label": "200 N"}])
 ```
 
-Other tools may write into `outputs.folder()` directly: temporary name, `os.replace`, `output.json` last.
+Other tools write into `outputs.folder()` directly: temporary name, `os.replace`, `output.json` last.
 
 ## `output.json`
 
-Optional; without it, one file is a part, numbered files are a sequence, several files an assembly.
+Optional: without it one file is a part, numbered files a sequence, several files an assembly.
 
 ```json
 {"version": 1, "kind": "part", "file": "bracket.step", "title": "Bracket v2"}
@@ -59,17 +59,17 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Stress over the whole surface: `tule docs fea`.
 - **Info** (any kind): a flat object of facts (units in text: `"20.8 g"`), shown under the view.
-- **Plates**: `"plate": {"parts": {"pin": 4}, "estimate": {"print_time_s", "filament_g", "filament_m"}}` (`estimate=True`).
-- **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end. A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
+- **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", "filament_g", …}}` (`estimate=True` or the user's printer, `estimate="bambu-p1s"`: `tule docs outputs.plate`).
+- **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `outputs.drawing`, see `tule docs drawings`), text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `tule docs drawings`), text, images; anything else: a download.
 
 ```python
 import json
 from tule import outputs
-d = outputs.folder("study")              # under tule build: outputs.folder()
+d = outputs.folder("study")  # under tule build: outputs.folder()
 with open(f"{d}/results.csv", "w") as f:
     f.write("t_mm,mass_g\n3,25.9\n5,43.2\n")
 with open(f"{d}/mass.vl.json", "w") as f:
@@ -87,6 +87,6 @@ tule screenshot -o /tmp/v.png --output bracket --labels      # f12 · load on ev
 tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
 ```
 
-Read the PNG. It lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3`: the third).
+Read the PNG; it lists faces labeled, too small to label, or hidden. A sequence shows its last frame (`--frame 3`: the third).
 
 Outputs are not in git (`tule build` remakes them).
