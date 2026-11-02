@@ -1,5 +1,6 @@
+import pytest
 
-
+from tule import *
 def test_iterating_gives_one_item_selections():
     b = box(10, 10, 10)
     ids = [f.id for f in b.faces]
