@@ -2957,7 +2957,16 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
              for si in range(len(specs))]
     nb = {k: _neighbors(k, g) for g in grids for k in g}
     feats = _features(wrapped, tol_)
-    linear, picks, planes = _parse_dims(dims, V, alias, tol_)
+    try:
+        linear, picks, planes = _parse_dims(dims, V, alias, tol_)
+    except TuleError as e:  # say which entry: parsed alone, the first one that fails
+        for i, d in enumerate(dims or ()):
+            try:
+                _parse_dims([d], V, alias, tol_)
+            except TuleError:
+                e.message = f"dims[{i}]: {e.message}"
+                break
+        raise
     letters = _parse_datums(datums, picks, planes, tol_)
     for fr in [f for pk in picks for f in pk["opts"].get("frame", [])] + [f for pl in planes for f in pl["frames"]]:
         missing = [d for d in fr.letters() if d not in letters]

@@ -338,3 +338,10 @@ def test_filter_sees_centers_types_and_sizes():
     assert len(holes) == 2 and all(abs(c["center"][0] - 7) < 1e-6 for c in holes.info())
     assert len(b.faces.filter(lambda f: f.type == "plane" and f.area > 300)) == 2
     assert len(b.vertices.filter(lambda v: v.center.z > 4)) == 6  # 4 corners, 1 on each hole
+
+
+def test_an_assembly_takes_a_name_and_a_color():
+    a = Assembly(box(1).named("a"), Assembly(box(2).named("b"), name="sub"), name="vendor")
+    n = a.named("hat", "#f00")
+    assert n.name == "hat" and [(p, s.color) for p, s in n.parts()] == [("hat/a", "#f00"), ("hat/sub/b", "#f00")]
+    assert a.named("x").parts()[0][1].color is None
