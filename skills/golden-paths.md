@@ -33,7 +33,7 @@ outputs.part("bracket", part)
 ```python
 from tule import *
 
-LOAD_N, HOLE_R = 500, 2.75     # in a project: in lib/params.py, shared with src/bracket.py
+LOAD_N, HOLE_R = 500, 2.75     # in a project: shared in lib/params.py
 part = import_step("outputs/bracket/bracket.step")
 load, fixed = part.faces.top(), part.faces.cylindrical(r=HOLE_R)
 outputs.overlay("bracket-loads", part, title=f"{LOAD_N} N down at the boss, 4 x M5 bolted",
@@ -45,29 +45,31 @@ outputs.overlay("bracket-loads", part, title=f"{LOAD_N} N down at the boss, 4 x 
 ```sh
 tule build                                                # bracket first: bracket-loads reads it
 tule screenshot -o /tmp/loads.png --output bracket-loads  # read it: load and bolts where the user meant?
-tule inspect outputs/bracket/bracket.step                 # tags: load f.., fixed f.., f.., f.., f..
+tule inspect outputs/bracket/bracket.step                 # tags: load f.., fixed f..
 ```
 
 Tell the user to check `bracket-loads` in the viewer; once confirmed, `tule save`, then optimize (`tule docs topopt`).
 
 ## Motion study, checked
 
-"A pinion drives a wheel: does it run free?" Check every motion (and assembly) before presenting it.
+"A pinion drives a wheel: does it run free?" Drive the input and let followers come from contact (`touch`), so a plotted ratio or lift is measured. Check every motion before presenting it.
 
-`src/gears-motion.py` makes each part once and moves it per frame:
+`src/gears-motion.py` makes each part once, moved per frame:
 
 ```python
 from tule import *
 
-pair = gear_pair(1.5, 20, 30, backlash=(0.05, 0.05))
-pinion = spur_gear(1.5, 20, 8, bore=6, backlash=0.05).named("pinion", "#4a8")
-wheel = spur_gear(1.5, 30, 8, bore=6, backlash=0.05).named("wheel", "#48d")
+pair = gear_pair(1.5, 20, 30, backlash=(0.15, 0.15))  # printed: ~0.3 mm backlash, 0.2-0.3 mm pin clearance
+pinion = spur_gear(1.5, 20, 8, bore=6.3, backlash=0.15).named("pinion", "#4a8")
+wheel = spur_gear(1.5, 30, 8, bore=6.3, backlash=0.15).named("wheel", "#48d")
 shaft = cylinder(3, 20).at(0, 0, -6).named("shaft", "#aaa")
-plate = (box(70, 40, 4).at(-15, -20, -6) - cylinder(3, 20, center=True)).named("plate", "#888")
+plate = (box(70, 40, 4).at(-15, -20, -6) - cylinder(3.15, 20, center=True)).named("plate", "#888")
 with outputs.sequence("gears-motion", "One tooth of mesh") as seq:
-    for i in range(13):                       # a fraction of a tooth per frame
+    for i in range(13):                 # 1/12 tooth per frame
         t = i * 360 / 20 / 12
-        seq.add([plate, shaft, pinion.rotate(z=t), pair.place(wheel, turn=t)], label=f"{t:.1f} deg", angle=t)
+        drive = pinion.rotate(z=t)
+        c = touch(drive, lambda r: pair.place(wheel.rotate(z=r), turn=t), 0, 3)  # turned back to touch
+        seq.add([plate, shaft, drive, c.shape], label=f"{t:.1f} deg", angle=t, lag=c.t)  # steady lag: ratio z2/z1
 ```
 
 `src/gears-clearance.py` checks every frame of it:
@@ -76,17 +78,17 @@ with outputs.sequence("gears-motion", "One tooth of mesh") as seq:
 from tule import *
 
 r = clearance("outputs/gears-motion", contacts=[("shaft", "*"), ("pinion", "wheel")], below=0.5)
-print(r)                    # worst first: clashes, gaps under 0.5 mm, then the contacts you listed
-r.show("gears-clearance")   # the worst frame with its faces marked, and the table
+print(r)                    # worst first: clashes, gaps, contacts
+r.show("gears-clearance")   # the worst frame, marked, and the table
 assert r.ok, r.clashes
 ```
 
 ```sh
-tule build                                               # gears-motion first: gears-clearance reads it
+tule build                                               # gears-motion first
 tule screenshot -o /tmp/c.png --output gears-clearance   # read it
 ```
 
-List what is meant to touch (meshing gears, a pin in its bore, a slider on its rail) in `contacts`. Fix every clash, then show the user `gears-motion` and the smallest gap.
+List what is meant to touch (meshing gears, a pin in its bore) in `contacts`. Fix every clash, then show the user `gears-motion`, its lag and the smallest gap.
 
 ## Run a study on a GPU
 
@@ -114,7 +116,7 @@ with outputs.sequence("plate-study", "Plate thickness vs. 99.9 % stress") as seq
 ```
 
 ```sh
-tule build plate-study      # goes on if this command ends; run it again to follow it. The viewer plots stress and mass per frame
+tule build plate-study      # goes on if this command ends; rerun to follow. The viewer plots stress and mass
 ```
 
-4. When it is done: `tule save` on it, `tule down --machine gpu-rtx4090` so the GPU stops billing, and summarize the result with numbers. Its outputs are in the build cache: after a `tule save` on the other machine, `tule build study` there downloads them instead of running the study.
+4. When it is done: `tule save` on it, `tule down --machine gpu-rtx4090` so the GPU stops billing, and summarize the result with numbers. After a `tule save` there, `tule build study` elsewhere downloads its outputs from the build cache.

@@ -138,14 +138,15 @@ outputs.part("bracket", part)
 ## Building blocks
 
 - Solids: `box(x, y, z, center=)`, `cube`, `cylinder(r, h, center=)`, `cone(r, h, r2)`, `sphere(r)`, `torus(R, r)`, `wedge`, `polyhedron(points, faces)`.
-- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner), `spline(points, tol=)` (a smooth outline), `text("MK4", size, bold=)`. Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
-- Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`, `sweep(profile, [(x, y, z), …])` along a smooth 3D path (faces `start`, `end`), `pipe(points, r, wall=)` for tendons, cables, tubes; points `(x, y, z, r)`: straight, that corner an arc of radius r (a pulley).
+- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (r rounds that corner), `spline(points, tol=)`, `text("MK4", size, bold=)`. Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
+- Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`, `sweep(profile, [(x, y, z), …])` along a 3D path (faces `start`, `end`), `pipe(points, r, wall=)` for cables, tubes; a point `(x, y, z, r)` rounds that corner (a pulley).
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)`.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
 - Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching), `a.closest(b)`: `(gap, pa, pb)`.
-- Clearance: `r = clearance(frames, contacts=[("pin", "link")])`: an assembly or each pose of a motion (Assemblies, or their `outputs.sequence`); each overlap, or gap under `below=0.5` mm, exact at its worst frame. `print(r)`, `r.show("arm-clearance")`, `assert r.ok`. Gears: step by a fraction of a tooth.
-- Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference; `pair.place(gear2, angle=)` meshes gear 2 at `pair.distance`. Bevel: `pair = bevel_pair(module, z1, z2, width, shaft_angle=90)` meshes `pair.gear1`, `pair.gear2`; `pair.place(bevel_gear(..., mating_teeth=z1), turn=)`. Cycloidal: `d = cycloidal_drive(pins, pin_circle_d, pin_d, eccentricity, width)` has `d.disc` (pins − 1 lobes), `d.pins`, `d.place(d.disc, crank_angle)`.
+- Clearance: `r = clearance(frames, contacts=[("pin", "link")])` on an assembly or motion (Assemblies, `outputs.sequence`): each overlap or gap under `below=0.5` mm at its worst frame. `print(r)`, `r.show(name)`, `assert r.ok`.
+- Contact: `touch(cam.rotate(z=a), lambda y: follower.at(0, y, 0), 40, 0)`: first `t` from 40 to 0 where it touches (`.t`, `.shape`). Drive the input, followers by contact: lift and ratio are measured.
+- Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference; `pair.place(gear2, turn=)` meshes gear 2. Bevel: `pair = bevel_pair(module, z1, z2, width, shaft_angle=90)` meshes `pair.gear1`, `pair.gear2`; `pair.place(bevel_gear(..., mating_teeth=z1), turn=)`. Cycloidal: `d = cycloidal_drive(pins, pin_circle_d, pin_d, eccentricity, width)` has `d.disc`, `d.pins`, `d.place(d.disc, crank_angle)`.
 - Sheet metal (flanges, flats): `tule docs sheetmetal`.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
@@ -175,7 +176,7 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 
 ## Drawings
 
-`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts from the model. Don't hand-draw one; `tule docs drawings`: dimensions, tolerances, sections, scale.
+`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts from the model. Don't hand-draw one; `tule docs drawings`: dimensions, tolerances, sections.
 
 ## Errors
 
