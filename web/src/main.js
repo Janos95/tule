@@ -388,6 +388,9 @@ const building = (o) => o.building || o.build?.state === "building";
 function fact(o) {
   if (o.error || o.build?.state === "failed") return ["failed", "error"];
   if (building(o)) return ["building", "live"];
+  // what it reads changed since it was built: it may not show the design any more (the tooltip says why)
+  if (o.build?.state === "stale" && o.build.why !== "never built" && (o.files.length || o.docs.length)) return ["out of date", "warning"];
+  if (changed(o).length) return ["check again", "warning"];
   if (!o.files.length) return ["", ""];
   const kind = kindOf(o);
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;

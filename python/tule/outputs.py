@@ -157,10 +157,13 @@ def picture(item: Union[Shape, Assembly], path: str, view: str = "iso", size: in
 
 
 class Folder(str):
-    """A folder path: a str that also takes ``/`` like a Path (``outputs.folder() / "bom.csv"``)."""
+    """A folder path: a str that also works as a Path (``outputs.folder() / "bom.csv"``, ``.iterdir()``, ``.glob("*.stl")``)."""
 
     def __truediv__(self, other) -> Path:
         return Path(self) / other
+
+    def __getattr__(self, name):
+        return getattr(Path(self), name)
 
 
 def folder(name: str | None = None) -> "Folder":

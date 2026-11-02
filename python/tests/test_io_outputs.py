@@ -152,6 +152,9 @@ def test_outputs_part_assembly_sequence(outdir):
     assert t[0] == pytest.approx(0.5) and t[2] == pytest.approx(3 ** 0.5 / 2) and t[12:] == [0, 0, 0, 1]
     assert f3["parts"][1]["file"] == "arm_2.step" and f2["values"] == {"angle": 60.0}
     assert (outputs.folder("bom") / "x.csv").parent.name == "bom"
+    f = outputs.folder("bom")
+    (f / "x.csv").write_text("a\n")
+    assert f.exists() and [p.name for p in f.iterdir()] == ["x.csv"] and len(list(f.glob("*.csv"))) == 1
 
 
 def test_sequence_context_marks_failure(outdir):
