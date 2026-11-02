@@ -32,7 +32,7 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 | `loop` | the working loop: edit, build, look, iterate; project layout; saving and merging; long jobs |
 | `modeling` | writing geometry with `tule` (values, operators, selections, tags) |
 | `outputs` | what the viewer shows and how to write it |
-| `drawings` | shop drawings: dimensions, tolerances, callouts, sections |
+| `drawings` | shop drawings: dimensions, tolerances, callouts, sections; exploded assembly drawings, parts lists |
 | `sheetmetal` | bent sheet parts: flanges, flat patterns, bend tables, DXF for the laser |
 | `occt` | an operation failed: fillets, Booleans, shells, tolerances |
 | `annotations` | the user drew on the model in the viewer |

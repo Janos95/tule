@@ -735,7 +735,7 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
             title: str | None = None, info: dict | None = None, notes=None, tol: dict | None = None,
             revisions=None, callouts=None, sheet: str | None = None, scale=None, hidden: bool = True,
             projection: str = "first", dxf: str | None = None, sheets=None, datums: dict | None = None,
-            table=None) -> str:
+            table=None, explode=None, bom=None) -> str:
     """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` (every sheet), one
     ``.svg`` per sheet (``<name>.svg``, ``<name>-2.svg``, ...) and the model as STEP, shown in 3D
     (several parts side by side). Returns the folder.
@@ -784,9 +784,22 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
     Nothing is dated unless you say so: the same drawing writes the same bytes.
     ``revisions=[("A", "First issue"), ("B", "Slots 2 mm longer", "2026-11-02")]``
     draws a revision table; the last is the current rev. ``notes=["Break all edges
-    0.3", "Anodize clear, MIL-A-8625 Type II"]``: a numbered NOTES block on sheet 1.
-    ``table=[{"Part": "B-20", "L": 20}, ...]`` (or lists, the header first) adds a last sheet
-    with the table; it, or several parts, takes the notes there.
+    0.3", "Anodize clear, MIL-A-8625 Type II"]``: a NOTES block on sheet 1, one numbered note
+    per item (numbering typed in is dropped; an item or line that only continues the one
+    before is joined to it), 3.5 mm text; more than 12 lines go on A4 portrait notes sheets
+    at the end. ``table=[{"Part": "B-20", "L": 20}, ...]`` (or lists, the header first) adds
+    a last sheet with the table; it, or several parts, takes the notes there.
+
+    ``explode=1`` draws an Assembly as an assembly drawing: one view (iso; ``views="front"``),
+    the parts moved apart, a numbered balloon on each distinct part (copies: same geometry,
+    names differing by a number, are one item, numbered in part order), its leader to a dot
+    on the part, crossing no other, and the parts list (Item, Name, Qty) on the title block.
+    The factor stacks the parts along the axis that parts them with least travel: a part
+    stays above the one it rests on, of two interlocked (a shaft in a bore) the one listed
+    later goes up, and one hidden under a lid is uncovered; ``2`` doubles the gaps, ``0``
+    keeps them in place; ``{"shaft": (-80, 0, 0)}`` moves just those parts (name, path, or
+    name without its number). ``bom={"cam": {"material": "PLA", "source": "printed"}}`` adds
+    columns (``"name"`` replaces the name). No dims, datums or tol.
 
     ``sheet``: ``"A4"`` to ``"A0"``; left out, the smallest of A4, A3, A2 that takes the views.
     ``scale``: left out, 1:1 when it fits (2:1 and up only for a small part), else the
@@ -803,7 +816,8 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
     folder = _folder(name)
     facts = write_drawing(folder, _slug(name.rsplit("/", 1)[-1]), item, views=views, dims=dims, title=title, info=info,
                           sheet=sheet, scale=scale, hidden=hidden, projection=projection, dxf_view=dxf, notes=notes,
-                          tol=tol, revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table)
+                          tol=tol, revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table,
+                          explode=explode, bom=bom)
     # the model beside its drawing, so the output shows it in 3D too; several parts side by side
     parts, x = [], None
     for stem, it in facts["stems"]:
