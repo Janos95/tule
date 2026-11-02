@@ -8,6 +8,16 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq curl wget fonts-dejavu-core poppler-utils tini \
  && for p in mesa-libgallium libllvm19 libgl1-mesa-dri libglx-mesa0; do dpkg -L $p 2>/dev/null | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
+# gmsh meshes tule.fea's quadratic tetrahedra (thin walls, flexures; see python/tule/tetfe.py). It
+# never loads Open CASCADE's sample data or its Tcl/Tk test harness (80 MB): their files go, the
+# packages stay installed (as for Mesa below)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gmsh \
+ && rm -rf /usr/share/opencascade/data /usr/share/opencascade/samples \
+ && dpkg-query -W -f '${Package}\n' | grep -E '^(libocct-draw-.*|libtcl8\.6|libtk8\.6)$' \
+    | while read -r p; do dpkg -L $p | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
+ && gmsh --version \
+ && rm -rf /var/lib/apt/lists/*
 # datasheet sites often refuse curl's and wget's own names (403): they ask as a browser would
 RUN printf 'user-agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"\nlocation\n' > /root/.curlrc \
  && printf 'user_agent = Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36\n' >> /etc/wgetrc

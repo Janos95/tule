@@ -286,6 +286,46 @@ def load_field(path: str, spec: dict, jpath: str):
     return grid.astype(np.float64)
 
 
+def surface_field(spec: dict, file_in, jpath: str, part=None):
+    """A field on its own surface mesh as a render Part (vertices split per B-rep face, so edges stay
+    sharp; moved by ``deform`` × the vectors), the value per vertex (a vector's length), and deform."""
+    import numpy as np
+
+    from .render import Part
+
+    def arr(name, what):
+        try:
+            return np.load(file_in(str(name)), allow_pickle=False)
+        except (OSError, ValueError, TypeError) as e:
+            raise CliError(f"{jpath}: field {spec.get('label')!r}: cannot read its {what} {name!r} ({e})") from None
+
+    mesh = spec["mesh"]
+    P = arr(mesh.get("vertices"), "vertices").astype(np.float64)
+    T = arr(mesh.get("triangles"), "triangles").astype(np.int64)
+    F = arr(mesh["faces"], "faces").astype(np.int64) if mesh.get("faces") else np.zeros(len(T), np.int64)
+    V = arr(spec.get("file"), "values").astype(np.float64)
+    if P.ndim != 2 or P.shape[1] != 3 or T.ndim != 2 or T.shape[1] != 3 or F.shape != (len(T),) or \
+            V.shape not in ((len(P),), (len(P), 3)) or (len(T) and (T.min() < 0 or T.max() >= len(P))):
+        raise CliError(f"{jpath}: field {spec.get('label')!r}: a surface is vertices (n, 3), triangles (m, 3), faces (m,) "
+                       f"and values (n,) or (n, 3); got {P.shape}, {T.shape}, {F.shape}, {V.shape}")
+    deform = float(spec.get("deform") or 0) if V.ndim == 2 else 0.0
+    if deform:
+        P = P + deform * V
+    mag = np.linalg.norm(V, axis=1) if V.ndim == 2 else V
+    # a vertex per (vertex, face): smooth inside a face, sharp across its edges
+    key, inv = np.unique(np.stack([T.reshape(-1), np.repeat(F, 3)], 1), axis=0, return_inverse=True)
+    inv = inv.reshape(-1, 3)
+    pos = P[key[:, 0]]
+    fn = np.cross(pos[inv[:, 1]] - pos[inv[:, 0]], pos[inv[:, 2]] - pos[inv[:, 0]])
+    nrm = np.zeros_like(pos)
+    for c in range(3):
+        np.add.at(nrm, inv[:, c], fn)
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-30)
+    out = Part(part.name if part else "field", pos.astype(np.float32), nrm.astype(np.float32), inv, F,
+               part.color if part else None, dict(part.tags) if part else {}, part.faces if part else int(F.max(initial=0) + 1))
+    return out, mag[key[:, 0]], deform
+
+
 def refine(part, longest: float, cap: int = 400_000):
     """Splits the triangles of a render Part until no edge is longer than ``longest`` (or the mesh has
     ``cap`` triangles), so a field sampled at the vertices shows as it is on a coarse mesh (a flat face
@@ -428,7 +468,17 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
                 overlay.arrows.append(a)
             caption += f" (overlay, {len(overlay.faces)} faces, {len(overlay.arrows)} arrows)"
             fields = [f for f in meta.get("fields") or [] if isinstance(f, dict)]
-            if fields:
+            if fields and isinstance(fields[0], dict) and isinstance(pick_field(fields, field, jpath).get("mesh"), dict):
+                spec = pick_field(fields, field, jpath)
+                surf, mag, deform = surface_field(spec, file_in, jpath, parts[0] if parts else None)
+                flo, fhi = float(spec.get("min", mag.min())), float(spec.get("max", mag.max()))
+                surf.colors = ramp_array((mag - flo) / (fhi - flo) if fhi > flo else np.full(len(mag), 0.5))
+                parts = [surf] + parts[1:]
+                overlay.scale = {"label": spec.get("label") or "value", "unit": spec.get("unit") or "",
+                                 "min": flo, "max": fhi, "note": spec.get("note") or "", "deform": deform, "colors": RAMP_RGB}
+                others = [f.get("label") for f in fields if f is not spec]
+                caption += f" · {spec.get('label')}" + (f" (also: {', '.join(others)}; --field)" if others else "")
+            elif fields:
                 spec = pick_field(fields, field, jpath)
                 grid = load_field(file_in(str(spec.get("file"))), spec, jpath)
                 deform = float(spec.get("deform") or 0) if grid.ndim == 4 else 0.0

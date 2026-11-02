@@ -32,6 +32,8 @@ def test_examples_run(doc, tmp_path):
                    check=True, capture_output=True)
     for i, code in enumerate(blocks):
         r = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+        if r.returncode and "tetrahedral meshing needs gmsh" in r.stderr:
+            pytest.skip(f"gmsh is not installed: {doc}, Python block {i + 1} meshes tetrahedra (apt-get install gmsh)")
         assert r.returncode == 0, f"{doc}, Python block {i + 1}:\n{code}\n{r.stderr}"
 
 
