@@ -353,7 +353,7 @@ function views(o) {
   // files with no view of their own (an STL, a .3mf) are only in Download
   // (a README beside the data opens before a CSV that happens to share the folder's name)
   const rank = (f) => (/^readme\.md$/i.test(f.file) ? 0 : f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop() ? 1 : ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(f.type) + 2 || 10);
-  const docs = [...o.docs].sort((a, b) => rank(a) - rank(b));
+  const docs = o.docs.filter((f) => !sheetSvg(o, f)).sort((a, b) => rank(a) - rank(b));
   for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) {
     v.push({ id: f.file, label: f.file, type: f.type, f });
     if (f === named) v.push({ id: "3d", label: "3D", type: "geometry" });
@@ -940,7 +940,9 @@ function save(bytes, name) {
 let downloads = [];
 /** The Download button offers the shown output's geometry files, or the file shown. */
 /** An output's files with no view of their own (.3mf, .zip): offered in Download from every view. */
-const extras = (o) => o.docs.filter((f) => f.type === "file");
+const extras = (o) => o.docs.filter((f) => f.type === "file" || sheetSvg(o, f));
+/** A drawing's sheet as an SVG (bracket.svg, bracket-2.svg beside bracket.pdf): in Download, not a view of its own. */
+const sheetSvg = (o, f) => /\.svg$/i.test(f.file) && o.docs.some((d) => d.type === "pdf" && base(d.file) === base(f.file).replace(/-\d+$/, ""));
 
 // a file to print (3MF, STL) first: it is what most people come for
 const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.stl$/i.test(f.file) ? 1 : 2);

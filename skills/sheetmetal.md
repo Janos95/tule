@@ -15,11 +15,11 @@ for i in range(6):
 flat = tray.unfold()                                    # the blank: a plate t thick in the xy plane
 print(flat.size, [b.label for b in flat.bends])         # UP 90° R1.5 ...
 print(tray.bend_table()[0])                             # bend, direction, angle, radius, k, allowance, ...
-outputs.part("tray", tray.named("tray", "#9ab"))
-outputs.drawing("tray-flat", flat, dxf="top", info={"material": "DC01", "number": "TR-1"})
+outputs.drawing("tray", {"tray": tray.named("tray", "#9ab"), "tray-flat": flat},  # one output: both,
+                dxf="top", info={"material": "DC01", "number": "TR-1"})         # in 3D and on sheets
 ```
 
-`outputs.drawing` of a flat draws its top view with dash-dot bend lines labeled `B1 UP 90° R1.5`, the overall blank size, hole and slot callouts and a bend table, and writes `tray-flat-bends.csv`; `dxf=` writes the flat as a clean cut file for a laser shop (SendCutSend and the like): mm (`$INSUNITS` 4), outline and holes as closed outlines on layer CUT, bend lines on BEND_UP and BEND_DOWN (dash-dot), no text; the bend data is in the drawing and the CSV. `flat.export_dxf(path)` writes the same file (`notes=True` adds the labels as TEXT on BEND_NOTES). A drawing of the formed part also gets the bend table and the same DXF. A part without bends (a lid, a gusset) unfolds to itself with no bends, through the same path.
+`outputs.drawing` writes the models (STEP) beside the drawing. A flat's sheet has its top view with dash-dot bend lines labeled `B1 UP 90° R1.5`, the overall blank size, hole and slot callouts and a bend table, plus `tray-flat-bends.csv`; `dxf=` writes `tray-flat.dxf`, the file to upload to a laser portal (SendCutSend and the like): mm (`$INSUNITS` 4), outline and holes as closed outlines on layer CUT, nothing else, as a portal cuts every line; the bend data is in the drawing and the CSV. `flat.export_dxf(path, bends=True)` adds bend lines on BEND_UP / BEND_DOWN for a shop that asks (`notes=True` their labels). Drawn alone, the formed part gets the bend table and the DXF itself. A part without bends (a lid, a gusset) unfolds to itself with no bends, through the same path.
 
 ## Conventions
 

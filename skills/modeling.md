@@ -61,7 +61,7 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 
 ## Drawings
 
-`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts from the model. Don't hand-draw one; `tule docs drawings`: dimensions, tolerances, sections, scale.
+`outputs.drawing("plate", part)` writes a shop drawing (PDF, SVG, the model; `dxf=` to cut) with views, overall sizes and hole, counterbore and slot callouts from the model. Don't hand-draw one; `tule docs drawings`: dimensions, tolerances, sections, scale.
 
 ## Errors
 

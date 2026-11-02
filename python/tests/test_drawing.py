@@ -40,7 +40,7 @@ def test_plate_drawing_files_and_dims(outdir):
     folder = outputs.drawing("plate-drawing", plate(), info={"material": "aluminium 6061"})
     names = sorted(p.name for p in (outdir / "plate-drawing").iterdir())
     assert folder == str(outdir / "plate-drawing")
-    assert names == ["plate-drawing.pdf", "plate-drawing.svg"]
+    assert names == ["output.json", "plate-drawing.pdf", "plate-drawing.step", "plate-drawing.svg"]
     t = svg_texts(outdir / "plate-drawing" / "plate-drawing.svg")
     # overall sizes, each once, and the holes as callouts with their count
     assert t.count("100") == 1 and t.count("60") == 1 and t.count("6") == 1
@@ -68,7 +68,7 @@ def test_deterministic_bytes(outdir):
     first = {p.name: p.read_bytes() for p in (outdir / "d").iterdir()}
     outputs.drawing("d", plate(), dxf="top")
     second = {p.name: p.read_bytes() for p in (outdir / "d").iterdir()}
-    assert sorted(first) == ["d.dxf", "d.pdf", "d.svg"]
+    assert sorted(first) == ["d.dxf", "d.pdf", "d.step", "d.svg", "output.json"]
     assert first == second
     assert a == str(outdir / "d")
 
@@ -544,7 +544,8 @@ def test_several_parts_and_a_table_sheet(outdir):
                     notes=["Print flat"], table=rows)
     d = outdir / "family"
     assert sorted(x.name for x in d.iterdir()) == ["family-2.svg", "family-3.svg", "family-B-40.dxf",
-                                                   "family-B-60.dxf", "family.pdf", "family.svg"]
+                                                   "family-B-40.step", "family-B-60.dxf", "family-B-60.step",
+                                                   "family.pdf", "family.svg", "output.json"]
     pdf = (d / "family.pdf").read_bytes()
     assert b"/Count 3" in pdf and b"/Title (Bracket family)" in pdf
     s1, s2, s3 = (svg_texts(d / f) for f in ("family.svg", "family-2.svg", "family-3.svg"))

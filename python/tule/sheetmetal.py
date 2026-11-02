@@ -1097,11 +1097,12 @@ def _wire_prim(w, f, tol: float) -> tuple:
     return ("poly", tuple(pts), True, tuple(bulges))
 
 
-def flat_dxf(part: "Shape", notes: bool = False) -> str:
+def flat_dxf(part: "Shape", notes: bool = False, bends: bool = False) -> str:
     """The flat pattern as an R12 DXF in mm (``$INSUNITS`` 4) for a laser or waterjet shop: the
-    outline and every hole as closed outlines (CIRCLE, closed POLYLINE) on CUT, bend lines on
-    BEND_UP / BEND_DOWN (dash-dot), no text. ``notes=True`` adds their labels (``B1 UP 90° R1.5``)
-    as TEXT on BEND_NOTES; the bend table and the drawing carry them anyway."""
+    outline and every hole as closed outlines (CIRCLE, closed POLYLINE) on CUT, nothing else (a
+    portal cuts every line). ``bends=True`` adds the bend lines on BEND_UP / BEND_DOWN (dash-dot),
+    ``notes=True`` also their labels (``B1 UP 90° R1.5``) as TEXT on BEND_NOTES; the bend table
+    and the drawing carry them anyway."""
     from .drawing import to_dxf_entities
 
     flat = _flat(part, "export_dxf")
@@ -1112,7 +1113,7 @@ def flat_dxf(part: "Shape", notes: bool = False) -> str:
             for w in [outer] + [w for w in subshapes(f, "wire") if not w.IsSame(outer)]:
                 prims.append(("CUT", _wire_prim(w, f, 0.01)))
     texts = []
-    for b in flat._sm.bends:
+    for b in flat._sm.bends if bends or notes else ():
         layer = "BEND_UP" if b.direction == "up" else "BEND_DOWN"
         (x0, y0), (x1, y1) = b.line
         prims.append((layer, ("line", x0, y0, x1, y1)))
@@ -1131,8 +1132,8 @@ def flat_dxf(part: "Shape", notes: bool = False) -> str:
     return to_dxf_entities(prims, texts, {k: v for k, v in LAYERS.items() if k in used})
 
 
-def export_dxf(part: "Shape", path: str, notes: bool = False) -> str:
+def export_dxf(part: "Shape", path: str, notes: bool = False, bends: bool = False) -> str:
     """Write a sheet part's flat pattern as a DXF for cutting (see :func:`flat_dxf`). Returns the path."""
     from .io import write_atomic
 
-    return write_atomic(path, flat_dxf(part, notes))
+    return write_atomic(path, flat_dxf(part, notes, bends))

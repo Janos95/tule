@@ -229,7 +229,8 @@ def test_dxf_is_a_clean_cut_file(tmp_path):
     s = base(100, 60) - cylinder(3, 10).at(50, 30, -1)
     p = s.flange(s.faces.normal(-Y), 20).flange(s.faces.normal(Y), 20, angle=-90)
     p -= slot(30, 4).extrude(10).rotate(x=90).at(50, 5, 12)                 # a vent in the up flange
-    text = open(p.export_dxf(str(tmp_path / "flat.dxf"))).read()
+    assert "BEND" not in open(p.export_dxf(str(tmp_path / "cut.dxf"))).read()  # a portal cuts every line
+    text = open(p.export_dxf(str(tmp_path / "flat.dxf"), bends=True)).read()
     header, layers, ents = _dxf(text)
     assert header["$INSUNITS"] == "4" and layers == {"CUT", "BEND_UP", "BEND_DOWN"}
     assert "TEXT" not in {k for k, _ in ents} and "%%d" not in text
@@ -260,7 +261,7 @@ def test_drawing_of_the_flat(tmp_path, monkeypatch):
     s = base(120, 80)
     tray = s.flange(s.faces["side"], 20) - cylinder(3, 10).at(60, 40, -1)
     folder = outputs.drawing("tray-flat", tray.unfold(), dxf="top")
-    assert sorted(os.listdir(folder)) == ["tray-flat-bends.csv", "tray-flat.dxf", "tray-flat.pdf", "tray-flat.svg"]
+    assert sorted(os.listdir(folder)) == ["output.json", "tray-flat-bends.csv", "tray-flat.dxf", "tray-flat.pdf", "tray-flat.step", "tray-flat.svg"]
     _, _, facts = drawing.render(tray.unfold())
     texts = facts["texts"]
     for i in range(1, 5):
@@ -310,7 +311,7 @@ def test_a_sheet_without_bends_unfolds_to_itself(tmp_path, monkeypatch):
     assert lid.unfold().bounds[0] == pytest.approx((0, 0, 0))                 # back where the sheet was made
     monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
     folder = outputs.drawing("lid", lid, dxf="top")
-    assert sorted(os.listdir(folder)) == ["lid.dxf", "lid.pdf", "lid.svg"]    # no bends: no bend table
+    assert sorted(os.listdir(folder)) == ["lid.dxf", "lid.pdf", "lid.step", "lid.svg", "output.json"]    # no bends: no bend table
     header, layers, ents = _dxf(open(os.path.join(folder, "lid.dxf")).read())
     assert layers == {"CUT"} and sorted(k for k, _, _ in _outlines(ents)) == ["circle", "poly"]
     assert sorted(a for _, a, _ in _outlines(ents)) == pytest.approx([math.pi * 1.7 ** 2, 120 * 80])
@@ -328,7 +329,7 @@ def test_a_drawing_of_a_part_that_does_not_unfold_fails_once_naming_it(tmp_path,
     folder = outputs.drawing("bracket-3d", bad)                               # no cut file asked: a warning
     err = capsys.readouterr().err
     assert err.count("drawing without a bend table") == 1 and "'bracket'" in err
-    assert sorted(os.listdir(folder)) == ["bracket-3d.pdf", "bracket-3d.svg"]
+    assert sorted(os.listdir(folder)) == ["bracket-3d.pdf", "bracket-3d.step", "bracket-3d.svg", "output.json"]
 
 
 def test_bend_numbers_keep_three_decimals():
@@ -385,3 +386,18 @@ def test_enclosure_end_to_end(tmp_path, monkeypatch):
         outputs.drawing(name, part, dxf="top")                                # the formed part: the same flat
         assert open(os.path.join(tmp_path, "outputs", name, f"{name}.dxf")).read() == \
             open(os.path.join(folder, f"{name}-flat.dxf")).read()
+
+
+def test_part_and_flat_in_one_output(tmp_path, monkeypatch):
+    """One script, one output: the formed part and its flat, each a sheet, both in 3D side by side, one cut file."""
+    import json
+
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
+    s = base(120, 80)
+    tray = s.flange(s.faces["side"], 20)
+    folder = outputs.drawing("tray", {"tray": tray, "tray-flat": tray.unfold()}, dxf="top")
+    assert sorted(os.listdir(folder)) == ["output.json", "tray-2.svg", "tray-flat-bends.csv", "tray-flat.dxf",
+                                          "tray-flat.step", "tray.pdf", "tray.step", "tray.svg"]
+    meta = json.load(open(os.path.join(folder, "output.json")))
+    a, b = meta["parts"]
+    assert meta["kind"] == "assembly" and "transform" not in a and b["transform"][3] > 120  # beside, not inside

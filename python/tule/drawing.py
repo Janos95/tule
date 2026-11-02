@@ -3628,7 +3628,7 @@ def dxf(item, path: str, view: str = "top") -> str:
     """Write one view's visible edges as a DXF at 1:1 in mm (laser, waterjet, CNC). Returns the path.
 
     A sheet part (``sheet``, ``unfold``) writes its flat pattern instead, whatever the view: the
-    outline and holes as closed outlines on layer CUT, bend lines on BEND_UP / BEND_DOWN, no text."""
+    outline and holes as closed outlines on layer CUT, nothing else (``export_dxf(bends=True)`` for bend lines)."""
     shape, _ = _as_shape(item)
     if shape.sheet_metal is not None:
         from .sheetmetal import export_dxf
@@ -3653,7 +3653,9 @@ def write(folder: str, base: str, item, views=None, dims=(),
     def stem(k):
         from .outputs import _slug
 
-        return base if len(parts) == 1 else f"{base}-{_slug(k)}"
+        if len(parts) == 1:
+            return base
+        return _slug(k) if _slug(k).startswith(base) else f"{base}-{_slug(k)}"  # tray-flat, not tray-tray-flat
 
     for k, it in parts:
         shape, _ = _as_shape(it)
@@ -3669,11 +3671,16 @@ def write(folder: str, base: str, item, views=None, dims=(),
         n = len(pages)
         write_atomic(os.path.join(folder, base + (f"-{i + 1}" if i else "") + ".svg"),
                      to_svg(page, size, facts["title"] + (f" ({i + 1}/{n})" if n > 1 else "")))
+    # a formed part drawn with its flat: the flat's DXF and bend table are the cut files, once
+    flats = any(sh.sheet_metal is not None and sh.sheet_metal.flat for _, sh, _ in facts["parts"])
     for k, shape, bends in facts["parts"]:
+        if flats and shape.sheet_metal is not None and not shape.sheet_metal.flat:
+            continue
         if dxf_view:
             dxf(shape, os.path.join(folder, stem(k) + ".dxf"), dxf_view)
         if bends:  # found by render (a part that does not unfold has said so there, once)
             from .sheetmetal import bend_csv
 
             write_atomic(os.path.join(folder, stem(k) + "-bends.csv"), bend_csv(shape))
+    facts["stems"] = [(stem(k), it) for k, it in parts]
     return facts

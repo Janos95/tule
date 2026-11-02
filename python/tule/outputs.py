@@ -658,8 +658,9 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
             revisions=None, callouts=None, sheet: str | None = None, scale=None, hidden: bool = True,
             projection: str = "first", dxf: str | None = None, sheets=None, datums: dict | None = None,
             table=None) -> str:
-    """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` (every sheet) and one
-    ``.svg`` per sheet (``<name>.svg``, ``<name>-2.svg``, ...). Returns the folder.
+    """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` (every sheet), one
+    ``.svg`` per sheet (``<name>.svg``, ``<name>-2.svg``, ...) and the model as STEP, shown in 3D
+    (several parts side by side). Returns the folder.
 
     ``item``: a part, or ``{"B-20": b20, "B-30": b30}``: each on its own sheets, titled by its
     name; ``dims``, ``datums``, ``tol`` or ``info`` keyed by part name go to that part.
@@ -722,7 +723,23 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
     each = isinstance(item, dict) and isinstance(info, dict) and info and set(info) <= set(item)
     info = {k: _info(v) for k, v in info.items()} if each else _info(info)
     folder = _folder(name)
-    write_drawing(folder, _slug(name.rsplit("/", 1)[-1]), item, views=views, dims=dims, title=title, info=info,
-                  sheet=sheet, scale=scale, hidden=hidden, projection=projection, dxf_view=dxf, notes=notes,
-                  tol=tol, revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table)
+    facts = write_drawing(folder, _slug(name.rsplit("/", 1)[-1]), item, views=views, dims=dims, title=title, info=info,
+                          sheet=sheet, scale=scale, hidden=hidden, projection=projection, dxf_view=dxf, notes=notes,
+                          tol=tol, revisions=revisions, callouts=callouts, sheets=sheets, datums=datums, table=table)
+    # the model beside its drawing, so the output shows it in 3D too; several parts side by side
+    parts, x = [], None
+    for stem, it in facts["stems"]:
+        shape = Assembly(*it) if isinstance(it, (list, tuple)) else it
+        _write_geometry(os.path.join(folder, stem + ".step"), shape)
+        entry: dict[str, Any] = {"file": stem + ".step", "name": stem}
+        if getattr(shape, "color", None):
+            entry["color"] = shape.color
+        lo, hi = (shape.to_shape() if isinstance(shape, Assembly) else shape).bounds
+        if x is not None:
+            entry["transform"] = [1, 0, 0, round(x - lo.x, 5), 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        x = (hi.x if x is None else x + hi.x - lo.x) + max(10.0, 0.15 * (hi.x - lo.x))
+        parts.append(entry)
+    meta: dict[str, Any] = {"kind": "part", "file": parts[0]["file"]} if len(parts) == 1 else {"kind": "assembly", "parts": parts}
+    meta["title"] = facts["title"]
+    _write_json(folder, meta)
     return folder
