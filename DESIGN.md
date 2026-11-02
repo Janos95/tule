@@ -418,7 +418,7 @@ outputs/
 
 Built (2026-11-02): the layout, `tule build`, the template (`src/part.py`),
 the output types below, failed builds in the viewer, and `tule based-on`.
-Not yet: 3MF/OBJ/glTF in 3D (listed as downloads for now), 2D drawings.
+Not yet: 3MF/OBJ/glTF in 3D (listed as downloads for now).
 Outputs can be out of step with the code that makes them (edit a script and
 forget to run it; a save merges code nobody ran), and nothing said so. Hence
 a fixed layout, one build command that knows what made every output, and a
@@ -563,8 +563,26 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   on a Pareto chart selects that part in 3D.
 - **Inputs and work use the same views:** a supplier STEP opens in 3D, a
   datasheet PDF as a page, a JSON list of supplier quotes as a table.
-- Later: 2D drawings (DXF), per-vertex results (stress), variants side by
-  side.
+- **Drawings** (built 2026-11-02): `outputs.drawing(name, part)` writes a
+  dimensioned 2D drawing as `<name>.pdf` and `<name>.svg` (a document and an
+  image, so no new view), and with `dxf="top"` that view at 1:1 as an R12
+  DXF for laser, waterjet or CNC (a download). Agents used to draw these by
+  hand with reportlab, computing projections and dimension positions
+  themselves; the drawings went stale and had stray leaders. Now they come
+  from the model (`tule/drawing.py`): views by OCCT hidden-line removal
+  (hidden edges dashed; a mesh-based algorithm for very large parts), placed
+  by ISO first-angle (or third-angle) projection with an isometric view in a
+  free spot; overall sizes, each once, and hole diameters as callouts
+  (`4× ⌀5.5`, `depth` for blind holes and counterbores), center lines on
+  holes and bosses; dimensions only the author knows are given as 3D points
+  or circular edges (`dims=[("top", p1, p2)]`); a title block with `info`
+  rows, the scale (the largest standard one that fits the sheet, A4 to A0),
+  units and the projection symbol. PDF, SVG and DXF are written by hand (no
+  new dependencies) and have no dates, so an unchanged part gives the same
+  bytes. Not done: section views, detail views, tolerances and surface
+  finish symbols (an agent writes them as dimension text), hole patterns
+  (bolt circles) found automatically.
+- Later: per-vertex results (stress), variants side by side.
 
 ### Isolation and quotas
 
@@ -874,8 +892,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 - **Not now:** design-for-manufacturing checks (CNC, 3D printing). A `tule.dfm`
   v0 was built and removed on 2026-11-01 to keep the feature set small;
   overlays with a `severity` per face still show checks an agent writes itself.
-- **Later:** `tule.fea` (linear static, gmsh + scikit-fem), cost estimates,
-  drawings.
+- **Later:** `tule.fea` (linear static, gmsh + scikit-fem), cost estimates.
 
 ## Repository layout
 

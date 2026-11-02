@@ -57,6 +57,20 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 - **Roles**: primitives and features name their faces: `box(...).faces["top"]` (`top bottom left right front back`), `cylinder(...).faces["side"]`, extrusions `top/bottom/side`, `fillet`, `chamfer`, shell `inner`. A role resolves through later operations when you select on the feature itself: `part.fillet(boss.edges["bottom"], 2)`. After a Boolean, `part.faces["top"]` is not defined (it would be ambiguous).
 - **Tags** are names you give: `part.tag("load", part.faces.top())`, then `part.faces["load"]`. They flow through every operation, are written into STEP files, show in the viewer (`f12 · load`) and are what analysis (`tule.topopt`) reads. Tag what matters: loads, fixed faces, mating faces, cosmetic faces.
 
+## Drawings
+
+A dimensioned drawing for the shop in one call: views with hidden lines, overall sizes, hole callouts (`4× ⌀5.5`), a title block, a scale that fits the sheet. Add what only you know (3D points, circular edges):
+
+```python
+from tule import *
+
+plate = box(80, 40, 3) - cylinder(2.75, 10, center=True).at(10, 10, 0)
+outputs.drawing("plate-drawing", plate.named("plate"), info={"material": "S235, 3 mm"}, dxf="top",
+                dims=[("top", (0, 0, 0), (10, 10, 0), {"along": "h"}), ("top", plate.edges.circles(r=2.75))])
+```
+
+It writes `plate-drawing.pdf` and `.svg`, and with `dxf=` that view at 1:1 for laser or waterjet cutting. `help(outputs.drawing)`: views, sheet, scale, projection.
+
 ## Errors
 
 Failures raise `TuleError` with `op`, `faces`, `edges`, `hint` and data such as `max_radius`:
