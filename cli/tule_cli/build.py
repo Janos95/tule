@@ -736,7 +736,11 @@ def _run_script(script: str):
         if not (p == root or p.startswith(root + os.sep)):
             return None
         r = os.path.relpath(p, root).replace(os.sep, "/")
-        if r.startswith((".git/", "outputs/.build/")) or "/__pycache__" in r or r == "outputs/.build":
+        if "__pycache__/" in r:  # lib/__pycache__/finger.cpython-312.pyc: Python read lib/finger.py from its cache
+            d, _, f = r.rpartition("__pycache__/")
+            src = d + f.split(".")[0] + ".py"
+            return src if f.endswith(".pyc") and os.path.isfile(os.path.join(root, src)) else None
+        if r.startswith((".git/", "outputs/.build/")) or r == "outputs/.build":
             return None
         return r
 

@@ -15,10 +15,10 @@ from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
 from OCP.BRepTools import BRepTools
 from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
-from OCP.Standard import Standard_Failure
+
 
 from ._occ import cast, from_list, kind_of, static, subshapes
-from .errors import TuleError
+from .errors import OCC_ERRORS, TuleError
 from .profile import Profile
 from .shape import Shape
 
@@ -134,7 +134,7 @@ def _loft(profiles: Sequence[Profile], heights: Sequence[float], ruled: bool = T
     try:
         mk.Build()
         ok = mk.IsDone()
-    except Standard_Failure:
+    except OCC_ERRORS:
         ok = False
     if not ok:
         raise TuleError("could not loft the sections", op="loft",
@@ -215,7 +215,7 @@ def _sweep_wire(wire, path_wire, start, tangent, roles_out=None):
     try:
         mk.Build()
         ok = mk.IsDone() and mk.MakeSolid()
-    except Standard_Failure:
+    except OCC_ERRORS:
         ok = False
     if not ok:
         raise TuleError("could not sweep the profile along the path", op="sweep",

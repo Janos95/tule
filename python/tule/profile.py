@@ -27,12 +27,12 @@ from OCP.ChFi2d import ChFi2d_IsDone
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
-from OCP.Standard import Standard_Failure
+
 from OCP.TopoDS import TopoDS_Compound
 from OCP.BRep import BRep_Builder
 
 from ._occ import cast, explore, from_list, shape_list, static, subshapes
-from .errors import TuleError
+from .errors import OCC_ERRORS, TuleError
 from .geom import Vec, from_pnt
 from .selection import edge_type
 
@@ -222,12 +222,12 @@ class Profile:
                     else:
                         es = [e for e in subshapes(face, "edge") if v in subshapes(e, "vertex")]
                         mk.AddChamfer(es[0], es[1], float(r), float(r))
-                except Standard_Failure:
+                except OCC_ERRORS:
                     pass
             try:
                 mk.Build()
                 ok = mk.IsDone()
-            except Standard_Failure:
+            except OCC_ERRORS:
                 ok = False
             if not ok:
                 raise TuleError(

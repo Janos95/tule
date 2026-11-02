@@ -646,9 +646,12 @@ class Result:
         info = {
             "material": str(self.material.name),
             "mass": f"{self.mass:.3g} g",
-            "peak stress": f"{self.max_stress:.3g} MPa at {_pt(self.max_stress_at)}",
+            # the percentile first: it is the number to judge by (a peak at a sharp corner grows with refinement)
             "stress, 99.5th pct": f"{self.stress_p995:.3g} MPa",
-            "safety factor": f"{self.safety_factor:.3g} (yield {self.material.yield_strength:g} MPa / peak)",
+            "safety factor": (f"{self.material.yield_strength / self.stress_p995:.3g} on the 99.5th pct"
+                              if self.stress_p995 > 0 else "∞") + f" (yield {self.material.yield_strength:g} MPa)",
+            "peak stress": f"{self.max_stress:.3g} MPa at {_pt(self.max_stress_at)}: safety factor {self.safety_factor:.3g}; "
+                           "at a sharp corner, add a fillet there or refine before trusting it",
             "max displacement": f"{self.max_displacement:.3g} mm at {_pt(self.max_displacement_at)}",
             "loads, total": f"{_vec(self.applied)} N" + (f" with self-weight at {self.accel.length / g:.3g} g"
                                                          if self.accel is not None and self.accel.length else ""),

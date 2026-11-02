@@ -142,6 +142,24 @@ def _angle_deg(a: Vec, b: Vec) -> float:
 # ---------------------------------------------------------------- selections
 
 
+class Item:
+    """One face, edge or vertex as ``filter`` sees it: ``center``, ``type`` and the rest of its
+    ``info()`` as attributes (None when it has none), the OCCT shape as ``wrapped``."""
+
+    def __init__(self, wrapped, info: dict):
+        self.wrapped = wrapped
+        self._info = info
+
+    def __getattr__(self, k):
+        if k.startswith("_"):
+            raise AttributeError(k)
+        v = self._info.get(k)
+        return Vec(*v) if k in ("center", "normal") and v is not None else v
+
+    def __repr__(self):
+        return f"Item({self._info})"
+
+
 class Selection:
     """An ordered selection of sub-shapes of one kind belonging to a shape."""
 
@@ -195,7 +213,14 @@ class Selection:
 
     # -- generic filters
     def filter(self, pred: Callable) -> "Selection":
-        """Keep the items for which ``pred(item)`` is true."""
+        """Keep the items for which ``pred(item)`` is true. ``item`` has what ``info()`` lists
+        (``center``, ``type``, ``area`` or ``length``, ``radius``, ``normal``) and ``.wrapped``."""
+        return self._new([s for s, d in zip(self.items, self.info()) if pred(Item(s, d))])
+
+    def info(self) -> list[dict]:
+        return [{"center": tuple(round(c, 6) for c in self._center(s))} for s in self.items]
+
+    def _keep(self, pred: Callable) -> "Selection":
         return self._new([s for s in self.items if pred(s)])
 
     def _center(self, s) -> Vec:  # pragma: no cover - overridden
@@ -229,7 +254,7 @@ class Selection:
             c = self._center(s)
             return all(lo[i] - 1e-9 <= c[i] <= hi[i] + 1e-9 for i in range(3))
 
-        return self.filter(inside)
+        return self._keep(inside)
 
     def nearest(self, point: VecLike, n: int = 1) -> "Selection":
         p = vec(point)
@@ -261,7 +286,7 @@ class Faces(Selection):
 
     def of_type(self, *types: str) -> "Faces":
         """Faces whose surface is one of ``plane``, ``cylinder``, ``cone``, ``sphere``, ``torus``, ``bspline``."""
-        return self.filter(lambda f: face_type(f) in types)
+        return self._keep(lambda f: face_type(f) in types)
 
     def planar(self) -> "Faces":
         return self.of_type("plane")
@@ -270,15 +295,15 @@ class Faces(Selection):
         f = self.of_type("cylinder")
         if r is None:
             return f
-        return f.filter(lambda x: abs((face_radius(x) or 0) - r) <= tol)
+        return f._keep(lambda x: abs((face_radius(x) or 0) - r) <= tol)
 
     def curved(self) -> "Faces":
-        return self.filter(lambda f: face_type(f) != "plane")
+        return self._keep(lambda f: face_type(f) != "plane")
 
     def normal(self, direction: VecLike, tol_deg: float = 1.0) -> "Faces":
         """Planar faces whose outward normal points along ``direction``."""
         d = vec(direction)
-        return self.planar().filter(lambda f: _angle_deg(face_normal(f), d) <= tol_deg)
+        return self.planar()._keep(lambda f: _angle_deg(face_normal(f), d) <= tol_deg)
 
     def largest(self, n: int = 1) -> "Faces":
         return self._new(sorted(self.items, key=face_area, reverse=True)[:n])
@@ -327,13 +352,13 @@ class Edges(Selection):
         return edge_center(s)
 
     def lines(self) -> "Edges":
-        return self.filter(lambda e: edge_type(e) == "line")
+        return self._keep(lambda e: edge_type(e) == "line")
 
     def circles(self, r: float | None = None, tol: float = 1e-6) -> "Edges":
-        e = self.filter(lambda x: edge_type(x) == "circle")
+        e = self._keep(lambda x: edge_type(x) == "circle")
         if r is None:
             return e
-        return e.filter(lambda x: abs((edge_radius(x) or 0) - r) <= tol)
+        return e._keep(lambda x: abs((edge_radius(x) or 0) - r) <= tol)
 
     def parallel(self, axis: VecLike, tol_deg: float = 1.0) -> "Edges":
         """Straight edges parallel to ``axis`` (either direction)."""
@@ -343,7 +368,7 @@ class Edges(Selection):
             d = edge_direction(e)
             return d is not None and min(_angle_deg(d, a), _angle_deg(-d, a)) <= tol_deg
 
-        return self.filter(ok)
+        return self._keep(ok)
 
     def perpendicular(self, axis: VecLike, tol_deg: float = 1.0) -> "Edges":
         """Edges lying in planes perpendicular to ``axis`` (straight or circular)."""
@@ -359,7 +384,7 @@ class Edges(Selection):
                 return min(_angle_deg(Vec(n.X(), n.Y(), n.Z()), a), _angle_deg(-Vec(n.X(), n.Y(), n.Z()), a)) <= tol_deg
             return False
 
-        return self.filter(ok)
+        return self._keep(ok)
 
     def on(self, faces: "Faces") -> "Edges":
         """Edges that bound any of ``faces``."""
@@ -368,7 +393,7 @@ class Edges(Selection):
         for f in fs.items:
             for e in subshapes(f, "edge"):
                 bounding.add(e)
-        return self.filter(lambda e: e in bounding)
+        return self._keep(lambda e: e in bounding)
 
     def longest(self, n: int = 1) -> "Edges":
         return self._new(sorted(self.items, key=edge_length, reverse=True)[:n])

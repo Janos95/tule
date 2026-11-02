@@ -5,7 +5,7 @@
 // frame's values in the legend, clicking (or dragging) jumps to it. Clicking a
 // legend entry shows that line alone, with its numbers on the axis.
 
-const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]; // fixed order, by key
+const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#8e5bd6", "#a8642a", "#17a2b8", "#6b7280"]; // fixed order, by key
 const H = 64;
 const PAD = { l: 8, r: 8, t: 6, b: 6 };
 const SVG = "http://www.w3.org/2000/svg";

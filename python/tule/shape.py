@@ -31,12 +31,12 @@ from OCP.Bnd import Bnd_Box
 from OCP.gp import gp_Ax2, gp_GTrsf, gp_Mat, gp_Pnt, gp_Trsf, gp_XYZ
 from OCP.GProp import GProp_GProps
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
-from OCP.Standard import Standard_Failure
-from OCP.StdFail import StdFail_NotDone
+
+
 from OCP.TopoDS import TopoDS_Shape
 
 from ._occ import ShapeSet, from_list, kind_of, shape_list, static, subshapes
-from .errors import TuleError
+from .errors import OCC_ERRORS, TuleError
 from .geom import Vec, VecLike, from_pnt, gdir, pnt, translation, vec, xyz_rotation
 from .selection import SELECTION_TYPES, Edges, Faces, Selection, Vertices
 
@@ -77,7 +77,7 @@ def carry(
                 continue
             try:
                 mods = modified(s)
-            except Standard_Failure:
+            except OCC_ERRORS:
                 mods = []
             for m in [*mods, s]:
                 i = target.index(m) if kind_of(m) == kind else -1
@@ -388,7 +388,7 @@ class Shape:
         t = gp_Trsf()
         try:
             t.SetValues(*m[0][:4], *m[1][:4], *m[2][:4])
-        except Standard_Failure:
+        except OCC_ERRORS:
             g = gp_GTrsf()
             g.SetVectorialPart(gp_Mat(*m[0][:3], *m[1][:3], *m[2][:3]))
             g.SetTranslationPart(gp_XYZ(m[0][3], m[1][3], m[2][3]))
@@ -417,7 +417,7 @@ class Shape:
                 mk.Add(float(r), e)
             try:
                 mk.Build()
-            except (Standard_Failure, StdFail_NotDone):
+            except OCC_ERRORS:
                 return None
             if not mk.IsDone():
                 return None
@@ -462,7 +462,7 @@ class Shape:
             mk.MakeThickSolidByJoin(self._s, shape_list(faces), off, 1e-4)
             mk.Build()
             ok = mk.IsDone()
-        except (Standard_Failure, StdFail_NotDone):
+        except OCC_ERRORS:
             ok = False
         if not ok:
             raise TuleError(
@@ -579,7 +579,7 @@ def _boolean(op_cls, op_name: str, args: list[Shape], tools: list[Shape], simpli
     op.SetRunParallel(True)
     try:
         op.Build()
-    except Standard_Failure as e:  # pragma: no cover - OCCT internal failure
+    except OCC_ERRORS as e:  # pragma: no cover - OCCT internal failure
         raise TuleError(str(e), op=op_name) from None
     has_errors = getattr(op, "HasErrors", None)
     if not op.IsDone() or (has_errors is not None and has_errors()):
@@ -589,16 +589,23 @@ def _boolean(op_cls, op_name: str, args: list[Shape], tools: list[Shape], simpli
             hint="check that inputs are valid solids (s.is_valid); nearly coincident faces can fail, "
             "try moving one input by a small amount",
         )
-    res = op.Shape()
     inputs = args + tools
-    groups = carry(_merge_groups(*inputs), res, lambda s: from_list(op.Modified(s)))
+    try:
+        res = op.Shape()
+        groups = carry(_merge_groups(*inputs), res, lambda s: from_list(op.Modified(s)))
+    except OCC_ERRORS as e:
+        raise TuleError(f"{type(e).__name__}: {e}", op=op_name,
+                        hint="coincident or tangent faces: move one input by 0.01 mm, or make the tool a little bigger") from None
     if simplify:
-        u = ShapeUpgrade_UnifySameDomain(res, True, True, False)
-        u.Build()
-        res2 = u.Shape()
-        hist = u.History()
-        groups = carry(groups, res2, lambda s: from_list(hist.Modified(s)))
-        res = res2
+        try:  # merging coplanar faces can fail on odd geometry: the result is right without it
+            u = ShapeUpgrade_UnifySameDomain(res, True, True, False)
+            u.Build()
+            res2 = u.Shape()
+            hist = u.History()
+            groups = carry(groups, res2, lambda s: from_list(hist.Modified(s)))
+            res = res2
+        except OCC_ERRORS:
+            pass
     first = args[0]
     return Shape(res, groups, _tag_aliases(*inputs), first.name, first.color)
 

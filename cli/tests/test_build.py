@@ -409,3 +409,11 @@ def test_an_opencascade_error_says_where_in_the_project(project):
         "e = TopoDS_Edge()\nBRep_Builder().MakeEdge(e)\nBRepAdaptor_Curve(e)\n")
     code, err = build(project, "edge")
     assert code and "OpenCascade failed at src/edge.py:6 (Standard_Failure: BRepAdaptor_Curve::No geometry)" in err
+
+
+def test_a_module_imported_from_its_cache_is_still_read(project):
+    import py_compile
+    py_compile.compile(str(project / "lib" / "params.py"), cfile=str(project / "lib" / "__pycache__" / f"params.cpython-{sys.version_info.major}{sys.version_info.minor}.pyc"))
+    assert build(project, "plate")[0] == 0
+    rec = json.loads((project / "outputs" / ".build" / "plate.json").read_text())
+    assert "lib/params.py" in rec["reads"]

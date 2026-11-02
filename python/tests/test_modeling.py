@@ -315,3 +315,12 @@ def test_sweep_and_pipe_along_a_3d_path():
     assert bar.is_valid and bar.volume == pytest.approx(8 * (10 + 200 ** 0.5), rel=0.01)
     with pytest.raises(TuleError, match="two or more"):
         pipe([(0, 0, 0)], 1)
+
+
+def test_filter_sees_centers_types_and_sizes():
+    from tule import box, cylinder
+    b = box(20, 20, 5) - cylinder(1, 10).at(7, 5, -1) - cylinder(1, 10).at(15, 5, -1)
+    holes = b.edges.circles(r=1).filter(lambda e: abs(e.center[0] - 7) < 0.01)
+    assert len(holes) == 2 and all(abs(c["center"][0] - 7) < 1e-6 for c in holes.info())
+    assert len(b.faces.filter(lambda f: f.type == "plane" and f.area > 300)) == 2
+    assert len(b.vertices.filter(lambda v: v.center.z > 4)) == 6  # 4 corners, 1 on each hole

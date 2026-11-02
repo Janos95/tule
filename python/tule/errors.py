@@ -54,3 +54,21 @@ class TuleError(Exception):
                 **self.data,
             }
         )
+
+
+def _occ_errors() -> tuple:
+    """Every exception class OpenCascade raises through OCP: they do not share a base class
+    (StdFail_NotDone is not a Standard_Failure), so `except OCC_ERRORS` catches them all."""
+    import importlib
+
+    out = []
+    for mod in ("Standard", "StdFail", "gp", "Geom", "Geom2d", "TopoDS", "BRepExtrema", "Precision"):
+        try:
+            m = importlib.import_module(f"OCP.{mod}")
+        except ImportError:
+            continue
+        out += [v for v in vars(m).values() if isinstance(v, type) and issubclass(v, Exception)]
+    return tuple(dict.fromkeys(out))
+
+
+OCC_ERRORS = _occ_errors()
