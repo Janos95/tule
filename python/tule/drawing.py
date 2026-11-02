@@ -14,9 +14,12 @@ removal (visible edges solid, hidden ones dashed), placed by ISO first-angle
 Overall sizes and callouts for holes (with counterbores, countersinks) and
 slots come from the faces; ``dims`` adds what only the author knows. Lines are
 drawn first, then each text goes on the first spot touching no line and no
-other text (:func:`collisions` checks a page). The scale is the largest
-standard one that fits the sheet. Output is deterministic (no dates), so a
-rebuild that changes nothing writes the same bytes.
+other text (:func:`collisions` checks a page); leaders cross no leader and no
+dimension line. GD&T (datum feature symbols, feature control frames, basic
+sizes) hangs on model faces through ``datums`` and ``dims``. ``sheets`` spreads
+the views over pages of one PDF, each feature called out once. The scale is
+1:1 when it fits, else the largest ISO 5455 one. Output is deterministic (no
+dates), so a rebuild that changes nothing writes the same bytes.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 import zlib
 from typing import Union
 
@@ -134,8 +138,121 @@ _SYMS = {
 }
 
 
+def _circ(cx, cy, r, a0=0.0, a1=360.0, n=20):
+    return tuple((cx + r * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+                  cy + r * math.sin(math.radians(a0 + (a1 - a0) * i / n))) for i in range(n + 1))
+
+
+# geometric characteristics (ISO 1101) and material modifiers, drawn as strokes in frames
+_SYMS.update({
+    "⏤": [((0.1, 0.36), (0.9, 0.36))],                                                    # straightness
+    "⏥": [((0.04, 0.14), (0.7, 0.14), (0.96, 0.6), (0.3, 0.6), (0.04, 0.14))],            # flatness
+    "○": [_circ(0.5, 0.36, 0.34)],                                                         # circularity
+    "⌭": [_circ(0.5, 0.36, 0.27), ((0.05, 0.02), (0.55, 0.74)), ((0.45, -0.02), (0.95, 0.7))],  # cylindricity
+    "⌒": [_circ(0.5, 0.12, 0.4, 0, 180)],                                                 # profile of a line
+    "⌓": [_circ(0.5, 0.12, 0.4, 0, 180), ((0.1, 0.12), (0.9, 0.12))],                     # profile of a surface
+    "∥": [((0.22, 0.02), (0.5, 0.72)), ((0.5, 0.02), (0.78, 0.72))],                      # parallelism
+    "⊥": [((0.5, 0.04), (0.5, 0.74)), ((0.1, 0.04), (0.9, 0.04))],                        # perpendicularity
+    "∠": [((0.9, 0.04), (0.1, 0.04), (0.78, 0.62))],                                      # angularity
+    "⌖": [_circ(0.5, 0.36, 0.26), ((0.08, 0.36), (0.92, 0.36)), ((0.5, -0.06), (0.5, 0.78))],  # position
+    "◎": [_circ(0.5, 0.36, 0.34), _circ(0.5, 0.36, 0.16)],                                # concentricity
+    "⌯": [((0.08, 0.36), (0.92, 0.36)), ((0.26, 0.12), (0.74, 0.12)), ((0.26, 0.6), (0.74, 0.6))],  # symmetry
+    "↗": [((0.2, 0.04), (0.8, 0.7)), ((0.5, 0.68), (0.8, 0.7), (0.78, 0.4))],             # circular runout
+    "⌰": [((0.1, 0.04), (0.5, 0.7)), ((0.36, 0.66), (0.5, 0.7), (0.52, 0.52)), ((0.45, 0.04), (0.85, 0.7)),
+          ((0.71, 0.66), (0.85, 0.7), (0.87, 0.52)), ((0.05, 0.04), (0.6, 0.04))],          # total runout
+    "Ⓜ": [_circ(0.5, 0.36, 0.42), ((0.3, 0.16), (0.3, 0.56), (0.5, 0.3), (0.7, 0.56), (0.7, 0.16))],
+    "Ⓛ": [_circ(0.5, 0.36, 0.42), ((0.36, 0.56), (0.36, 0.16), (0.66, 0.16))],
+})
+_WIDTH.update({k: 1000 for k in "⏤⏥○⌭⌒⌓∥⊥∠⌖◎⌯↗⌰"})
+_WIDTH.update({"Ⓜ": 900, "Ⓛ": 900})
+
+
 def _split_syms(s: str) -> list[str]:
     return [p for p in re.split("([" + "".join(_SYMS) + "])", s) if p]
+
+
+# ---------------------------------------------------------------- GD&T: feature control frames, datums
+
+# characteristic: symbol, names an agent may write, whether it takes datums (None: optional)
+_GDT = [
+    ("⏤", ("straightness", "straight"), False), ("⏥", ("flatness", "flat"), False),
+    ("○", ("circularity", "roundness", "round"), False), ("⌭", ("cylindricity",), False),
+    ("⌒", ("profile of a line", "line profile"), None), ("⌓", ("profile of a surface", "profile", "surface profile"), None),
+    ("∥", ("parallelism", "parallel"), True), ("⊥", ("perpendicularity", "perpendicular", "squareness"), True),
+    ("∠", ("angularity",), True), ("⌖", ("position", "true position"), None),
+    ("◎", ("concentricity", "coaxiality"), True), ("⌯", ("symmetry",), True),
+    ("↗", ("circular runout", "runout"), True), ("⌰", ("total runout",), True),
+]
+DATUM_LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"
+FRAME_H = 7.0  # a frame's height: twice the text
+
+
+class _Frame:
+    """A feature control frame: ``[symbol | ⌀0.1 Ⓜ | A | B | C]``."""
+
+    def __init__(self, spec):
+        hint = ('"flatness 0.05", "parallel 0.05 A", "perpendicular ⌀0.02 A", "position ⌀0.1 M A B C" '
+                '(M or L after a size: MMC, LMC)')
+        if not isinstance(spec, str) or not spec.strip():
+            raise TuleError(f"a frame is text like 'position ⌀0.1 A B C', got {spec!r}", op="drawing", hint=hint)
+        s = spec.strip().replace("Ø", "⌀").replace("ø", "⌀").replace("|", " ").replace("(M)", "Ⓜ").replace("(L)", "Ⓛ")
+        low = s.lower()
+        found = None
+        for sym, names, needs in _GDT:
+            for nm in (sym,) + names:
+                if low.startswith(nm) and (found is None or len(nm) > len(found[1])):
+                    found = (sym, nm, needs)
+        if found is None:
+            raise TuleError(f"frame {spec!r}: no geometric characteristic", op="drawing",
+                            hint="one of " + ", ".join(n[0] for _, n, _ in _GDT) + "; e.g. " + hint)
+        sym, nm, needs = found
+        toks = s[len(nm):].split()
+        m = re.fullmatch(r"(⌀|dia\.?)?(" + _NUM + r")(Ⓜ|Ⓛ|M|L)?", toks[0], flags=re.I) if toks else None
+        if not m:
+            raise TuleError(f"frame {spec!r}: the tolerance (a number, '⌀0.1' for a cylindrical zone) "
+                            f"comes after the characteristic", op="drawing", hint=hint)
+        mod = {"m": "Ⓜ", "l": "Ⓛ"}.get((m.group(3) or "").lower(), m.group(3) or "")
+        toks = toks[1:]
+        if toks and toks[0].upper() in ("M", "L", "Ⓜ", "Ⓛ", "MMC", "LMC"):
+            mod = "Ⓜ" if toks[0].upper() in ("M", "Ⓜ", "MMC") else "Ⓛ"
+            toks = toks[1:]
+        self.tol = ("⌀" if m.group(1) else "") + _fmt(abs(float(m.group(2)))) + (" " + mod if mod else "")
+        self.datums = []
+        for t in toks:
+            dm = re.fullmatch(r"([A-Z](?:-[A-Z])?)(Ⓜ|Ⓛ|M|L)?", t)
+            if not dm:
+                raise TuleError(f"frame {spec!r}: {t!r} is no datum reference (a capital letter, like A)",
+                                op="drawing", hint=hint)
+            mm = dm.group(2) or ""
+            self.datums.append(dm.group(1) + {"M": " Ⓜ", "L": " Ⓛ"}.get(mm, " " + mm if mm else ""))
+        if needs is False and self.datums:
+            raise TuleError(f"frame {spec!r}: {nm} is a form tolerance and takes no datum",
+                            op="drawing", hint="drop the datum letters")
+        if needs is True and not self.datums:
+            raise TuleError(f"frame {spec!r}: {nm} needs a datum", op="drawing", hint=f"'{nm} {self.tol} A'")
+        self.sym = sym
+        self.cells = [sym, self.tol] + self.datums
+        self.widths = [FRAME_H] + [max(FRAME_H, text_width(c) + 3.0) for c in self.cells[1:]]
+        self.width = sum(self.widths)
+        self.name = " | ".join(self.cells)
+
+    def letters(self):
+        return [d.split()[0] for d in self.datums]
+
+
+def _frames(spec) -> list:
+    if spec is None:
+        return []
+    return [_Frame(x) for x in ([spec] if isinstance(spec, str) else spec)]
+
+
+class _DatumTag:
+    """A datum letter hung under a callout (a datum feature of size: a bore, a slot)."""
+
+    def __init__(self, letter):
+        self.letter = letter
+        self.width = FRAME_H
+        self.name = f"datum {letter}"
 
 
 # ---------------------------------------------------------------- tolerances
@@ -148,7 +265,7 @@ def _tol(spec):
     """A tolerance: ``("pm", "0.1")``, ``("dev", "+0.05", "0")`` or ``("fit", "H7")``; None for none."""
     if spec is None or spec == "":
         return None
-    hint = '"±0.1", "+0.05/0", "0/-0.1", "H7", "g6", or a number for ±'
+    hint = '"±0.1", "+0.05/0", "0/-0.1", "H7", "g6", "basic" (boxed: GD&T), or a number for ±'
     if isinstance(spec, bool):
         raise TuleError(f"cannot read tolerance {spec!r}", op="drawing", hint=hint)
     if isinstance(spec, (int, float)):
@@ -160,6 +277,8 @@ def _tol(spec):
             pass
     if isinstance(spec, str):
         s = spec.strip().replace("+/-", "±").replace("+-", "±").replace(" ", "")
+        if s.lower() in ("basic", "□", "[]"):
+            return ("basic",)
         if m := re.fullmatch(r"±(" + _NUM + ")", s):
             return ("pm", _fmt(abs(float(m.group(1)))))
         if m := re.fullmatch("(" + _NUM + ")/(" + _NUM + ")", s):
@@ -181,7 +300,7 @@ def _dev(up: float, lo: float):
 
 
 def _tol_text(t) -> str:
-    if t is None:
+    if t is None or t[0] == "basic":
         return ""
     return {"pm": lambda: " ±" + t[1], "fit": lambda: " " + t[1], "dev": lambda: f" {t[1]}/{t[2]}"}[t[0]]()
 
@@ -240,7 +359,7 @@ def _runs(pieces, size: float = TEXT):
     """Text runs ``(text, dx, dy, size)`` for pieces: strings and tolerances (deviations stacked)."""
     runs, u, plain = [], 0.0, False
     for p in pieces:
-        if p is None:
+        if p is None or isinstance(p, tuple) and p[0] == "basic":
             continue
         if isinstance(p, str) or p[0] in ("pm", "fit"):
             t = p if isinstance(p, str) else _tol_text(p)
@@ -297,6 +416,7 @@ class _View:
         self.plane: float | None = None  # where (along d); material nearer the viewer is gone
         self.cut: list = []              # loops of the cut faces (view coordinates), hatched
         self.cutlines: list = []         # sections cut through this view: (letter, point, along, sight)
+        self.sheet = 0                   # the sheet it is on (0: the first)
 
     def keeps(self, lo: float, hi: float) -> bool:
         """Something between ``lo`` and ``hi`` (along d) is left in this view (always, unless it is a section)."""
@@ -848,6 +968,9 @@ class _Canvas:
         self.ops: list = []
         self.labels: list = []  # (text, box) per line of text, for facts and collision checks
         self.leaders: list = []  # callout leaders (x0, y0, x1, y1): none may cross another
+        self.dimsegs: list = []  # dimension lines (x0, y0, x1, y1): no leader may cross one
+        self.extsegs: list = []  # extension lines: a leader crosses one only where nothing else is free
+        self.frames: list = []   # feature control frames and datums, as text (facts)
 
     def path(self, style, cmds, phase=0.0):
         if cmds:
@@ -910,6 +1033,9 @@ class _Canvas:
         self.ops += [_moved(op, dx, dy) for op in other.ops]
         self.labels += [(t, (b[0] + dx, b[1] + dy, *b[2:])) for t, b in other.labels]
         self.leaders += [(x0 + dx, y0 + dy, x1 + dx, y1 + dy) for x0, y0, x1, y1 in other.leaders]
+        self.dimsegs += [(x0 + dx, y0 + dy, x1 + dx, y1 + dy) for x0, y0, x1, y1 in other.dimsegs]
+        self.extsegs += [(x0 + dx, y0 + dy, x1 + dx, y1 + dy) for x0, y0, x1, y1 in other.extsegs]
+        self.frames += other.frames
 
     def bbox(self):
         return _bbox(self.ops)
@@ -1069,6 +1195,10 @@ def collisions(page: "_Canvas") -> list[str]:
     for i, L in enumerate(page.leaders):
         if _cross(L[:2], L[2:], page.leaders[:i]):
             out.append(f"the leader at {tuple(round(v, 1) for v in L[2:])} crosses another")
+        if _cross(L[:2], L[2:], page.dimsegs):
+            out.append(f"the leader at {tuple(round(v, 1) for v in L[2:])} crosses a dimension line")
+        if _cross(L[:2], L[2:], page.extsegs):
+            out.append(f"the leader at {tuple(round(v, 1) for v in L[2:])} crosses an extension line")
     return out
 
 
@@ -1127,10 +1257,15 @@ class _Dim:
         self.offset = offset
         self.side = side  # "top", "bottom", "left", "right"; None: aligned, placed by offset
         self.tol = tol
+        self.pad = 0.0    # model mm added to ``offset`` (paper mm), along n
 
     @property
     def n(self):
         return np.array([-self.u[1], self.u[0]])
+
+    @property
+    def basic(self) -> bool:
+        return self.tol is not None and self.tol[0] == "basic"
 
     @property
     def pieces(self):
@@ -1146,11 +1281,13 @@ def _box_of(x, y, runs, anchor="start", angle=0.0):
     return (x + u * cs - v * sn, y + u * sn + v * cs, cs, sn, w / 2, (y1 - y0) / 2)
 
 
-def _dim_lines(c: _Canvas, dim: _Dim, s: float, L: float):
+def _dim_lines(c: _Canvas, dim: _Dim, s: float, L: float, clines=()):
     """Draw ``dim``'s lines (scale ``s``, dimension line where ``point · n == L``, paper mm).
 
-    Returns its text runs, the text angle and the spots for the text, best first:
-    ``(baseline point, anchor, extra line or None)``.
+    Extension lines start a gap off the feature; from a center (``clines``: the center lines drawn, sheet
+    mm), a gap past the end of the center line they would run along.
+    Returns its text runs, the text angle, the spots for the text, best first
+    (``(baseline point, anchor, extra line or None)``), its name, bold and boxed (a basic size).
     """
     u, n = dim.u, dim.n
     a, b = dim.a * s, dim.b * s
@@ -1159,24 +1296,38 @@ def _dim_lines(c: _Canvas, dim: _Dim, s: float, L: float):
     A, B = a + (L - a @ n) * n, b + (L - b @ n) * n
     for p, P in ((a, A), (b, B)):
         dist = L - p @ n
-        if abs(dist) > 1.5:
-            sg = 1.0 if dist > 0 else -1.0
-            c.line("thin", p + sg * 1.0 * n, P + sg * 2.0 * n)
+        sg = 1.0 if dist > 0 else -1.0
+        start = 1.0
+        for q0, q1 in clines:
+            d = np.subtract(q1, q0)
+            if abs(d[0] * n[1] - d[1] * n[0]) > 1e-6 * (abs(d[0]) + abs(d[1])):
+                continue  # not along the extension line
+            w = np.subtract(p, q0)
+            if abs(w[0] * n[1] - w[1] * n[0]) > 1e-3:
+                continue  # not through the point
+            t0, t1 = sorted((float((np.subtract(q0, p)) @ n) * sg, float((np.subtract(q1, p)) @ n) * sg))
+            if t0 <= 1e-6 <= t1 + 1e-6:
+                start = max(start, t1 + 1.0)
+        if abs(dist) > start + 0.5:
+            c.line("thin", p + sg * start * n, P + sg * 2.0 * n)
+            c.extsegs.append((*(p + sg * start * n), *(P + sg * 2.0 * n)))
     t = u if (u[0] > 1e-9 or (abs(u[0]) <= 1e-9 and u[1] > 0)) else -u
     up = np.array([-t[1], t[0]])
     angle = math.degrees(math.atan2(t[1], t[0]))
     span = float(np.linalg.norm(B - A))
     runs = _runs(dim.pieces)
     w, y0, _ = _runs_extent(runs)
-    lift = (0.5 - y0) * up  # the text's box clear of the line
+    lift = (0.5 - y0 + (BOX if dim.basic else 0.0)) * up  # the text's box clear of the line
     inside = span >= w + 2 * ARROW[0] + 3
     if inside:
         c.line("thin", A, B)
+        c.dimsegs.append((*A, *B))
         c.arrow(A, A - B)
         c.arrow(B, B - A)
     else:  # too short: arrows from outside
         d = (B - A) / span if span > 1e-9 else u
         c.line("thin", A - 5 * d, B + 5 * d)
+        c.dimsegs.append((*(A - 5 * d), *(B + 5 * d)))
         c.arrow(A, d)
         c.arrow(B, -d)
     spots = []
@@ -1195,21 +1346,31 @@ def _dim_lines(c: _Canvas, dim: _Dim, s: float, L: float):
         spots.append((p + lift, "start", None if bare else (hi, p + (w + 0.5) * t), g <= 10))
         p = lo - g * t
         spots.append((p + lift, "end", None if bare else (lo, p - (w + 0.5) * t), g <= 10))
-    return runs, angle, spots, dim.text if dim.tol is None else _runs_name(dim.pieces)
+    if dim.basic:
+        name = f"[{dim.text}]"
+    else:
+        name = dim.text if dim.tol is None else _runs_name(dim.pieces)
+    if dim.basic:  # the box's side clear of the dimension line's end
+        spots = [(p + BOX * (t if anchor == "start" else -t if anchor == "end" else 0), anchor, x, *rest)
+                 for p, anchor, x, *rest in spots]
+    return runs, angle, spots, name, False, dim.basic
 
 
-def _place_text(c: _Canvas, occ: "_Occ", runs, angle, spots, name, bold=False) -> bool:
+BOX = 0.8  # a basic size's box, off its text
+
+
+def _place_text(c: _Canvas, occ: "_Occ", runs, angle, spots, name, bold=False, boxed=False) -> bool:
     """Put a text on the first free spot (the first spot when none is); whether that spot is a near one.
 
-    ``spots``: ``(baseline point, anchor, extra line or None[, near])``.
+    ``spots``: ``(baseline point, anchor, extra line or None[, near])``. ``boxed``: framed (a basic size).
     """
     pick = spots[0]
+    grow = BOX if boxed else 0.0
     for spot in spots:
         p, anchor, extra = spot[:3]
         segs = [(*extra[0], *extra[1])] if extra is not None else []
         box = _box_of(p[0], p[1], runs, anchor, angle)
-        if bold:
-            box = (*box[:4], box[4] * 1.06, box[5])
+        box = (*box[:4], box[4] * (1.06 if bold else 1.0) + grow, box[5] + grow)
         if occ.free([box], segs):
             pick = spot
             break
@@ -1217,8 +1378,16 @@ def _place_text(c: _Canvas, occ: "_Occ", runs, angle, spots, name, bold=False) -
     segs = []
     if extra is not None:
         c.line("thin", extra[0], extra[1])
+        c.dimsegs.append((*extra[0], *extra[1]))
         segs = [(*extra[0], *extra[1])]
-    occ.add([c.label(p[0], p[1], runs, anchor, angle, bold=bold, name=name)], segs)
+    box = c.label(p[0], p[1], runs, anchor, angle, bold=bold, name=name)
+    if boxed:
+        cx, cy, cs, sn, hw, hh = box
+        hw, hh = hw + BOX, hh + BOX
+        pts = [(cx + u * cs - v * sn, cy + u * sn + v * cs) for u, v in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))]
+        c.path("thin", [("M", *pts[0])] + [("L", *q) for q in pts[1:]] + [("Z",)])
+        box = (cx, cy, cs, sn, hw, hh)
+    occ.add([box], segs)
     return pick[3] if len(pick) > 3 else True
 
 
@@ -1269,15 +1438,15 @@ def _hatch(loops, spacing=2.5):
     return out
 
 
-def _annotate(view: _View, s: float, dims: list, callouts: list, centers: list, nb: dict) -> _Canvas:
-    """Geometry, center lines, dimensions and callouts of one view at scale ``s`` (view-local sheet mm).
+def _annotate(view: _View, s: float, plan: dict) -> _Canvas:
+    """Geometry, center lines, dimensions, datums and callouts of one view at scale ``s`` (view-local sheet mm).
 
     Lines go first; then every text takes the first spot that touches no line and no other text. A
     dimension whose text found no spot near its line moves out a tier, and the view is drawn again.
     """
     bump: dict = {}
     for _ in range(4):
-        c, far = _annotate_once(view, s, dims, callouts, centers, nb, bump)
+        c, far = _annotate_once(view, s, plan, bump)
         if not far:
             break
         for d in far:
@@ -1285,7 +1454,8 @@ def _annotate(view: _View, s: float, dims: list, callouts: list, centers: list, 
     return c
 
 
-def _annotate_once(view, s, dims, callouts, centers, nb, bump):
+def _annotate_once(view, s, plan, bump):
+    dims, callouts, nb = plan["dims"], plan["callouts"], plan["nb"]
     c = _Canvas()
     for p in view.hid:
         c.path("hid", _prim_cmds(p, s))
@@ -1294,8 +1464,9 @@ def _annotate_once(view, s, dims, callouts, centers, nb, bump):
     for p, q in _hatch([[(x * s, y * s) for x, y in L] for L in view.cut]):
         c.line("thin", p, q)
     geo = _segments(c.ops)  # the part's own lines: leaders should cross as few as possible
-    for p, q in centers:
-        c.center_line(np.asarray(p) * s, np.asarray(q) * s)
+    marks = [(np.asarray(p) * s, np.asarray(q) * s) for p, q in _centers(plan, s)]  # extension lines go past them
+    for p, q in marks:
+        c.center_line(p, q)
     bb = view.bbox()
     G = (bb[0] * s, bb[1] * s, bb[2] * s, bb[3] * s)
     # dimensions: stacked outward per side, shorter ones closer
@@ -1314,14 +1485,14 @@ def _annotate_once(view, s, dims, callouts, centers, nb, bump):
             tiers[t].append(iv)
             dist = _side_edge(G, side) + FIRST + STEP * t  # along `out`
             L = dist * float(out @ d.n)  # the line's coordinate along the dimension's own normal
-            texts.append((t, d, _dim_lines(c, d, s, L)))
+            texts.append((t, d, _dim_lines(c, d, s, L, marks)))
         if tiers:
             reach[side] = FIRST + STEP * (len(tiers) - 1) + TEXT + 1.5
     for d in dims:
         if d.side is None:
-            texts.append((0, None, _dim_lines(c, d, s, float(d.a * s @ d.n) + d.offset)))
+            texts.append((0, None, _dim_lines(c, d, s, float(d.a * s @ d.n) + d.offset + d.pad * s, marks)))
     # section cutting planes seen edge-on here: a chain line, thick ends, arrows looking along the cut
-    marks = []
+    marks_ = []
     for letter, p, w, sight in view.cutlines:
         p, w, sight = np.asarray(p) * s, np.asarray(w), np.asarray(sight)
         ts = [(np.array(q) - p) @ w for q in ((G[0], G[1]), (G[2], G[1]), (G[0], G[3]), (G[2], G[3]))]
@@ -1334,16 +1505,19 @@ def _annotate_once(view, s, dims, callouts, centers, nb, bump):
             T = E - 8 * sight
             spots = [(T - 1.5 * sight + k * inward * -1 + np.array([0, -TEXT * 0.36]), "middle", None)
                      for k in (0, 3, 6, 9, 12)]
-            marks.append((_runs([letter], 5.0), spots, letter))
+            marks_.append((_runs([letter], 5.0), spots, letter))
     occ = _Occ(_segments(c.ops))
     far = []
     for t, d, tx in sorted(texts, key=lambda it: it[0]):  # inner tiers first
         if not _place_text(c, occ, *tx) and d is not None:
             far.append(d)
-    for runs, spots, letter in marks:
+    for runs, spots, letter in marks_:
         _place_text(c, occ, runs, 0.0, spots, letter, bold=True)
+    leaders: list = []
+    if plan.get("datums"):
+        _draw_datum_planes(c, occ, plan["datums"], s, geo, leaders)
     if callouts:
-        _draw_callouts(c, occ, G, callouts, s, reach, nb, geo, {d.side for d in dims})
+        _draw_callouts(c, occ, G, callouts, s, reach, nb, geo, {d.side for d in dims}, leaders)
     if view.section:
         title = f"{view.section}-{view.section}"
         runs = _runs([title], 5.0)
@@ -1375,104 +1549,308 @@ def _cross(p, q, S) -> bool:
     return _ncross(p, q, S) > 0
 
 
-def _draw_callouts(c: _Canvas, occ: _Occ, G, callouts, s, reach, nb, geo, dim_sides):
-    """Callouts beside the view: lines of text, a shoulder and a slanted leader to the feature.
+def _draw_frame(c: _Canvas, x0, y0, fr: "_Frame"):
+    """A feature control frame, its bottom left corner at (x0, y0); returns its box."""
+    w = fr.width
+    c.rect("thin", x0, y0, x0 + w, y0 + FRAME_H)
+    x = x0
+    for i, (cell, cw) in enumerate(zip(fr.cells, fr.widths)):
+        if i:
+            c.line("thin", (x, y0), (x, y0 + FRAME_H))
+        c.label(x + cw / 2, y0 + FRAME_H / 2 - TEXT * 0.36, [(cell, 0.0, 0.0, TEXT)], "middle")
+        x += cw
+    c.frames.append(fr.name)
+    return (x0 + w / 2, y0 + FRAME_H / 2, 1.0, 0.0, w / 2, FRAME_H / 2)
 
-    ``callouts``: ``(lines, targets, side or None)``; lines are lists of text pieces, targets
-    ``(x0, y0, x1, y1, r)`` (a circle when the two points coincide, else a slot) in view coordinates.
-    Each goes on the side where its leader crosses the fewest lines of the part, then the shortest; no
-    leader crosses another, no text touches anything.
+
+def _draw_datum_box(c: _Canvas, cx, cy, letter):
+    """The datum letter in its square, centered at (cx, cy)."""
+    h = FRAME_H / 2
+    c.rect("thin", cx - h, cy - h, cx + h, cy + h)
+    c.label(cx, cy - TEXT * 0.36, [(letter, 0.0, 0.0, TEXT)], "middle", name=letter)
+    c.frames.append(f"datum {letter}")
+    return (cx, cy, 1.0, 0.0, h, h)
+
+
+def _datum_triangle(c: _Canvas, base, d, t):
+    """A filled datum triangle, its base on a line at ``base`` (along ``t``), pointing along ``d``; returns its apex."""
+    base, d, t = np.asarray(base, float), np.asarray(d, float), np.asarray(t, float)
+    apex = base + TRI[1] * d
+    c.ops.append(("fill", (tuple(base + TRI[0] * t), tuple(base - TRI[0] * t), tuple(apex))))
+    return apex
+
+
+TRI = (1.6, 2.8)  # datum triangle: half base, height
+DATUM_ROW = FRAME_H + 3.6  # a datum hung under a callout: its box and the stem up to the row above
+
+
+def _rows(lines):
+    """Callout rows: ``(kind, content, name, height, width)``; text, frames and datum letters."""
+    out = []
+    for ln in lines:
+        if isinstance(ln, _Frame):
+            out.append(("frame", ln, ln.name, FRAME_H + 1.2, ln.width))
+        elif isinstance(ln, _DatumTag):
+            out.append(("datum", ln, ln.name, DATUM_ROW, FRAME_H))
+        else:
+            runs = _runs(ln)
+            out.append(("text", runs, _runs_name(ln), TEXT * 1.45, _runs_extent(runs)[0]))
+    return out
+
+
+def _row_boxes(rows, x, ym, anchor):
+    """Each row's bottom and its collision box, the first row's middle at ``ym``."""
+    out = []
+    top = ym + rows[0][3] / 2
+    for kind, content, _, h, w in rows:
+        bot = top - h
+        x0 = x if anchor == "start" else x - w
+        if kind == "text":
+            box = _box_of(x, bot + h / 2 - TEXT * 0.36, content, anchor)
+        elif kind == "frame":
+            box = (x0 + w / 2, bot + 0.6 + FRAME_H / 2, 1.0, 0.0, w / 2, FRAME_H / 2)
+        else:
+            box = (x0 + w / 2, bot + h / 2, 1.0, 0.0, w / 2, h / 2)
+        out.append((bot, box))
+        top = bot
+    return out
+
+
+def _draw_rows(c: _Canvas, rows, x, ym, anchor):
+    """Draw callout rows; returns the boxes they take."""
+    boxes = []
+    prev = None
+    for (kind, content, name, h, w), (bot, box) in zip(rows, _row_boxes(rows, x, ym, anchor)):
+        x0 = x if anchor == "start" else x - w
+        if kind == "text":
+            boxes.append(c.label(x, bot + h / 2 - TEXT * 0.36, content, anchor, name=name))
+        elif kind == "frame":
+            boxes.append(_draw_frame(c, x0, bot + 0.6, content))
+        else:  # the datum letter, its stem and triangle up to the row above
+            cx = x0 + FRAME_H / 2
+            top = bot + h + (0.6 if prev == "frame" else 0.0)  # a frame above sits 0.6 up in its row
+            apex = _datum_triangle(c, (cx, top), (0.0, -1.0), (1.0, 0.0))
+            c.line("thin", apex, (cx, bot + FRAME_H))
+            _draw_datum_box(c, cx, bot + FRAME_H / 2, content.letter)
+            boxes.append(box)
+        prev = kind
+    return boxes
+
+
+def _draw_callouts(c: _Canvas, occ: _Occ, G, callouts, s, reach, nb, geo, dim_sides, leaders):
+    """Callouts beside the view: rows of text and frames, a shoulder and a slanted leader to the feature.
+
+    ``callouts``: ``(rows, targets, side or None)``; rows are lists of text pieces, frames or datum tags;
+    targets ``(x0, y0, x1, y1, r[, nx, ny])`` in view coordinates: a circle when the two points coincide,
+    a slot, or (with the face's outward normal) a plane seen edge-on, met from outside. Each goes on the
+    side where its leader crosses the fewest lines of the part, then the shortest; no leader crosses
+    another or a dimension or extension line, no text touches anything.
     """
-    mid = TEXT * 0.36  # half the height of digits
-    LH = TEXT * 1.45   # line pitch
     blocks = []
     for lines, targets, forced in callouts:
-        T = [(np.array(t[:2]) * s, np.array(t[2:4]) * s, t[4] * s) for t in targets]
-        blocks.append(([_runs(p) for p in lines], [_runs_name(p) for p in lines], T, forced))
+        T = [(np.array(t[:2]) * s, np.array(t[2:4]) * s, t[4] * s, np.array(t[5:7]) if len(t) > 5 else None)
+             for t in targets]
+        rows = _rows(lines)
+        blocks.append((rows, [r[2] for r in rows], T, forced))
 
     def depth(b):  # how far inside the view its nearest feature is: the hardest go first
         return min(min(G[2] - max(t[0][0], t[1][0]), min(t[0][0], t[1][0]) - G[0],
                        G[3] - max(t[0][1], t[1][1]), min(t[0][1], t[1][1]) - G[1]) for t in b[2])
 
     blocks.sort(key=lambda b: (b[3] is None, -depth(b), b[1]))
-    leaders: list = []
+    dimS = np.asarray(c.dimsegs, dtype=float).reshape(-1, 4)
+    extS = np.asarray(c.extsegs, dtype=float).reshape(-1, 4)
 
-    def layout(runs, tgt, side, push, k):
-        p0, p1, r = tgt
-        n = len(runs)
+    def layout(rows, tgt, side, push, k, beyond=0):
+        p0, p1, r, nrm = tgt
+        H = sum(rw[3] for rw in rows)
+        h0 = rows[0][3]
         d0 = reach[side] + 6.0
         if side in ("left", "right"):
             sg = 1.0 if side == "right" else -1.0
             x = G[2] + d0 + 8 * push if side == "right" else G[0] - d0 - 8 * push
             ym = max(p0[1], p1[1]) + 0.7 * r + 4.0 + k
-            base = [ym - mid - i * LH for i in range(n)]
             anchor = "start" if side == "right" else "end"
         else:
             sg = 1.0
             x = max(p0[0], p1[0]) + 0.7 * r + 7.0 + k
             if side == "top":
-                b0 = G[3] + d0 + 6 * push + (n - 1) * LH
+                ym = G[3] + d0 + 6 * push + H - h0 / 2
             else:
-                b0 = G[1] - d0 - 6 * push - mid
-            base = [b0 - i * LH for i in range(n)]
-            ym = base[0] + mid
+                ym = G[1] - d0 - 6 * push
             anchor = "start"
+        gap = 1.0 if rows[0][0] == "text" else 0.0  # a frame takes the leader at its side
         S = np.array([x - sg * 4.0, ym])
         e = p1 - p0
         L2 = float(e @ e)
-        q = p0 + (np.clip((S - p0) @ e / L2, 0, 1) * e if L2 > 1e-12 else 0.0)
+        lo, hi = (0.15, 0.85) if nrm is not None else (0.0, 1.0)
+        tp = (S - p0) @ e / L2 if L2 > 1e-12 else 0.0
+        q = p0 + np.clip(tp, lo, hi) * e
+        ext = None
+        if beyond:  # a face: the arrow on its extension line, 3 to 12 mm past an end
+            L = math.sqrt(L2)
+            far = (beyond - 1) // 4
+            near_p1 = (tp > 0.5) != bool(far)
+            gapb = (3.0, 6.0, 9.0, 12.0)[(beyond - 1) % 4]
+            tq = 1 + gapb / L if near_p1 else -gapb / L
+            q = p0 + tq * e
+            end, u = (p1, e / L) if tq > 1 else (p0, -e / L)
+            ext = (end + 1.0 * u, q + 2.0 * u)
         if np.linalg.norm(S - q) < r + ARROW[0] + 1:
             return None
+        if nrm is not None and (S - q) @ nrm < 3.0:  # a face: met from the outside
+            return None
         Q = q + r * _unit(S - q)
-        boxes = [_box_of(x, yb, rr, anchor) for yb, rr in zip(base, runs)]
-        segs = [(*S, x - sg * 1.0, ym), (*S, *Q)]
-        return x, base, anchor, S, Q, boxes, segs
+        boxes = [b for _, b in _row_boxes(rows, x, ym, anchor)]
+        segs = [(*S, x - sg * gap, ym), (*S, *Q)] + ([(*ext[0], *ext[1])] if ext else [])
+        return x, ym, anchor, S, Q, boxes, segs, ext
 
     ks_side = [0.0] + [v for i in range(1, 31) for v in (-1.5 * i, 1.5 * i)]
     ks_row = [0.0] + [v for i in range(1, 31) for v in (2.0 * i, -2.0 * i)]
 
-    def search(runs, T, side, strict):
+    def clear(lay, level):
+        """Level 0: the leader and its shoulder cross no other leader, dimension or extension line; 1: no
+        leader or dimension line; 2: anything."""
+        if level >= 2:
+            return True
+        walls = [leaders, dimS] + ([extS] if level == 0 else [])
+        return not any(_cross(a, b, W) for W in walls for a, b in ((lay[3], lay[4]), (lay[6][0][:2], lay[6][0][2:])))
+
+    def search(rows, T, side, level):
         ks = ks_side if side in ("left", "right") else ks_row
         out = SIDES[side][0]
         T = sorted(T, key=lambda t: -(max(t[0] @ out, t[1] @ out) + t[2]))  # nearest that side first
-        for push in range(8):
+        for push in range(8 if level < 2 else 3):
             for tgt in T[:4]:
-                for k in ks:
-                    lay = layout(runs, tgt, side, push, k)
-                    if lay is None or not occ.free(lay[5], lay[6]):
-                        continue
-                    if strict and _cross(lay[3], lay[4], leaders):
-                        continue
-                    return lay
+                for beyond in range(9) if tgt[3] is not None else (0,):
+                    for k in ks:
+                        lay = layout(rows, tgt, side, push, k, beyond)
+                        if lay is None or not occ.free(lay[5], lay[6]):
+                            continue
+                        if not clear(lay, level):
+                            continue
+                        ext = lay[7]
+                        if ext is not None and (_cross(ext[0], ext[1], leaders) or _cross(ext[0], ext[1], dimS)):
+                            continue
+                        return lay
         return None
 
-    for runs, names, T, forced in blocks:
+    def inside(rows, T):
+        """In free space within the view, near the feature: a short leader that crosses nothing at all."""
+        gap = 1.0 if rows[0][0] == "text" else 0.0
+        for L in (5.0, 8.0, 12.0, 16.0, 22.0):
+            for tgt in T[:4]:
+                p0, p1, r, nrm = tgt
+                c0 = (p0 + p1) / 2
+                for ang in (45, 135, -45, -135, 25, 155, -25, -155, 65, 115, -65, -115):
+                    d = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
+                    if nrm is not None and d @ nrm < 0.3:
+                        continue
+                    S = c0 + (r + L) * d
+                    e = p1 - p0
+                    L2 = float(e @ e)
+                    lo, hi = (0.15, 0.85) if nrm is not None else (0.0, 1.0)
+                    q = p0 + (np.clip((S - p0) @ e / L2, lo, hi) * e if L2 > 1e-12 else 0.0)
+                    Q = q + r * _unit(S - q)
+                    sg = 1.0 if d[0] >= 0 else -1.0
+                    x, ym = S[0] + sg * 4.0, S[1]
+                    anchor = "start" if sg > 0 else "end"
+                    boxes = [b for _, b in _row_boxes(rows, x, ym, anchor)]
+                    segs = [(*S, x - sg * gap, ym), (*S, *Q)]
+                    lay = (x, ym, anchor, S, Q, boxes, segs, None)
+                    Qin = Q + 0.4 * _unit(S - Q)
+                    if (occ.free(boxes, segs) and clear(lay, 0) and not _cross(S, Qin, occ.S)
+                            and all(_box_rect(b)[0] > G[0] - 30 and _box_rect(b)[2] < G[2] + 30 for b in boxes)):
+                        return lay
+        return None
+
+    for rows, names, T, forced in blocks:
         pick = None
-        for strict in (True, False):
+        for level in (0, 1, 2):
             for side in ([forced] if forced else ["right", "top", "bottom", "left"]):
-                lay = search(runs, T, side, strict)
+                lay = search(rows, T, side, level)
                 if lay is None:
                     continue
                 S, Q = lay[3], lay[4]
                 Qin = Q + 0.4 * _unit(S - Q)  # not the feature's own edge, where the arrow ends
                 cost = (10.0 * _ncross(S, Qin, geo) + 1.0 * (_ncross(S, Qin, occ.S) - _ncross(S, Qin, geo))
+                        + 15.0 * _ncross(S, Q, extS) + 30.0 * _ncross(S, Q, dimS)
                         + 0.05 * float(np.linalg.norm(S - Q)) + 3.0 * nb.get(side, 0) + 0.5 * (side in dim_sides))
                 if pick is None or cost < pick[0] - 1e-9:
                     pick = (cost, lay)
+            if level == 0 and not forced and (pick is None or pick[0] > 4.0):
+                lay = inside(rows, T)  # crossing the part's lines to get out: better inside, if there is room
+                if lay is not None:
+                    pick = (4.0, lay)
             if pick:
                 break
         if pick is None:  # pragma: no cover - nothing free: the nearest spot
             side = forced or "right"
-            pick = (0, next(lay for tgt in T for k in ks_side if (lay := layout(runs, tgt, side, 0, k))))
-        x, base, anchor, S, Q, boxes, segs = pick[1]
+            pick = (0, next(lay for tgt in T for k in ks_side if (lay := layout(rows, tgt, side, 0, k))))
+        x, ym, anchor, S, Q, boxes, segs, ext = pick[1]
+        if ext is not None:
+            c.line("thin", ext[0], ext[1])
+            c.extsegs.append((*ext[0], *ext[1]))
         c.line("thin", S, segs[0][2:])
         c.line("thin", S, Q)
         c.leaders.append((*S, *Q))
         c.arrow(Q, Q - S)
-        placed = [c.label(x, yb, rr, anchor, name=nm) for yb, rr, nm in zip(base, runs, names)]
-        arrow = _segments(c.ops[-1:])
-        occ.add(placed, np.concatenate([np.asarray(segs, float), arrow]))
+        n0 = len(c.ops)
+        placed = _draw_rows(c, rows, x, ym, anchor)
+        arrow = _segments([op for op in c.ops[n0 - 1:n0] if op[0] == "fill"])
+        occ.add(placed, np.concatenate([np.asarray(segs, float), arrow.reshape(-1, 4)]))
         leaders.append((*S, *Q))
+
+
+def _draw_datum_planes(c: _Canvas, occ: _Occ, datums, s, geo, leaders):
+    """Datum feature symbols on faces seen edge-on: a filled triangle on the face's line (or its extension
+    past an end), a stem straight out of the material and the letter in a square at its end. The stem
+    crosses no dimension or extension line and no leader; the square touches nothing."""
+    for letter, p0, p1, nrm in datums:
+        P0, P1, nn = np.asarray(p0, float) * s, np.asarray(p1, float) * s, _unit(nrm)
+        L = float(np.linalg.norm(P1 - P0))
+        t = (P1 - P0) / L if L > 1e-9 else np.array([-nn[1], nn[0]])
+        cands = []
+        for f in (0.5, 0.35, 0.65, 0.2, 0.8):
+            if L * min(f, 1 - f) >= TRI[0] + 1.0:
+                cands.append((P0 + f * (P1 - P0), None, 0.0))
+        for e in (4.0, 8.0, 12.0, 16.0):  # on the face's extension line, past either end
+            cands.append((P1 + e * t, (P1 + 1.0 * t, P1 + (e + TRI[0] + 1.0) * t), e))
+            cands.append((P0 - e * t, (P0 - 1.0 * t, P0 - (e + TRI[0] + 1.0) * t), e))
+        dimS = np.asarray(c.dimsegs, dtype=float).reshape(-1, 4)
+        extS = np.asarray(c.extsegs, dtype=float).reshape(-1, 4)
+        reach = FRAME_H / 2 / max(abs(nn[0]), abs(nn[1]))
+        best = None
+        for T, ext, e in cands:
+            apex = T + TRI[1] * nn
+            for stem in np.arange(2.0, 46.0, 2.0):
+                end = apex + stem * nn
+                ctr = end + reach * nn
+                box = (float(ctr[0]), float(ctr[1]), 1.0, 0.0, FRAME_H / 2, FRAME_H / 2)
+                segs = [(*apex, *end), (*(T + TRI[0] * t), *apex), (*(T - TRI[0] * t), *apex)]
+                if ext is not None:
+                    segs.append((*ext[0], *ext[1]))
+                if not occ.free([box], segs):
+                    continue
+                if any(_cross(q[:2], q[2:], dimS) or _cross(q[:2], q[2:], leaders) for q in segs):
+                    continue
+                cost = stem + 1.2 * e + 8.0 * sum(_ncross(q[:2], q[2:], geo) for q in segs[:3]) \
+                    + 2.0 * sum(_ncross(q[:2], q[2:], occ.S) for q in segs[:3]) + 15.0 * _ncross(apex, end, extS)
+                if best is None or cost < best[0] - 1e-9:
+                    best = (cost, T, ext, apex, end, ctr, box, segs)
+                break  # longer stems on this spot cost more
+        if best is None:
+            raise TuleError(f"no room for datum {letter}'s symbol", op="drawing",
+                            hint="use a larger sheet, or put the datum on another face")
+        _, T, ext, apex, end, ctr, box, segs = best
+        if ext is not None:
+            c.line("thin", ext[0], ext[1])
+        _datum_triangle(c, T, nn, t)
+        c.line("thin", apex, end)
+        c.leaders.append((*apex, *end))
+        leaders.append((*apex, *end))
+        _draw_datum_box(c, ctr[0], ctr[1], letter)
+        occ.add([box], np.asarray(segs, float))
 
 
 # ---------------------------------------------------------------- what to dimension
@@ -1515,66 +1893,130 @@ def _is_point(p) -> bool:
         return False
 
 
-def _parse_dims(dims, views: dict, tol: float):
-    """Agent dimensions ``(view, p1, p2[, text or {text, along, offset, tol}])`` and features picked by
-    selection ``(view, faces or circular edges[, text or {text, tol, side}])``."""
+PICK_OPTS = {"text", "tol", "side", "frame", "width", "length"}
+
+
+def _circles_of(sel: Selection, v: "_View | None", vname):
+    """Circles of picked cylindrical faces or circular edges: (center, axis, r, whole, kind); those on the
+    axis of view ``v`` when one is given."""
+    geo = []
+    for e in sel.items:
+        if sel.kind == "edge":
+            a = BRepAdaptor_Curve(e)
+            if a.GetType() != GeomAbs_Circle:
+                raise TuleError("a diameter dimension needs circular edges", op="drawing",
+                                hint="part.edges.circles(r=3), or a hole's faces: part.faces.cylindrical(r=3)")
+            g = a.Circle()
+            q = g.Location()
+            full = a.IsClosed() or (a.LastParameter() - a.FirstParameter()) > 2 * math.pi - 1e-6
+        else:
+            a = BRepAdaptor_Surface(e)
+            if a.GetType() != GeomAbs_Cylinder:
+                raise TuleError("a feature is picked by its cylindrical faces or circular edges, a face for a "
+                                "frame by its planar faces", op="drawing", hint="part.faces.cylindrical(r=3.25)")
+            g = a.Cylinder()
+            q = g.Axis().Location()
+            u0, u1, v0, v1 = static(BRepTools, "UVBounds")(e)
+            props = BRepLProp_SLProps(a, (u0 + u1) / 2, (v0 + v1) / 2, 1, 1e-7)
+            m = props.Value()
+            mid = np.array([m.X(), m.Y(), m.Z()])
+            nv = props.Normal()
+            nv = np.array([nv.X(), nv.Y(), nv.Z()]) * (-1 if e.Orientation() == TopAbs_REVERSED else 1)
+            o = np.array([q.X(), q.Y(), q.Z()])
+            full = {"sweep": math.degrees(u1 - u0), "depth": abs(v1 - v0), "mid": mid,
+                    "concave": bool(nv @ (mid - o) < 0)}  # an arc of a face: for a callout of its radius
+        ax = g.Axis().Direction()
+        axis = np.array([ax.X(), ax.Y(), ax.Z()])
+        if v is not None and abs(axis @ v.d) < 0.999:  # the picked ones seen as circles here
+            continue
+        geo.append((np.array([q.X(), q.Y(), q.Z()]), axis, g.Radius(), full, sel.kind))
+    if not geo:
+        what = "circle" if sel.kind == "edge" else "hole"
+        raise TuleError(f"no {what} picked is seen as a circle in the {vname} view", op="drawing",
+                        hint="use the view that looks along its axis, or leave the view out")
+    return geo
+
+
+def _plane_of(sel: Selection, tol: float):
+    """Planar faces (all in one plane): their outward normal and points on their outline."""
+    n0, pts, off = None, [], None
+    for f in sel.items:
+        a = BRepAdaptor_Surface(f)
+        if a.GetType() != GeomAbs_Plane:
+            return None
+        ax = a.Plane().Axis().Direction()
+        n = np.array([ax.X(), ax.Y(), ax.Z()]) * (-1 if f.Orientation() == TopAbs_REVERSED else 1)
+        loc = a.Plane().Location()
+        o = float(np.array([loc.X(), loc.Y(), loc.Z()]) @ n)
+        if n0 is None:
+            n0, off = n, o
+        elif n @ n0 < 0.9999 or abs(o - off) > tol * 10:
+            raise TuleError(f"the {len(sel.items)} faces picked for one frame or datum lie in different planes",
+                            op="drawing", hint="narrow them to one plane: .largest(), .nearest(point), "
+                                               "e.g. part.faces.normal((-1, 0, 0)).largest()")
+        for w in explore(f, "wire"):
+            pts += _wire_points(w, f, tol)
+    return n0, np.asarray(pts, dtype=float)
+
+
+def _parse_dims(dims, views: dict, alias: dict, tol: float):
+    """Agent dimensions ``(view, p1, p2[, text or {text, along, offset, tol}])``, features picked by
+    selection ``([view, ]faces or circular edges[, text or {text, tol, side, frame, width, length}])``
+    and planar faces picked for a frame ``([view, ]faces, {"frame": ..., "side": ...})``."""
     linear: dict = {k: [] for k in views}
-    picks: dict = {k: [] for k in views}
+    picks: list = []   # {"view", "geo", "opts", "used"}
+    planes: list = []  # {"view", "normal", "points", "frames", "datum", "side"}
+    drawn = sorted(n for n, k in alias.items() if views[k].name != "iso")
     for spec in dims or ():
-        if not isinstance(spec, (list, tuple)) or len(spec) < 2:
-            raise TuleError(f"a dimension is (view, p1, p2) or (view, circle edges), got {spec!r}", op="drawing")
-        vname = spec[0]
-        if vname not in views or vname == "iso":
-            raise TuleError(f"dimension in view {vname!r}, which is not drawn", op="drawing",
-                            hint=f"views drawn: {', '.join(k for k in views if k != 'iso')}")
-        v = views[vname]
+        if not isinstance(spec, (list, tuple)) or not spec:
+            raise TuleError(f"a dimension is (view, p1, p2) or ([view, ]faces[, options]), got {spec!r}", op="drawing")
+        if isinstance(spec[0], Selection):  # a feature or face, its view chosen
+            vname, spec = None, (None, *spec)
+            v = None
+        else:
+            vname = spec[0]
+            k = alias.get(vname) if isinstance(vname, str) else None
+            if k is None or views[k].name == "iso":
+                raise TuleError(f"dimension in view {vname!r}, which is not drawn", op="drawing",
+                                hint=f"views drawn: {', '.join(drawn)}")
+            vname, v = k, views[k]
+        if len(spec) < 2:
+            raise TuleError(f"a dimension is (view, p1, p2) or ([view, ]faces[, options]), got {spec!r}", op="drawing")
         if (isinstance(spec[1], Selection) and spec[1].kind in ("edge", "face")
                 and (len(spec) == 2 or not _is_point(spec[2]))):
             opts = spec[2] if len(spec) > 2 else {}
             if isinstance(opts, str):
                 opts = {"text": opts}
-            if not isinstance(opts, dict) or set(opts) - {"text", "tol", "side"}:
-                raise TuleError(f"feature options are text, tol and side, got {opts!r}", op="drawing",
+            if not isinstance(opts, dict) or set(opts) - PICK_OPTS:
+                raise TuleError(f"feature options are {', '.join(sorted(PICK_OPTS))}, got {opts!r}", op="drawing",
                                 hint='("right", part.faces.cylindrical(r=3.25), {"tol": "+0.1/0", "side": "top"})')
             if opts.get("side") not in (None, *SIDES):
                 raise TuleError(f"side is one of {', '.join(SIDES)}, got {opts['side']!r}", op="drawing")
-            geo = []
-            for e in spec[1].items:
-                if spec[1].kind == "edge":
-                    a = BRepAdaptor_Curve(e)
-                    if a.GetType() != GeomAbs_Circle:
-                        raise TuleError("a diameter dimension needs circular edges", op="drawing",
-                                        hint="part.edges.circles(r=3), or a hole's faces: part.faces.cylindrical(r=3)")
-                    g = a.Circle()
-                    q = g.Location()
-                    full = a.IsClosed() or (a.LastParameter() - a.FirstParameter()) > 2 * math.pi - 1e-6
-                else:
-                    a = BRepAdaptor_Surface(e)
-                    if a.GetType() != GeomAbs_Cylinder:
-                        raise TuleError("a feature is picked by its cylindrical faces or circular edges", op="drawing",
-                                        hint="part.faces.cylindrical(r=3.25)")
-                    g = a.Cylinder()
-                    q = g.Axis().Location()
-                    full = True
-                ax = g.Axis().Direction()
-                axis = np.array([ax.X(), ax.Y(), ax.Z()])
-                if abs(axis @ v.d) < 0.999:  # the picked ones seen as circles here
-                    continue
-                geo.append((np.array([q.X(), q.Y(), q.Z()]), axis, g.Radius(), full, spec[1].kind))
-            if not geo:
-                what = "circle" if spec[1].kind == "edge" else "hole"
-                raise TuleError(f"no {what} picked is seen as a circle in the {vname} view", op="drawing",
-                                hint="use the view that looks along its axis")
-            picks[vname].append({"geo": geo, "opts": opts, "used": [False] * len(geo)})
+            opts = dict(opts, frame=_frames(opts.get("frame")))
+            plane = _plane_of(spec[1], tol) if spec[1].kind == "face" else None
+            if plane is not None:
+                if set(opts) - {"frame", "side"} or not opts["frame"]:
+                    raise TuleError("a planar face is picked for a frame: {\"frame\": \"flatness 0.05\"}", op="drawing",
+                                    hint='(part.faces.top(), {"frame": ["flatness 0.05", "parallel 0.05 A"]})')
+                planes.append({"view": vname, "normal": plane[0], "points": plane[1], "frames": opts["frame"],
+                               "datum": None, "side": opts.get("side")})
+                continue
+            if v is None and spec[1].kind == "edge":
+                raise TuleError("a circle picked by its edges needs its view", op="drawing",
+                                hint='("top", part.edges.circles(r=10)), or pick a hole by its faces')
+            geo = _circles_of(spec[1], v, vname)
+            picks.append({"view": vname, "geo": geo, "opts": opts, "used": [False] * len(geo)})
             continue
+        if v is None:
+            raise TuleError("a linear dimension needs its view: (view, p1, p2)", op="drawing")
         if len(spec) < 3:
             raise TuleError("a linear dimension needs two points", op="drawing", hint='("front", p1, p2)')
         opts = spec[3] if len(spec) > 3 else {}
         if isinstance(opts, str):
             opts = {"text": opts}
-        if not isinstance(opts, dict) or set(opts) - {"text", "along", "offset", "tol"}:
-            raise TuleError(f"dimension options are text, along, offset and tol, got {opts!r}", op="drawing",
-                            hint='("top", p1, p2, {"along": "h", "tol": "±0.05", "text": "40", "offset": 12})')
+        if not isinstance(opts, dict) or set(opts) - {"text", "along", "offset", "tol", "side"}:
+            raise TuleError(f"dimension options are text, along, side, offset and tol, got {opts!r}", op="drawing",
+                            hint='("top", p1, p2, {"along": "h", "side": "top", "tol": "±0.05", "text": "40"})')
         a, b = v.p(_point(spec[1])), v.p(_point(spec[2]))
         along = opts.get("along")
         if along is None:
@@ -1582,9 +2024,37 @@ def _parse_dims(dims, views: dict, tol: float):
             along = "v" if dx < tol else "h" if dy < tol else "aligned"
         if along not in ("h", "v", "aligned"):
             raise TuleError(f"along is 'h', 'v' or 'aligned', got {along!r}", op="drawing")
+        side = opts.get("side")
+        if side is not None and side not in {"h": ("top", "bottom"), "v": ("left", "right")}.get(along, ()):
+            raise TuleError(f"side {side!r} does not suit a dimension along {along!r}", op="drawing",
+                            hint="along h: top or bottom; along v: left or right; aligned: offset")
         t = _tol(opts["tol"]) if "tol" in opts else False
-        linear[vname].append((a, b, along, opts.get("text"), opts.get("offset"), t))
-    return linear, picks
+        linear[vname].append((a, b, along, opts.get("text"), opts.get("offset"), t, side))
+    return linear, picks, planes
+
+
+def _parse_datums(datums, picks: list, planes: list, tol: float):
+    """``datums={"A": part.faces.bottom(), "B": bore faces}``: a plane gets the datum symbol on its edge,
+    a bore or slot gets it under its callout."""
+    if datums is None:
+        return []
+    if not isinstance(datums, dict):
+        raise TuleError(f"datums is a dict of letter: faces, got {type(datums).__name__}", op="drawing",
+                        hint='datums={"A": part.faces.bottom(), "B": part.faces.cylindrical(r=19.05)}')
+    for letter, sel in datums.items():
+        if not isinstance(letter, str) or letter not in DATUM_LETTERS:
+            raise TuleError(f"a datum is a capital letter ({DATUM_LETTERS}; not I, O, Q), got {letter!r}", op="drawing")
+        if not isinstance(sel, Selection) or sel.kind != "face" or not sel.items:
+            raise TuleError(f"datum {letter} is a face selection: a plane or a bore's cylindrical faces", op="drawing",
+                            hint='datums={"A": part.faces.bottom()}')
+        plane = _plane_of(sel, tol)
+        if plane is not None:
+            planes.append({"view": None, "normal": plane[0], "points": plane[1], "frames": [], "datum": letter,
+                           "side": None})
+        else:
+            geo = _circles_of(sel, None, None)
+            picks.append({"view": None, "geo": geo, "opts": {"frame": [], "datum": letter}, "used": [False] * len(geo)})
+    return sorted(datums)
 
 
 def _neighbors(name, grid) -> dict:
@@ -1615,6 +2085,81 @@ def _best_view(views, names, d, center, r, tol, open_=(True, True), ends=()):
     return best[1] if best else None
 
 
+def _merged(optss) -> dict:
+    """Options of every pick of one feature: frames add up, otherwise the first one given wins."""
+    out: dict = {"frame": []}
+    for o in optss:
+        for key, val in o.items():
+            if key == "frame":
+                out["frame"] += val
+            elif out.get(key) in (None, ""):
+                out[key] = val
+    return out
+
+
+def _plane_view(views, names, n, pts, tol):
+    """The first view in ``names`` that sees a plane (outward normal ``n``, outline ``pts``) edge-on, where its
+    line is drawn visible (else the first that sees it at all): ``(key, (p0, p1, normal))`` in view coordinates."""
+    first = (None, None)
+    for k in names:
+        v = views[k]
+        if abs(n @ v.d) > 1e-6:
+            continue
+        n2 = _unit([n @ v.x, n @ v.y])
+        t = np.array([-n2[1], n2[0]])
+        P = np.stack([pts @ v.x, pts @ v.y], axis=1)
+        a, b = float((P @ t).min()), float((P @ t).max())
+        off = float(np.median(P @ n2))
+        seg = (tuple(a * t + off * n2), tuple(b * t + off * n2), tuple(n2))
+        cover = 0.0
+        for prim in v.vis:
+            if prim[0] != "line":
+                continue
+            q0, q1 = np.array(prim[1:3]), np.array(prim[3:5])
+            if abs(q0 @ n2 - off) < tol * 10 and abs(q1 @ n2 - off) < tol * 10:
+                lo, hi = sorted((float(q0 @ t), float(q1 @ t)))
+                cover += max(0.0, min(hi, b) - max(lo, a))
+        if cover >= 0.3 * (b - a):
+            return k, seg
+        if first[0] is None:
+            first = (k, seg)
+    return first
+
+
+def _slot_dims(v: "_View", first, w, L, opts, tol_of) -> list:
+    """A slot sized by dimensions: its width across the middle and its overall length beside it."""
+    a, b, r = np.array(first[:2]), np.array(first[2:4]), first[4]
+    u = _unit(b - a)
+    n = np.array([-u[1], u[0]])
+    mid = (a + b) / 2
+
+    def along(d):
+        return "h" if abs(d[1]) < 1e-9 else "v" if abs(d[0]) < 1e-9 else "aligned"
+
+    def tol_for(key, keys):
+        val = opts.get(key)
+        if val not in (None, True, False):
+            return _tol(val)
+        if key == "width" and "tol" in opts:
+            return _tol(opts["tol"])
+        return tol_of(*keys)
+
+    dw = _Dim(mid + r * n, mid - r * n, along(n), tol=tol_for("width", (f"slot {_fmt(w)}", _fmt(w))))
+    dw.offset = 0.0
+    dl = _Dim(a - r * u, b + r * u, along(u), tol=tol_for("length", (f"slot × {_fmt(L)}", _fmt(L))))
+    # beside the slot, on the side where the line and its extensions cross fewer of the view's lines
+    S = _segments([("path", "vis", tuple(_prim_cmds(p, 1.0)), 0.0) for p in v.vis])
+    best = None
+    for sg in (1.0, -1.0):
+        o = sg * (r + 6.0)
+        A, B = dl.a + o * dl.n, dl.b + o * dl.n
+        hits = _ncross(A, B, S) + _ncross(dl.a + 0.5 * sg * dl.n, A, S) + _ncross(dl.b + 0.5 * sg * dl.n, B, S)
+        if best is None or hits < best[0]:
+            best = (hits, sg)
+    dl.offset, dl.pad = best[1] * 6.0, best[1] * r
+    return [dw, dl]
+
+
 def _depth_pieces(thru: bool, depth: float, tols: "_Tols", owner=None):
     if thru:
         return [" THRU"]
@@ -1632,14 +2177,17 @@ def _on_axis(c, ax, pts, d, tol) -> bool:
     return False
 
 
-def _plan(views: dict, feats, linear: dict, picks: dict, grid: dict, hidden: bool, tol: float, tols: "_Tols",
-          sides: dict):
-    """Decide every view's dimensions (in view coordinates), callouts and center lines."""
+def _plan(views: dict, feats, linear: dict, picks: list, planes: list, nb: dict, hidden: bool, tol: float,
+          tols: "_Tols", sides: dict, quiet: set):
+    """Decide every view's dimensions (in view coordinates), callouts, datums and center lines.
+
+    Every feature is called out once in the whole drawing: in the first view, in sheet order, that looks
+    into it best (views in ``quiet`` take none, unless picked there)."""
     shape_cyls, slots, holes = feats
-    names = [k for k in views if k != "iso"]
-    order = sorted(names, key=ORTHO.index)
-    nb = {k: _neighbors(k, grid) for k in names}
-    plans = {k: {"dims": [], "callouts": [], "centers": [], "nb": nb[k]} for k in names}
+    names = [k for k in views if views[k].name != "iso"]
+    order = sorted(names, key=lambda k: (views[k].sheet, ORTHO.index(views[k].name)))
+    loud = [k for k in names if k not in quiet]
+    plans = {k: {"dims": [], "callouts": [], "centers": [], "nb": nb[k], "datums": []} for k in names}
     full = [cy for cy in shape_cyls if cy.full]
     # overall sizes: each model axis once, in the first view that shows it
     done_axes: set = set()
@@ -1691,9 +2239,11 @@ def _plan(views: dict, feats, linear: dict, picks: dict, grid: dict, hidden: boo
         v = views[k]
         bb = v.bbox()
         mid = np.array([(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2])
-        for a, b, along, text, offset, t in linear[k]:
+        for a, b, along, text, offset, t, side in linear[k]:
             m = (np.asarray(a) + np.asarray(b)) / 2
-            if along == "h":
+            if side is not None:
+                pass
+            elif along == "h":
                 side = "top" if m[1] > mid[1] else "bottom"
             elif along == "v":
                 side = "right" if m[0] > mid[0] else "left"
@@ -1709,19 +2259,29 @@ def _plan(views: dict, feats, linear: dict, picks: dict, grid: dict, hidden: boo
     # holes and slots: "4× ⌀6.6 THRU / ⌴ ⌀11 ↧6.5", in the view that looks into them; a feature picked in
     # dims gets that view, its own callout and the options given
     def pick_of(pts, d, radii):
-        for k in names:
-            for i, pk in enumerate(picks[k]):
-                for j, (c, ax, r, _, _) in enumerate(pk["geo"]):
-                    if any(abs(r - rr) < tol * 10 for rr in radii) and _on_axis(c, ax, pts, d, tol):
-                        pk["used"][j] = True
-                        return (k, i)
-        return None
+        hits = []
+        for i, pk in enumerate(picks):
+            for j, (c, ax, r, _, _) in enumerate(pk["geo"]):
+                if any(abs(r - rr) < tol * 10 for rr in radii) and _on_axis(c, ax, pts, d, tol):
+                    pk["used"][j] = True
+                    if i not in hits:
+                        hits.append(i)
+        return tuple(hits) or None
+
+    def view_of(pk, d, center, r, open_, ends):
+        if pk:
+            k = next((picks[i]["view"] for i in pk if picks[i]["view"]), None)
+            if k:
+                return k
+            k = _best_view(views, loud, d, center, r, tol, open_, ends)
+            return k or _best_view(views, names, d, center, r, tol, open_, ends)
+        return _best_view(views, loud, d, center, r, tol, open_, ends)
 
     groups: dict = {}
     for h in holes:
         pk = pick_of([h.o], h.d, [h.r] + ([h.cb.r] if h.cb else []) + ([h.cs[0]] if h.cs else []))
         ends = [c.o + t * c.d for c in (h.cyl, h.cb) if c is not None for t in (c.t0, c.t1)]
-        k = pk[0] if pk else _best_view(views, names, h.d, h.o, h.cb.r if h.cb else h.r, tol, h.open, ends)
+        k = view_of(pk, h.d, h.o, h.cb.r if h.cb else h.r, h.open, ends)
         if k is None:
             continue
         cx, cy = views[k].p(h.o)
@@ -1732,7 +2292,7 @@ def _plan(views: dict, feats, linear: dict, picks: dict, grid: dict, hidden: boo
     for sl in slots:
         pk = pick_of([sl.a, sl.b], sl.d, [sl.r] + ([sl.cb.r] if sl.cb else []))
         ends = [s.a + t * s.d for s in (sl, sl.cb) if s is not None for t in (s.t0, s.t1)]
-        k = pk[0] if pk else _best_view(views, names, sl.d, sl.a, sl.cb.r if sl.cb else sl.r, tol, sl.open, ends)
+        k = view_of(pk, sl.d, sl.a, sl.cb.r if sl.cb else sl.r, sl.open, ends)
         if k is None:
             continue
         a, b = views[k].p(sl.a), views[k].p(sl.b)
@@ -1741,7 +2301,7 @@ def _plan(views: dict, feats, linear: dict, picks: dict, grid: dict, hidden: boo
         groups.setdefault((k, "slot", round(sl.width, 4), round(sl.length, 3), depth, cb, pk), []).append((*a, *b, sl.r))
     for key, cs in sorted(groups.items(), key=lambda kv: (names.index(kv[0][0]), kv[0][1], str(kv[0][2:]))):
         k, kind, pk = key[0], key[1], key[-1]
-        opts = picks[pk[0]][pk[1]]["opts"] if pk else {}
+        opts = _merged([picks[i]["opts"] for i in pk]) if pk else {}
         n = len(cs)
         head = f"{n}× " if n > 1 else ""
         owner = (k, head + (f"⌀{_fmt(2 * key[2])}" if kind == "hole" else f"slot {_fmt(key[2])}"), key)
@@ -1762,36 +2322,87 @@ def _plan(views: dict, feats, linear: dict, picks: dict, grid: dict, hidden: boo
                 lines.append([f"⌵ ⌀{_fmt(2 * cs_[0])}", tol_of(f"⌀{_fmt(2 * cs_[0])}"), f" × {_fmt(cs_[1])}°"])
         else:
             _, _, w, L, depth, cb, _ = key
-            lines = [[head + f"slot {_fmt(w)}", tol_of(f"slot {_fmt(w)}", _fmt(w), main=True), f" × {_fmt(L)}"]
-                     + _depth_pieces(depth is None, depth or 0, tols, owner)]
+            if "width" in opts or "length" in opts:  # sized by dimensions on the first slot, not in the callout
+                plans[k]["dims"] += _slot_dims(views[k], sorted(cs)[0], w, L, opts, tol_of)
+                lines = [[head + "slot"] + _depth_pieces(depth is None, depth or 0, tols, owner)]
+            else:
+                lines = [[head + f"slot {_fmt(w)}", tol_of(f"slot {_fmt(w)}", _fmt(w), main=True), f" × {_fmt(L)}"]
+                         + _depth_pieces(depth is None, depth or 0, tols, owner)]
             if cb:
                 lines.append([f"⌴ slot {_fmt(cb[0])} × {_fmt(cb[1])}"] + _depth_pieces(False, cb[2], tols, owner))
         if opts.get("text"):
             t = _tol(opts["tol"]) if "tol" in opts else None
             lines = [[ln] for ln in str(opts["text"]).split("\n")]
             lines[0].append(t)
+        for ln in lines:
+            if any(isinstance(p, tuple) and p[0] == "basic" for p in ln):
+                raise TuleError(f"'basic' is for dimensions; {_runs_name(ln)!r} is a callout", op="drawing",
+                                hint="give the feature a frame: {\"frame\": \"position ⌀0.1 A B C\"}")
+        lines += opts.get("frame", [])
+        if opts.get("datum"):
+            lines.append(_DatumTag(opts["datum"]))
         plans[k]["callouts"].append([lines, sorted(cs), opts.get("side") or sides.get(k)])
     # picked circles that are no feature (a boss, a fillet's arc): a diameter or radius callout
-    for k in names:
-        v = views[k]
-        for pk in picks[k]:
-            found: dict = {}
-            for (c, ax, r, whole, kind), used in zip(pk["geo"], pk["used"]):
-                if used:
-                    continue
-                if kind == "face":
-                    raise TuleError(f"a face picked in the {k} view is not a hole or slot", op="drawing",
-                                    hint="pick a hole by its cylindrical faces, a boss or arc by its circular edges")
-                cx, cy = v.p(c)
-                found.setdefault((round(r, 4), whole), {})[(round(cx / tol), round(cy / tol))] = (cx, cy)
-            opts = pk["opts"]
-            for (r, whole), cs in found.items():
-                n = len(cs)
-                size = f"⌀{_fmt(2 * r)}" if whole else f"R{_fmt(r)}"
-                t = _tol(opts["tol"]) if "tol" in opts else tols.get(size, owner=(k, size, (size, n, tuple(cs))))
-                pieces = [opts["text"]] if opts.get("text") else [(f"{n}× " if n > 1 else "") + size]
-                plans[k]["callouts"].append([[pieces + [t]], [(x, y, x, y, r) for x, y in sorted(cs.values())],
-                                             opts.get("side") or sides.get(k)])
+    # and cylindrical faces that are no hole or slot (a pocket's corner, a fillet): R and, inside, its depth
+    for pk in picks:
+        if all(pk["used"]):
+            continue
+        if pk["opts"].get("datum"):
+            raise TuleError(f"datum {pk['opts']['datum']} is not a hole or slot", op="drawing",
+                            hint="a datum is a plane (its planar face) or a bore or slot (its cylindrical faces)")
+        opts = pk["opts"]
+        found: dict = {}  # (view, r, whole, depth): {where: target}
+        arcs: dict = {}   # the faces of one cylinder, merged
+        for (c, ax, r, whole, kind), used in zip(pk["geo"], pk["used"]):
+            if used:
+                continue
+            k = pk["view"] or next((n for n in loud + names if abs(ax @ views[n].d) > 0.999), None)
+            if k is None:
+                raise TuleError("no view drawn looks along the axis of a face picked", op="drawing",
+                                hint="add the view that sees it as an arc, or give the view")
+            v = views[k]
+            cx, cy = v.p(c)
+            where = (round(cx / tol), round(cy / tol))
+            if kind == "edge":
+                found.setdefault((k, round(r, 4), whole, None), {})[where] = (cx, cy, cx, cy, r)
+                continue
+            a = arcs.setdefault((k, where, round(r, 4)), {"sweep": 0.0, "depth": 0.0, "mid": whole["mid"],
+                                                          "concave": whole["concave"], "c": (cx, cy)})
+            a["sweep"] += whole["sweep"]
+            a["depth"] = max(a["depth"], whole["depth"])
+        for (k, where, r), a in arcs.items():
+            closed = a["sweep"] >= 359.0
+            depth = round(a["depth"], 3) if a["concave"] and not closed else None
+            mx, my = views[k].p(a["mid"])
+            tgt = (*a["c"], *a["c"], r) if closed else (mx, my, mx, my, 0.0)
+            found.setdefault((k, r, closed, depth), {})[where] = tgt
+        for (k, r, whole, depth), cs in sorted(found.items(), key=lambda kv: (names.index(kv[0][0]), str(kv[0][1:]))):
+            n = len(cs)
+            size = f"⌀{_fmt(2 * r)}" if whole else f"R{_fmt(r)}"
+            owner = (k, size, (size, n, tuple(sorted(cs))))
+            t = _tol(opts["tol"]) if "tol" in opts else tols.get(size, owner=owner)
+            if opts.get("text"):
+                lines = [[ln] for ln in str(opts["text"]).split("\n")]
+                lines[0].append(t)
+            else:
+                lines = [[(f"{n}× " if n > 1 else "") + size, t]
+                         + (_depth_pieces(False, depth, tols, owner) if depth else [])]
+            plans[k]["callouts"].append([lines + opts.get("frame", []), sorted(cs.values()),
+                                         opts.get("side") or sides.get(k)])
+    # planar faces: datum symbols and frames, in the first view (sheet order) that sees the face edge-on
+    for pl in planes:
+        k, seg = _plane_view(views, [pl["view"]] if pl["view"] else loud + [n for n in names if n in quiet],
+                             pl["normal"], pl["points"], tol)
+        what = f"datum {pl['datum']}" if pl["datum"] else "the face of " + repr(pl["frames"][0].name)
+        if k is None:
+            where = f"the {pl['view']} view" if pl["view"] else "any view drawn"
+            raise TuleError(f"{what}: {where} does not see that face edge-on", op="drawing",
+                            hint="a face is marked where it is seen as a line: add a view along it (front, right, ...)")
+        p0, p1, n2 = seg
+        if pl["datum"]:
+            plans[k]["datums"].append((pl["datum"], p0, p1, n2))
+        else:
+            plans[k]["callouts"].append([list(pl["frames"]), [(*p0, *p1, 0.0, *n2)], pl["side"] or sides.get(k)])
     # center lines: a cross on circles, the axis on holes and bosses seen from the side, slots end to end
     for k in names:
         v = views[k]
@@ -1949,6 +2560,7 @@ def _overlaps(a, b, pad=2.0):
 
 # title block fields: key, label, the names ``info`` may use for it
 FIELDS = [
+    ("part", "Part", ("part", "part name", "name")),
     ("number", "Part number", ("number", "part number", "part no", "part no.", "pn", "p/n", "drawing number", "dwg no")),
     ("material", "Material", ("material",)),
     ("finish", "Finish", ("finish", "surface", "treatment", "coating")),
@@ -1973,7 +2585,7 @@ def _value(v) -> str:
     return str(v)
 
 
-def _fields(info, part_name, title):
+def _fields(info, title):
     """Title block rows ``(label, value)`` and the revision, from ``info`` (known fields first, in order)."""
     known, rest, rev = {}, [], None
     for k, v in (info or {}).items():
@@ -1988,8 +2600,9 @@ def _fields(info, part_name, title):
         else:
             rest.append((str(k).capitalize() if str(k).islower() else str(k), v))
     known.setdefault("tolerance", ("General tolerances", GENERAL_TOLERANCE))
-    rows = [("Part", part_name)] if part_name and part_name != title else []
-    rows += [known[key] for key, _, _ in FIELDS if key in known]
+    if known.get("part", (None, None))[1] == title:
+        del known["part"]
+    rows = [known[key] for key, _, _ in FIELDS if key in known]
     rows += rest
     return [(label, _value(v)) for label, v in rows if v not in ("", None, False)], rev
 
@@ -2200,17 +2813,41 @@ def _parse_scale(scale) -> float | None:
     return float(scale)
 
 
-def render(item, views=("front", "top", "right", "iso"), dims=(), title=None, info=None, sheet="A4",
-           scale=None, hidden=True, projection="first", name=None, notes=None, tol=None, revisions=None,
-           callouts=None):
-    """Lay out a drawing; returns ``(canvas, (width, height), facts)``. See ``outputs.drawing``."""
-    shape, part_name = _as_shape(item)
-    if sheet not in SHEETS:
-        raise TuleError(f"unknown sheet {sheet!r}", op="drawing", hint=", ".join(SHEETS))
-    if projection not in GRID:
-        raise TuleError(f"projection is 'first' or 'third', got {projection!r}", op="drawing")
-    cuts = {}  # sectioned views: name: point
-    names = []
+DEFAULT_VIEWS = ("front", "top", "right", "iso")
+AUTO_SHEETS = ("A4", "A3", "A2")  # a sheet chosen for the views: the smallest that takes them at the scale
+ENLARGE = 100.0  # an enlarging scale (2:1, ...) only while the part's largest size stays within this on paper
+SHEET_KEYS = {"views", "sheet", "scale", "callouts"}
+QUIET = ("none", False)  # callouts={"right": "none"}: no automatic callouts in that view
+
+
+def _sheet_specs(views, sheet, scale, callouts, sheets):
+    """Each sheet's views, size (None: chosen), scale (None: chosen) and callout sides."""
+    if sheets is None:
+        sheets = [{"views": DEFAULT_VIEWS if views is None else views}]
+    elif views is not None:
+        raise TuleError("views go into each sheet when sheets is given", op="drawing",
+                        hint='sheets=[{"views": ("front", "top", "right")}, {"views": (("front", point), "iso")}]')
+    if not isinstance(sheets, (list, tuple)) or not sheets:
+        raise TuleError(f"sheets is a list of dicts, one per sheet, got {sheets!r}", op="drawing",
+                        hint='sheets=[{"views": ("front", "top", "right")}, {"views": ("iso",), "sheet": "A4"}]')
+    out = []
+    for i, sp in enumerate(sheets, 1):
+        if not isinstance(sp, dict) or "views" not in sp or set(sp) - SHEET_KEYS:
+            raise TuleError(f"sheet {i} is a dict with views (and sheet, scale, callouts), got {sp!r}", op="drawing",
+                            hint='{"views": ("front", "top"), "sheet": "A3", "callouts": {"front": "none"}}')
+        size = sp.get("sheet", sheet)
+        if size is not None and size not in SHEETS:
+            raise TuleError(f"unknown sheet {size!r}", op="drawing", hint=", ".join(SHEETS) + ", or leave it out")
+        out.append({"views": sp["views"], "sheet": size, "scale": _parse_scale(sp.get("scale", scale)),
+                    "callouts": sp.get("callouts", callouts)})
+    return out
+
+
+def _view_list(views):
+    """``views`` of one sheet: names in order, and the section points by name."""
+    if isinstance(views, str):
+        views = (views,)
+    cuts, names = {}, []
     for v in views:
         if isinstance(v, (list, tuple)) and len(v) == 2 and isinstance(v[0], str):
             if v[0] not in ORTHO:
@@ -2221,132 +2858,220 @@ def render(item, views=("front", "top", "right", "iso"), dims=(), title=None, in
         if not isinstance(v, str):
             raise TuleError(f"a view is a name or (name, point) for a section, got {v!r}", op="drawing",
                             hint='views=(("front", (0, 0, 0)), "top", "right", "iso")')
+        if v not in VIEWS:
+            raise TuleError(f"unknown view {v!r}", op="drawing", hint=", ".join(VIEWS))
         names.append(v)
-    views = list(dict.fromkeys(names))
-    if not views:
+    names = list(dict.fromkeys(names))
+    if not names:
         raise TuleError("no views to draw", op="drawing", hint='views=("front", "top", "right", "iso")')
-    if isinstance(callouts, str) or callouts is None:
-        callouts = {k: callouts for k in views} if callouts else {}
-    if not isinstance(callouts, dict) or set(callouts.values()) - set(SIDES) or set(callouts) - set(views):
-        raise TuleError(f"callouts is a side ({', '.join(SIDES)}) or a dict of view: side, got {callouts!r}",
-                        op="drawing", hint='callouts={"right": "top"}')
-    W, H = SHEETS[sheet]
+    return names, cuts
+
+
+def _callout_sides(specs, callouts, V, alias):
+    """Each view's callout side (or None), and the views that take no automatic callouts."""
+    err = TuleError(f"callouts is a side ({', '.join(SIDES)}), 'none', or a dict of view: side, got {callouts!r}",
+                    op="drawing", hint='callouts={"right": "top", "front": "none"}')
+    sides, quiet = {}, set()
+
+    def apply(spec, keys, where):
+        if spec is None:
+            return
+        if isinstance(spec, (str, bool)):
+            spec = {V[k].name: spec for k in keys if V[k].name != "iso"}
+            byname = True
+        else:
+            byname = False
+        if not isinstance(spec, dict):
+            raise err
+        for nm, side in spec.items():
+            if side not in SIDES and side not in QUIET or isinstance(side, bool) and side:
+                raise err
+            hit = [k for k in keys if V[k].name != "iso" and (V[k].name == nm or alias.get(nm) == k)]
+            if not hit and not byname:
+                raise TuleError(f"callouts for view {nm!r}, which is not drawn{where}", op="drawing",
+                                hint="views drawn: " + ", ".join(sorted({V[k].name for k in keys if V[k].name != 'iso'})))
+            for k in hit:
+                if side in QUIET:
+                    quiet.add(k)
+                    sides.pop(k, None)
+                else:
+                    sides[k] = side
+                    quiet.discard(k)
+
+    for si, sp in enumerate(specs):
+        keys = [k for k in V if V[k].sheet == si]
+        apply(sp["callouts"], keys, f" on sheet {si + 1}" if len(specs) > 1 else "")
+    return sides, quiet
+
+
+def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=None, hidden=True,
+           projection="first", name=None, notes=None, tol=None, revisions=None, callouts=None, sheets=None,
+           datums=None):
+    """Lay out a drawing; returns the first sheet's ``(canvas, (width, height), facts)``; ``facts["pages"]``
+    holds every sheet's ``(canvas, size)``. See ``outputs.drawing``."""
+    shape, part_name = _as_shape(item)
+    if projection not in GRID:
+        raise TuleError(f"projection is 'first' or 'third', got {projection!r}", op="drawing")
+    if sheet is not None and sheet not in SHEETS:
+        raise TuleError(f"unknown sheet {sheet!r}", op="drawing", hint=", ".join(SHEETS) + ", or leave it out")
+    specs = _sheet_specs(views, sheet, scale, callouts, sheets)
     wrapped = shape.wrapped
     lo, hi = shape.bounds
     diag = float(np.linalg.norm(np.subtract(hi, lo)))
     if diag <= 0:
         raise TuleError("the shape is empty", op="drawing")
+    extent = float(np.max(np.subtract(hi, lo)))
     tol_ = max(1e-4, diag * 1e-6)
     tols = _Tols(tol)
     notes = _notes(notes)
     revs = _revisions(revisions)
-    V = {}
-    for i, k in enumerate(views):
-        V[k] = _View(k)
-        if k in cuts:  # a section: no hidden lines, cut faces hatched
-            V[k].section = "ABCDEFGHJKLMNPRSTUVWXYZ"[len([c for c in views[:i] if c in cuts])]
-            _hlr(_section(wrapped, V[k], cuts[k], diag, tol_), V[k], False, tol_)
+    # every view of every sheet, keyed by name ("top"; "top (sheet 2)" when a name comes again)
+    V, alias, cuts = {}, {}, {}
+    for si, sp in enumerate(specs):
+        names, here = _view_list(sp["views"])
+        for nm in names:
+            key = nm if nm not in V else f"{nm} (sheet {si + 1})"
+            v = V[key] = _View(nm)
+            v.sheet = si
+            alias.setdefault(nm, key)
+            if nm in here:
+                v.section = [x for x in DATUM_LETTERS if x not in (datums or {})][len(cuts)]  # not a datum's letter
+                cuts[key] = here[nm]
+                alias[f"{v.section}-{v.section}"] = key
+    for k, v in V.items():
+        if v.section:  # a section: no hidden lines, cut faces hatched
+            _hlr(_section(wrapped, v, cuts[k], diag, tol_), v, False, tol_)
         else:
-            _hlr(wrapped, V[k], hidden and k != "iso", tol_)
-    for k, v in V.items():  # each section's plane marked on the first plain view that sees it edge-on
+            _hlr(wrapped, v, hidden and v.name != "iso", tol_)
+    for k, v in V.items():  # each section's plane marked on a plain view that sees it edge-on, its own sheet first
         if v.section:
-            parent = next((V[j] for j in views if j != "iso" and not V[j].section and abs(V[j].d @ v.d) < 1e-6), None)
+            seen = [j for j in V if V[j].name != "iso" and not V[j].section and abs(V[j].d @ v.d) < 1e-6]
+            parent = next((V[j] for j in seen if V[j].sheet == v.sheet), None) or next((V[j] for j in seen), None)
             if parent is not None:
                 w = np.cross(parent.d, v.d)
                 sight = -v.d
                 parent.cutlines.append((v.section, parent.p(cuts[k]), _unit([w @ parent.x, w @ parent.y]),
                                         _unit([sight @ parent.x, sight @ parent.y])))
-    grid = {k: GRID[projection][k] for k in views if k != "iso"}
+    sides, quiet = _callout_sides(specs, callouts, V, alias)
+    grids = [{k: GRID[projection][V[k].name] for k in V if V[k].sheet == si and V[k].name != "iso"}
+             for si in range(len(specs))]
+    nb = {k: _neighbors(k, g) for g in grids for k in g}
     feats = _features(wrapped, tol_)
-    linear, picks = _parse_dims(dims, V, tol_)
-    plans = _plan(V, feats, linear, picks, grid, hidden, tol_, tols, callouts)
+    linear, picks, planes = _parse_dims(dims, V, alias, tol_)
+    letters = _parse_datums(datums, picks, planes, tol_)
+    for fr in [f for pk in picks for f in pk["opts"].get("frame", [])] + [f for pl in planes for f in pl["frames"]]:
+        missing = [d for d in fr.letters() if d not in letters]
+        if missing:
+            raise TuleError(f"frame {fr.name!r} refers to datum {', '.join(missing)}, which is not defined",
+                            op="drawing", hint='datums={"A": part.faces.bottom(), ...}')
+    plans = _plan(V, feats, linear, picks, planes, nb, hidden, tol_, tols, sides, quiet)
     tols.check()
 
-    title = title or part_name or name or "Drawing"
-    rows, rev = _fields(info, part_name or name, title)
+    given = next((str(v) for k, v in (info or {}).items()  # a part name given in the call wins over the shape's id
+                  if re.sub(r"[_\s]+", " ", str(k).strip().lower()) in FIELDS[0][2] and v), None)
+    title = title or given or part_name or name or "Drawing"
+    rows, rev = _fields(info, title)
     if revs:
         if rev and rev != revs[-1][0]:
             raise TuleError(f"info rev {rev!r} is not the last revision {revs[-1][0]!r}", op="drawing",
                             hint="the last entry of revisions is the current one; drop rev from info")
         rev = revs[-1][0]
-    frame = (MARGIN + 3, MARGIN + 3, W - MARGIN - 3, H - MARGIN - 3)
     tb_h = _tb_height(rows)
-    rv_h = _rev_height(revs)
-    # where the notes go: above the title block, or in the bottom left corner
-    layouts = []
-    nh = _notes_height(notes, TB_W)
-    col = tb_h + rv_h + (4.0 + nh if notes else 0.0)
-    layouts.append(("right", [(W - MARGIN - TB_W - 3, MARGIN - 1, W - MARGIN + 1, MARGIN + col + 3)]))
-    if notes:
-        nw = min(TB_W + 20, W - 2 * MARGIN - TB_W - 16)
-        nh2 = _notes_height(notes, nw)
-        layouts.append(("left", [(W - MARGIN - TB_W - 3, MARGIN - 1, W - MARGIN + 1, MARGIN + tb_h + rv_h + 3),
-                                 (MARGIN - 1, MARGIN - 1, MARGIN + 4 + nw + 3, MARGIN + 4 + nh2 + 3)]))
+    pages, chosen = [], []
+    for si, sp in enumerate(specs):
+        first = si == 0
+        s, size, page = _sheet(V, plans, grids[si], si, sp, extent, title, rows, rev, projection,
+                               notes if first else [], revs if first else [], tb_h, (si + 1, len(specs)))
+        pages.append((page, SHEETS[size]))
+        chosen.append({"sheet": size, "scale": _scale_text(s)})
+    facts = {"scale": chosen[0]["scale"], "sheet": chosen[0]["sheet"], "sheets": chosen, "title": title, "rev": rev,
+             "texts": [t for p, _ in pages for t, _ in p.labels], "frames": [f for p, _ in pages for f in p.frames],
+             "pages": pages}
+    return pages[0][0], pages[0][1], facts
 
-    def fit(s):
-        """The views at scale ``s`` and where they go, or None when they do not fit the sheet."""
-        canv = {}
-        for k in grid:
-            p = plans[k]
-            c = _annotate(V[k], s, p["dims"], p["callouts"], _centers(p, s), p["nb"])
-            bb = V[k].bbox()
-            canv[k] = (c, (bb[0] * s, bb[1] * s, bb[2] * s, bb[3] * s))
-        off, rects, cells = _grid_block(canv, grid, s) if canv else ({}, [], [])
+
+def _sheet(V, plans, grid, si, sp, extent, title, rows, rev, projection, notes, revs, tb_h, number):
+    """One sheet: its scale and size (chosen unless given) and the page."""
+    iso = next((k for k in V if V[k].sheet == si and V[k].name == "iso"), None)
+    rv_h = _rev_height(revs)
+    cache: dict = {}
+
+    def views_at(s):
+        if s not in cache:
+            canv = {}
+            for k in grid:
+                c = _annotate(V[k], s, plans[k])
+                bb = V[k].bbox()
+                canv[k] = (c, (bb[0] * s, bb[1] * s, bb[2] * s, bb[3] * s))
+            cache[s] = (canv, *(_grid_block(canv, grid, s) if canv else ({}, [], [])))
+        return cache[s]
+
+    def fit(s, size):
+        """The views at scale ``s`` on sheet ``size`` and where they go, or None when they do not fit (and
+        ``fit.why`` says what does not)."""
+        W, H = SHEETS[size]
+        canv, off, rects, cells = views_at(s)
+        frame = (MARGIN + 3, MARGIN + 3, W - MARGIN - 3, H - MARGIN - 3)
+        if rects:
+            U = (min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects))
+            big = max(canv, key=lambda k: (lambda b: (b[2] - b[0]) * (b[3] - b[1]))(_union_box(canv[k])))
+            bb = _union_box(canv[big])
+            fit.why = (f"the views with their dimensions and callouts take {U[2] - U[0]:.0f} × {U[3] - U[1]:.0f} mm "
+                       f"(the {big} view {bb[2] - bb[0]:.0f} × {bb[3] - bb[1]:.0f}); {size} has "
+                       f"{frame[2] - frame[0]:.0f} × {frame[3] - frame[1]:.0f} inside its frame, less the title block "
+                       f"({TB_W:.0f} × {tb_h + rv_h:.0f}{' and notes' if notes else ''})")
+        # where the notes go: above the title block, or in the bottom left corner
+        layouts = []
+        nh = _notes_height(notes, TB_W)
+        col = tb_h + rv_h + (4.0 + nh if notes else 0.0)
+        layouts.append(("right", [(W - MARGIN - TB_W - 3, MARGIN - 1, W - MARGIN + 1, MARGIN + col + 3)]))
+        if notes:
+            nw = min(TB_W + 20, W - 2 * MARGIN - TB_W - 16)
+            nh2 = _notes_height(notes, nw)
+            layouts.append(("left", [(W - MARGIN - TB_W - 3, MARGIN - 1, W - MARGIN + 1, MARGIN + tb_h + rv_h + 3),
+                                     (MARGIN - 1, MARGIN - 1, MARGIN + 4 + nw + 3, MARGIN + 4 + nh2 + 3)]))
         for where, keep in layouts:
-            if "iso" not in V:
+            if iso is None:
                 at = _place(rects, frame, keep)
                 if at:
                     return canv, off, at, None, None, where
                 continue
-            ib = V["iso"].bbox()
-            # the isometric view may be one standard scale smaller than the others (labelled)
-            for si in [s] + ([x for x in SCALES if x < s][:1] if canv else []):
-                iw, ih = (ib[2] - ib[0]) * si, (ib[3] - ib[1]) * si
-                below = 7.0 if si != s else 0.0  # its scale, under it
+            if _place(rects, frame, keep) is None:
+                continue
+            ib = V[iso].bbox()
+            fit.why = f"the views fit {size}, but the isometric view finds no free spot beside them"
+            # the isometric view may be up to three standard scales smaller than the others (labelled)
+            for si_ in [s] + ([x for x in SCALES if x < s][:3] if canv else []):
+                iw, ih = (ib[2] - ib[0]) * si_, (ib[3] - ib[1]) * si_
+                below = 7.0 if si_ != s else 0.0  # its scale, under it
                 for sx, sy in _iso_spots(rects, cells, iw, ih + below):
                     ir = (sx, sy, sx + iw, sy + ih + below)
                     if any(_overlaps(ir, r, GAP) for r in rects):
                         continue
                     at = _place(rects + [ir], frame, keep)
                     if at:
-                        return canv, off, at, (sx - ib[0] * si, sy + below - ib[1] * si), si, where
+                        return canv, off, at, (sx - ib[0] * si_, sy + below - ib[1] * si_), si_, where
         return None
 
-    fixed = _parse_scale(scale)
-    if fixed:
-        s, placed = fixed, fit(fixed)
-        if placed is None:
-            std = next((x for x in SCALES if x < fixed and fit(x)), None)
-            nice = next((x for x in NICE if x < fixed and (std is None or x > std) and fit(x)), None)
-            hints = []
-            if nice:
-                hints.append(f'scale="{_scale_text(nice)}" fits')
-            if std:
-                hints.append(f'"{_scale_text(std)}" is the largest ISO 5455 scale that fits (leave scale out to get it)')
-            bigger = next((k for k, v in SHEETS.items() if v[0] > W), None)
-            hints.append((f'or a larger sheet (sheet="{bigger}", …) or' if bigger else "or") + " fewer views")
-            raise TuleError(f"the views do not fit {sheet} at {_scale_text(fixed)}", op="drawing", hint="; ".join(hints))
-    else:
-        s, placed = next(((x, f) for x in SCALES if (f := fit(x))), (SCALES[-1], None))
-        if placed is None:
-            raise TuleError(f"the views do not fit {sheet} even at {_scale_text(SCALES[-1])}", op="drawing",
-                            hint="use a larger sheet or fewer views")
+    fit.why = ""
+    s, size, placed = _choose(fit, sp["sheet"], sp["scale"], extent, number)
+    W, H = SHEETS[size]
     canv, off, (ax, ay), iso_at, iso_s, where = placed
-
     page = _Canvas()
     page.rect("frame", MARGIN, MARGIN, W - MARGIN, H - MARGIN)
     for k in canv:
         page.add(canv[k][0], off[k][0] + ax, off[k][1] + ay)
     if iso_at is not None:
         ic = _Canvas()
-        for p in V["iso"].vis:
+        for p in V[iso].vis:
             ic.path("vis", _prim_cmds(p, iso_s))
         page.add(ic, iso_at[0] + ax, iso_at[1] + ay)
         if iso_s != s:
             ib = ic.bbox()
             page.text(iso_at[0] + ax + (ib[0] + ib[2]) / 2, iso_at[1] + ay + ib[1] - 5, f"({_scale_text(iso_s)})",
                       size=2.5, anchor="middle")
-    _title_block(page, W, title, rows, rev, _scale_text(s), sheet, projection)
+    label = size if number[1] == 1 else f"{size}  {number[0]}/{number[1]}"
+    _title_block(page, W, title, rows, rev, _scale_text(s), label, projection)
     x0 = W - MARGIN - TB_W
     if revs:
         _revision_table(page, x0, MARGIN + tb_h, revs)
@@ -2355,9 +3080,53 @@ def render(item, views=("front", "top", "right", "iso"), dims=(), title=None, in
             _notes_block(page, x0 + 1, MARGIN + tb_h + rv_h + 4.0, TB_W - 1, notes)
         else:
             _notes_block(page, MARGIN + 4, MARGIN + 4, min(TB_W + 20, W - 2 * MARGIN - TB_W - 16), notes)
-    facts = {"scale": _scale_text(s), "sheet": sheet, "title": title, "rev": rev,
-             "texts": [t for t, _ in page.labels]}
-    return page, (W, H), facts
+    return s, size, page
+
+
+def _union_box(cv):
+    """A placed view's bounds: its geometry and everything drawn around it (sheet mm, view-local)."""
+    a, g = cv[0].bbox(), cv[1]
+    return (min(a[0], g[0]), min(a[1], g[1]), max(a[2], g[2]), max(a[3], g[3]))
+
+
+def _choose(fit, size, fixed, extent, number):
+    """Scale and sheet: 1:1 when the views fit, enlarged only for a small part, else the largest reduction;
+    a sheet left out is the smallest of A4, A3, A2 that takes them at that scale."""
+    on = f" (sheet {number[0]})" if number[1] > 1 else ""
+    if fixed:
+        for sz in [size] if size else list(SHEETS):
+            if (f := fit(fixed, sz)):
+                return fixed, sz, f
+        sz = size or "A0"
+        fit(fixed, sz)
+        why = fit.why
+        # the largest scale below that fits, standard or not, tested the same way
+        best = next((x for x in sorted(set(SCALES) | set(NICE), reverse=True) if x < fixed and fit(x, sz)), None)
+        hints = [why] if why else []
+        if best in SCALES:
+            hints.append(f'"{_scale_text(best)}" is the largest scale that fits, an ISO 5455 one (leave scale out to get it)')
+        elif best:
+            hints.append(f'scale="{_scale_text(best)}" is the largest that fits; leave scale out for the largest '
+                         'ISO 5455 scale that fits')
+        bigger = next((k for k, v in SHEETS.items() if v[0] > SHEETS[sz][0]), None)
+        hints.append((f'or a larger sheet (sheet="{bigger}", …) or' if bigger else "or") + " fewer views")
+        raise TuleError(f"the views{on} do not fit {sz} at {_scale_text(fixed)}", op="drawing", hint="; ".join(hints))
+    sizes = [size] if size else list(AUTO_SHEETS)
+    order = [x for x in SCALES if x > 1 and extent * x <= ENLARGE] + [x for x in SCALES if x <= 1]
+    why = None
+    for x in order:
+        for sz in sizes:
+            if (f := fit(x, sz)):
+                if x < 1 and why:  # say what kept it from 1:1, so the author can make room
+                    print(f"tule: drawing{on} at {_scale_text(x)} on {sz}, not 1:1: at 1:1 {why}. For 1:1: "
+                          f"sheet=\"{next((k for k in SHEETS if SHEETS[k][0] > SHEETS[sizes[-1]][0]), 'A0')}\", "
+                          "fewer views, or the callouts of a crowded view on another side (callouts=...)",
+                          file=sys.stderr, flush=True)
+                return x, sz, f
+            if x == 1 and sz == sizes[-1]:
+                why = fit.why
+    raise TuleError(f"the views{on} do not fit {size or AUTO_SHEETS[-1]} even at {_scale_text(SCALES[-1])}",
+                    op="drawing", hint="use a larger sheet or fewer views")
 
 
 # ---------------------------------------------------------------- writers
@@ -2378,9 +3147,39 @@ def _pdf_text(s: str) -> str:
     return "".join(out)
 
 
-def to_pdf(c: _Canvas, size, title: str = "") -> bytes:
-    """A one-page vector PDF (Helvetica, no dates: the same drawing gives the same bytes)."""
-    W, H = size
+def to_pdf(c, size=None, title: str = "") -> bytes:
+    """A vector PDF of one page (``c``, ``size``) or of several (``c``: a list of ``(canvas, size)``);
+    Helvetica, its title the drawing's, no dates: the same drawing gives the same bytes."""
+    pages = c if isinstance(c, list) else [(c, size)]
+    k = 72 / 25.4
+    n = len(pages)
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{' '.join(f'{6 + 2 * i} 0 R' for i in range(n))}] /Count {n} >>".encode(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+        f"<< /Title ({_pdf_text(title)}) /Producer (tule) >>".encode("latin-1"),
+    ]
+    for i, (pc, (W, H)) in enumerate(pages):
+        stream = _pdf_stream(pc)
+        objs.append((f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {_n(W * k)} {_n(H * k)}] "
+                     f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {7 + 2 * i} 0 R >>").encode())
+        objs.append(f"<< /Length {len(stream)} /Filter /FlateDecode >>\nstream\n".encode() + stream + b"\nendstream")
+    buf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = []
+    for i, o in enumerate(objs, 1):
+        offsets.append(len(buf))
+        buf += f"{i} 0 obj\n".encode() + o + b"\nendobj\n"
+    xref = len(buf)
+    buf += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    for o in offsets:
+        buf += f"{o:010d} 00000 n \n".encode()
+    buf += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R /Info 5 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return bytes(buf)
+
+
+def _pdf_stream(c: _Canvas) -> bytes:
+    """One page's content stream, compressed."""
     k = 72 / 25.4
     out = [f"{k:.6f} 0 0 {k:.6f} 0 0 cm", "1 J 1 j 0 g 0 G"]
     state = None
@@ -2414,28 +3213,7 @@ def to_pdf(c: _Canvas, size, title: str = "") -> bytes:
             x, y = x - d * cs, y - d * sn
             out.append(f"BT /{'F2' if bold else 'F1'} {_n(size_)} Tf {_n(cs)} {_n(sn)} {_n(-sn)} {_n(cs)} {_n(x)} {_n(y)} Tm "
                        f"({_pdf_text(s)}) Tj ET")
-    stream = zlib.compress("\n".join(out).encode("latin-1"), 9)
-    objs = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {_n(W * k)} {_n(H * k)}] "
-         "/Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>").encode(),
-        f"<< /Length {len(stream)} /Filter /FlateDecode >>\nstream\n".encode() + stream + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
-        f"<< /Title ({_pdf_text(title)}) /Producer (tule) >>".encode("latin-1"),
-    ]
-    buf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
-    offsets = []
-    for i, o in enumerate(objs, 1):
-        offsets.append(len(buf))
-        buf += f"{i} 0 obj\n".encode() + o + b"\nendobj\n"
-    xref = len(buf)
-    buf += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
-    for o in offsets:
-        buf += f"{o:010d} 00000 n \n".encode()
-    buf += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R /Info 7 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
-    return bytes(buf)
+    return zlib.compress("\n".join(out).encode("latin-1"), 9)
 
 
 def _xml(s: str) -> str:
@@ -2541,14 +3319,19 @@ def dxf(item, path: str, view: str = "top") -> str:
     return write_atomic(path, to_dxf(v))
 
 
-def write(folder: str, base: str, item: Union[Shape, Assembly], views=("front", "top", "right", "iso"), dims=(),
-          title=None, info=None, sheet="A4", scale=None, hidden=True, projection="first", dxf_view=None,
-          notes=None, tol=None, revisions=None, callouts=None) -> dict:
-    """Write ``<base>.pdf`` and ``<base>.svg`` (and ``<base>.dxf``) into ``folder``; returns facts (scale, texts)."""
-    page, size, facts = render(item, views, dims, title, info, sheet, scale, hidden, projection, base,
-                               notes=notes, tol=tol, revisions=revisions, callouts=callouts)
-    write_atomic(os.path.join(folder, base + ".pdf"), to_pdf(page, size, facts["title"]))
-    write_atomic(os.path.join(folder, base + ".svg"), to_svg(page, size, facts["title"]))
+def write(folder: str, base: str, item: Union[Shape, Assembly], views=None, dims=(),
+          title=None, info=None, sheet=None, scale=None, hidden=True, projection="first", dxf_view=None,
+          notes=None, tol=None, revisions=None, callouts=None, sheets=None, datums=None) -> dict:
+    """Write ``<base>.pdf`` (every sheet a page) and ``<base>.svg`` (``<base>-2.svg``, ... for further sheets),
+    and ``<base>.dxf``, into ``folder``; returns facts (scale, texts)."""
+    _, _, facts = render(item, views, dims, title, info, sheet, scale, hidden, projection, base, notes=notes, tol=tol,
+                         revisions=revisions, callouts=callouts, sheets=sheets, datums=datums)
+    pages = facts["pages"]
+    write_atomic(os.path.join(folder, base + ".pdf"), to_pdf(pages, title=facts["title"]))
+    for i, (page, size) in enumerate(pages):
+        n = len(pages)
+        write_atomic(os.path.join(folder, base + (f"-{i + 1}" if i else "") + ".svg"),
+                     to_svg(page, size, facts["title"] + (f" ({i + 1}/{n})" if n > 1 else "")))
     if dxf_view:
         dxf(item, os.path.join(folder, base + ".dxf"), dxf_view)
     return facts

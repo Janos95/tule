@@ -555,11 +555,12 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
 
 # ---------------------------------------------------------------- drawings
 
-def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front", "top", "right", "iso"), dims=(),
+def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=None, dims=(),
             title: str | None = None, info: dict | None = None, notes=None, tol: dict | None = None,
-            revisions=None, callouts=None, sheet: str = "A4", scale=None, hidden: bool = True,
-            projection: str = "first", dxf: str | None = None) -> str:
-    """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` and ``.svg``. Returns the folder.
+            revisions=None, callouts=None, sheet: str | None = None, scale=None, hidden: bool = True,
+            projection: str = "first", dxf: str | None = None, sheets=None, datums: dict | None = None) -> str:
+    """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` (every sheet) and one
+    ``.svg`` per sheet (``<name>.svg``, ``<name>-2.svg``, ...). Returns the folder.
 
     Views (``front top right left bottom back iso``) are projected with hidden lines
     (dashed; ``hidden=False`` drops them) and placed by ``projection`` (``"first"``
@@ -569,27 +570,32 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front"
     edge-on. Further sections get B, C, ... More: ``tule docs drawings``.
 
     Automatic: overall sizes, and callouts for holes and slots, counted, in standard form,
-    in the view that looks into them: ``4× ⌀6.6 THRU`` (only when nothing is beyond either
+    once per drawing, in the view that shows them best: ``4× ⌀6.6 THRU`` (only when nothing is beyond either
     end; a hole into a slit or pocket gets its depth ``↧``) / ``⌴ ⌀11 ↧6.5`` counterbore,
     ``⌵ ⌀12 × 90°`` countersink, ``4× slot 5.5 × 11.5 THRU`` (width × overall length). Each
     callout goes on the side where its leader crosses the fewest lines; leaders never cross
-    each other and no text touches a line or another text. ``callouts="top"`` or
-    ``{"right": "top"}`` puts a view's callouts on that side.
+    each other or a dimension line, and no text touches a line or another text.
+    ``callouts="top"`` or ``{"right": "top"}`` puts a view's callouts on that side;
+    ``"none"`` leaves them to another view.
 
     ``dims`` adds yours: ``("top", p1, p2)`` measures two 3D points (or one-item
     selections) in that view; a fourth item ``{"along": "h" | "v" | "aligned",
-    "tol": "±0.05", "text": "40", "offset": mm}``. A feature picked by its faces or
-    circular edges gets its own callout in that view: ``("right",
-    part.faces.cylindrical(r=3.25), {"tol": "+0.1/0", "side": "top", "text": "M6×1-6H ↧12"})``
-    (``text`` replaces the callout, ``"\\n"`` between lines); circles that are no hole or slot
-    (a boss, an arc) get ``⌀``/``R``.
+    "tol": "±0.05" | "basic", "text": "40", "offset": mm, "side": "top"}``. A feature picked
+    by its faces or circular edges gets its own callout, in the view given or the best one:
+    ``("right", part.faces.cylindrical(r=3.25), {"tol": "+0.1/0", "side": "top", "text":
+    "M6×1-6H ↧12", "frame": "position ⌀0.1 M A B C"})`` (``text`` replaces the callout,
+    ``"\\n"`` between lines); on a slot ``"width": "+0.1/0"`` and ``"length": True`` dimension
+    it. A concave arc (pocket corner, fillet) gets ``R3 ↧14``, a boss ``⌀``/``R``. A planar
+    face takes ``{"frame": ["flatness 0.05", "parallel 0.05 A"]}``. ``datums={"A":
+    part.faces.bottom(), "B": holes}`` draws datum feature symbols; frames name them.
 
     ``tol`` tolerances a size by its printed text: ``{"⌀22": "+0.05/0", "88": "±0.1",
     "slot 5.5": "+0.1/0", "↧6.5": "±0.1"}``; values ``"±0.1"``, ``"+0.05/0"`` (stacked),
     ``"H7"``. A key that matches nothing, or more than one callout, is an error naming them:
     then tolerance the one feature in ``dims``.
 
-    ``info`` fills the title block: ``number`` (part number), ``rev``, ``material``,
+    ``title`` (else ``info["part"]``, else the shape's name) heads the title block and is the
+    PDF's title. ``info`` fills the title block: ``number`` (part number), ``rev``, ``material``,
     ``finish``, ``tolerance`` (general tolerances, default ISO 2768-m; ``""`` drops it),
     ``drawn``, ``date``, ``checked``, ``approved``; other keys get rows of their own.
     Nothing is dated unless you say so: the same drawing writes the same bytes.
@@ -597,9 +603,12 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front"
     draws a revision table; the last is the current rev. ``notes=["Break all edges
     0.3", "Anodize clear, MIL-A-8625 Type II"]``: a numbered NOTES block.
 
-    ``sheet``: ``"A4"`` to ``"A0"``. ``scale``: leave it out for the largest ISO scale that
-    fits (2:1, 1:1, 1:2, ...); ``"1.5:1"`` or any ratio when you need one, and the error
-    for one that does not fit names the largest that does. ``dxf="top"`` also writes that
+    ``sheet``: ``"A4"`` to ``"A0"``; left out, the smallest of A4, A3, A2 that takes the views.
+    ``scale``: left out, 1:1 when it fits (2:1 and up only for a small part), else the
+    largest ISO reduction; ``"1.5:1"`` or any ratio when you need one, and the error for one
+    that does not fit says what is too big and names the largest that does. ``sheets=[{"views":
+    ("front", "top"), "sheet": "A3"}, {"views": (("front", point), "iso"), "callouts": "none"}]``
+    lays the drawing out over several sheets. ``dxf="top"`` also writes that
     view at 1:1 as ``<name>.dxf`` for laser or waterjet cutting.
     """
     from .drawing import write as write_drawing
@@ -608,5 +617,5 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front"
     folder = _folder(name)
     write_drawing(folder, _slug(name.rsplit("/", 1)[-1]), item, views=views, dims=dims, title=title, info=info,
                   sheet=sheet, scale=scale, hidden=hidden, projection=projection, dxf_view=dxf, notes=notes,
-                  tol=tol, revisions=revisions, callouts=callouts)
+                  tol=tol, revisions=revisions, callouts=callouts, sheets=sheets, datums=datums)
     return folder
