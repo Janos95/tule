@@ -187,11 +187,11 @@ def test_motion_frames_and_assembly_placements(tmp_path, monkeypatch):
         for a in (0, 90):
             seq.add([base, arm.rotate(y=a).at(10, 0, 10)], label=f"{a} deg")
     outputs.assembly("pair", Assembly(base, arm.at(30, 0, 0)))
-    first, _, cap0 = scene(str(tmp_path / "swing"), 0)
+    first, _, cap0 = scene(str(tmp_path / "swing"), 1)
     last, _, cap = scene(str(tmp_path / "swing"))
     hi = lambda ps: np.concatenate([p.positions for p in ps]).max(0)
     assert hi(first)[2] == pytest.approx(30, abs=1e-3)  # standing up
     assert hi(last)[0] == pytest.approx(30, abs=1e-3) and hi(last)[2] == pytest.approx(10, abs=1e-3)  # swung over
-    assert "frame 1 of 2 (done), 90 deg" in cap and "frame 0" in cap0
+    assert "frame 2 of 2 (done), 90 deg" in cap and "frame 1 of 2" in cap0
     parts, _, _ = scene(str(tmp_path / "pair"))
     assert hi(parts)[0] == pytest.approx(32, abs=1e-3)

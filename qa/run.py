@@ -152,7 +152,7 @@ def start_machine(g: Guest, project: str, name: str):
 
 def on_machine(name: str, script: str, timeout=600) -> str:
     r = subprocess.run(["docker", "exec", name, "bash", "-lc", f"cd /workspace && {script}"],
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True, errors="replace", timeout=timeout)
     return r.stdout + (f"\n[stderr]\n{r.stderr}" if r.stderr.strip() else "") + (f"\n[exit {r.returncode}]" if r.returncode else "")
 
 

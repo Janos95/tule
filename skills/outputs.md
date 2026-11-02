@@ -86,6 +86,6 @@ tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back le
 tule inspect outputs/bracket/bracket.step                # faces, ids, types, areas, tags
 ```
 
-Read the PNG. It also lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3` another).
+Read the PNG. It also lists faces labeled, too small to label, or hidden. A sequence renders its last frame (`--frame 3`: the third).
 
 Outputs are not in git (`tule build` remakes them).

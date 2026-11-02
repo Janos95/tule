@@ -53,6 +53,7 @@ const parts = viewer ? initParts({ viewer, project: () => project ?? "" }) : nul
 const plot = initPlot($("plot"), (i) => {
   play(false);
   state.frame = i;
+  remember();
   show();
 });
 const overlay = viewer ? initOverlay({ viewer, legend: $("legend"), marks: $("marks") }) : null;
@@ -63,7 +64,7 @@ const state = {
   selected: null, // the output shown: the wanted one once it exists, else the first
   view: new URLSearchParams(location.search).get("f"), // which of its views: "3d", a file name, "log" (null: the first)
   shown: null, // the key of what is drawn (output name and file hashes)
-  frame: 0,
+  frame: Math.max(0, (parseInt(new URLSearchParams(location.search).get("frame") ?? "", 10) || 1) - 1), // a sequence's frame (the link counts from 1)
   meshes: [], // what is drawn
   record: null, // what is drawn, for an annotation: {name, kind, title, files, frame}
 };
@@ -324,9 +325,10 @@ function prepare(list) {
 function views(o) {
   const v = [];
   if (o.files.length) v.push({ id: "3d", label: "3D", type: "geometry" });
-  // documents first; beside a model, files with no view of their own (an STL, a .3mf) are only in Download
-  const rank = (t) => ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(t) + 1 || 9;
-  const docs = [...o.docs].sort((a, b) => rank(a.type) - rank(b.type));
+  // the file named after the output first (parts-list/parts-list.csv), then documents; beside a model,
+  // files with no view of their own (an STL, a .3mf) are only in Download
+  const rank = (f) => (f.file.replace(/\.[^.]*$/, "") === o.name.split("/").pop() ? 0 : ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"].indexOf(f.type) + 1 || 9);
+  const docs = [...o.docs].sort((a, b) => rank(a) - rank(b));
   for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) v.push({ id: f.file, label: f.file, type: f.type, f });
   if (o.build?.state === "failed" && o.build.log) v.push({ id: "log", label: "build log", type: "log" });
   return v;
@@ -421,6 +423,7 @@ function renderList() {
   if (state.wanted == null && newest) state.wanted = newest.id; // once: the view doesn't jump while the agent works
   state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (newest?.id ?? all[0]?.id ?? null);
   const outs = all.filter((o) => o.root === "outputs");
+  partsTree.remove(); // shown only under the entry that has parts (below)
   $("outputs-empty").hidden = outs.length > 0;
   fill($("output-list"), outs);
   for (const root of ["work", "inputs"]) {
@@ -480,8 +483,8 @@ function entry(list, o, group = null) {
     const [text, tone] = fact(o);
     const vs = views(o);
     const v = selected ? viewOf(o) : null;
-    // parts: an assembly's, or a sequence's whose frames are STEP assemblies
-    const tree = o.files.length && (kindOf(o) === "assembly" || (kindOf(o) === "sequence" && /\.(step|stp)$/i.test(o.files[0].file)));
+    // parts: an assembly's, or a sequence's whose frames are assemblies (STEP files, or a frame lists its parts)
+    const tree = o.files.length && (kindOf(o) === "assembly" || (kindOf(o) === "sequence" && (/\.(step|stp)$/i.test(o.files[0].file) || !!o.meta?.frames?.[0]?.parts || !!o.meta?.framesFile)));
     const foldable = vs.length > 1 || tree;
     const open = foldable && selected && !folded.has(o.id);
     b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${iconOf(o)}</svg><span class="output-name"></span><small></small>${foldable ? '<svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>' : ""}`;
@@ -596,6 +599,8 @@ function remember() {
   u.searchParams.set("o", state.wanted);
   if (state.view) u.searchParams.set("f", state.view);
   else u.searchParams.delete("f");
+  if (state.frame > 0) u.searchParams.set("frame", String(state.frame + 1));
+  else u.searchParams.delete("frame");
   history.replaceState(null, "", u);
 }
 
@@ -787,6 +792,7 @@ $("play").addEventListener("click", () => play(!playing));
 $("scrub").addEventListener("input", (e) => {
   play(false);
   state.frame = +e.target.value;
+  remember(); // a link to this frame
   show();
 });
 

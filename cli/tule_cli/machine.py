@@ -382,16 +382,18 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
         frames = meta.get("frames") or []
         if not frames:
             raise CliError(f"{jpath}: the sequence has no frames yet")
-        i = len(frames) - 1 if frame is None else frame % len(frames) if -len(frames) <= frame < len(frames) else None
+        # counted from 1, as the viewer's slider (7 / 16); -1 is the last
+        n = len(frames)
+        i = n - 1 if frame is None else frame - 1 if 1 <= frame <= n else n + frame if -n <= frame <= -1 else None
         if i is None:
-            raise CliError(f"{folder} has frames 0 to {len(frames) - 1}, not {frame}")
+            raise CliError(f"{folder} has frames 1 to {n}, not {frame}")
         fr = frames[i]
         if fr.get("parts"):  # a motion frame: parts placed
             parts = [q for e in fr["parts"] for q in _placed(to_parts(file_in(e["file"]), e.get("color"), e.get("name")), e.get("transform"))]
         else:
             parts = to_parts(file_in(fr["file"]))
         vals = ", ".join(f"{k} {v:.4g}" for k, v in (fr.get("values") or {}).items())
-        caption = f"{folder}: frame {i} of {len(frames)} ({meta.get('status', 'done')})" + (f", {fr['label']}" if fr.get("label") else "") + (f", {vals}" if vals else "")
+        caption = f"{folder}: frame {i + 1} of {len(frames)} ({meta.get('status', 'done')})" + (f", {fr['label']}" if fr.get("label") else "") + (f", {vals}" if vals else "")
     elif kind in ("part", "overlay"):
         name = meta.get("file") or (files[0] if files else None)
         if not name:
@@ -697,7 +699,7 @@ def add_commands(add):
     sp.add_argument("--view", default="iso", help="iso (default), front, back, left, right, top, bottom")
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
     sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
-    sp.add_argument("--frame", type=int, help="a sequence's frame (default: the last; -2 the one before)")
+    sp.add_argument("--frame", type=int, help="a sequence's frame, from 1 as in the viewer (default: the last; -2 the one before)")
     sp.add_argument("-p", "--project", help="from your own computer: render on this project's machine, write the PNG here")
     sp.add_argument("--field", help="an overlay field to color by, by label (default: the first; e.g. displacement)")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)

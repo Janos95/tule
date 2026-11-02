@@ -362,20 +362,38 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     if plain:
         if not caption:
             return im, report
-        out = Image.new("RGB", (W, H + fs + 14), (255, 255, 255))
+        lines = _wrap(font, caption, W - 16)
+        out = Image.new("RGB", (W, H + len(lines) * (fs + 4) + 10), (255, 255, 255))
         out.paste(im, (0, 0))
-        ImageDraw.Draw(out).text((8, H + 6), caption, fill=(40, 44, 50), font=font)
+        for k, line in enumerate(lines):
+            ImageDraw.Draw(out).text((8, H + 6 + k * (fs + 4)), line, fill=(40, 44, 50), font=font)
         return out, report
     _triad(draw, R, font, H)
 
     bar = overlay.scale if overlay is not None and overlay.scale else None
-    out = Image.new("RGB", (W, H + (fs + 14) * (2 if bar else 1)), (232, 234, 237))
+    lines = _wrap(font, f"{caption} · view {view}" if caption else f"view {view}", W - 16)
+    top = len(lines) * (fs + 4) + 10
+    out = Image.new("RGB", (W, H + top + ((fs + 14) if bar else 0)), (232, 234, 237))
     out.paste(im, (0, 0))
     od = ImageDraw.Draw(out)
-    od.text((8, H + 6), f"{caption} · view {view}" if caption else f"view {view}", fill=(40, 44, 50), font=font)
+    for k, line in enumerate(lines):
+        od.text((8, H + 6 + k * (fs + 4)), line, fill=(40, 44, 50), font=font)
     if bar:
-        _color_bar(od, font, bar, 8, H + fs + 18, fs)
+        _color_bar(od, font, bar, 8, H + top + 4, fs)
     return out, report
+
+
+def _wrap(font, text: str, width: int) -> list[str]:
+    """The caption in lines that fit (broken between words)."""
+    lines, cur = [], ""
+    for word in text.split(" "):
+        t = f"{cur} {word}" if cur else word
+        if cur and _text_size(font, t)[0] > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = t
+    return lines + [cur] if cur else lines or [""]
 
 
 def _color_bar(draw, font, s, x, y, fs):
