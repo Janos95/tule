@@ -1680,8 +1680,8 @@ table.data th button:hover { color: var(--text); }
 table.data th[data-sort="up"] button::after { content: " ↑"; }
 table.data th[data-sort="down"] button::after { content: " ↓"; }
 table.data tbody tr:hover { background: var(--hover); }
-button.link { all: unset; cursor: pointer; color: var(--link); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent); text-underline-offset: 2px; }
-button.link:hover { text-decoration-color: var(--link); }
+button.link, a.link { all: unset; cursor: pointer; color: var(--link); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent); text-underline-offset: 2px; }
+button.link:hover, a.link:hover { text-decoration-color: var(--link); }
 
 .chart { width: 100%; }
 .chart svg { display: block; max-width: 100%; }

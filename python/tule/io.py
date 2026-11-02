@@ -320,8 +320,9 @@ def import_step(path: str):
                 parts.append(part_from(ref, loc, c))
         else:
             parts.append(part_from(lab))
-    if len(parts) == 1 and not names:
-        return parts[0]
+    if len(parts) == 1:  # one part, even inside an assembly node: a Shape
+        p = parts[0]
+        return p if p.name or not names or not names[0] else p.named(names[0])
     return Assembly(*parts, name=(names[0] if names else None))
 
 

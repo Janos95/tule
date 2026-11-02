@@ -125,6 +125,9 @@ export function initPlot(el, onPick) {
       frames = list;
       current = shown;
       keys = [...new Set(list.flatMap((f) => Object.keys(f.values ?? {}).filter((k) => Number.isFinite(f.values[k]))))];
+      // a value that only counts the frames (step 0, 1, 2 …) says nothing the slider doesn't
+      const counts = (k) => list.every((f, i) => f.values?.[k] === i || f.values?.[k] === i + 1) && new Set(list.map((f, i) => f.values[k] - i)).size === 1;
+      keys = keys.filter((k) => !counts(k));
       el.hidden = !keys.length;
       if (keys.length) render();
     },

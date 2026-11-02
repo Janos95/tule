@@ -74,6 +74,13 @@ def test_step_copies_under_other_names_and_compound_parts(tmp_path):
     assert open(path).read().count("MANIFOLD_SOLID_BREP") == 2 + 4
 
 
+def test_one_part_assembly_reads_as_a_shape(tmp_path):
+    p = str(tmp_path / "one.step")
+    export_step(Assembly(box(10, 10, 10).named("washer", "#888888"), name="PT-007"), p)
+    r = import_step(p)
+    assert isinstance(r, Shape) and r.name == "washer" and abs(r.volume - 1000) < 1e-6
+
+
 def test_import_step_missing_file(tmp_path):
     (tmp_path / "a.step").write_text("")
     with pytest.raises(TuleError, match="no such file.*STEP files in .*: a.step"):

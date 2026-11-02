@@ -17,6 +17,7 @@ import os
 import re
 import socket
 import struct
+import subprocess
 import sys
 
 GEOMETRY = (".step", ".stp", ".stl")
@@ -336,7 +337,28 @@ def scene(target: str, frame: int | None = None):
 # ---------------------------------------------------------------- commands
 
 
+def remote(args, argv: list[str], out: str | None = None):
+    """Runs a machine command on project args.project's machine over tule ssh (from your own
+    computer); its stdout goes to the file out (a PNG) or to ours."""
+    import shlex
+
+    cmd = [sys.executable, "-m", "tule_cli", "ssh", "-p", args.project, "--", shlex.join(argv)]
+    if out is None:
+        sys.exit(subprocess.call(cmd))
+    with open(out, "wb") as f:
+        code = subprocess.call(cmd, stdout=f)
+    if code:
+        os.remove(out)
+        sys.exit(code)
+    print(f"tule: wrote {out} (from {args.project}'s machine)", file=sys.stderr)
+
+
 def cmd_screenshot(args):
+    if args.project:  # from your own computer: render on the machine, write the PNG here
+        argv = ["tule", "screenshot", *([args.file] if args.file else []), "-o", "-", "--view", args.view, "--size", str(args.size)]
+        argv += (["--output", args.output] if args.output else []) + (["--labels"] if args.labels else [])
+        argv += ["--frame", str(args.frame)] if args.frame is not None else []
+        return remote(args, argv, None if args.o == "-" else args.o)
     try:
         from .render import VIEWS, render
     except ImportError as e:
@@ -433,6 +455,8 @@ def inspect_file(path: str) -> list[dict]:
 
 
 def cmd_inspect(args):
+    if args.project:
+        return remote(args, ["tule", "inspect", *args.file, *(["--json"] if args.json else [])])
     files = []
     for path in args.file:
         if os.path.isdir(path):
@@ -550,8 +574,10 @@ def add_commands(add):
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
     sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
     sp.add_argument("--frame", type=int, help="a sequence's frame (default: the last; -2 the one before)")
+    sp.add_argument("-p", "--project", help="from your own computer: render on this project's machine, write the PNG here")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)
     sp.add_argument("file", nargs="+", help="STEP/STL files or output folders")
     sp.add_argument("--json", action="store_true", help="print JSON instead of text")
+    sp.add_argument("-p", "--project", help="from your own computer: inspect files on this project's machine")
     sp = add("docs", cmd_docs, "the agent instructions: tule docs lists topics, tule docs <topic> prints one", project=False)
     sp.add_argument("topic", nargs="?")

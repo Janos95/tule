@@ -203,6 +203,14 @@ function table(into, { head, body }, c) {
           a.type = "button";
           a.addEventListener("click", () => c.open(v));
           td.append(a);
+        } else if (/^https?:\/\/[^\s]+$/.test(v)) {
+          // a web link (a supplier's page): opens in a new tab, shown as its site
+          const a = el("a", "link", v.replace(/^https?:\/\/(www\.)?/, "").replace(/^([^/]+)\/.+$/, "$1/…"));
+          a.href = v;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          td.className = "";
+          td.append(a);
         } else td.textContent = numeric[i] ? tidy(v) : v;
         if (td.textContent !== v) td.title = v;
         row.append(td);
