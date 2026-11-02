@@ -921,9 +921,11 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   face flush with the edge (the profile is the outside footprint); flanges
   meeting at a square corner stop at each other's bend (square relief),
   inset ones get rect or obround reliefs. Drawings of a flat draw dash-dot
-  bend lines with `B1 UP 90° R1.5` and a bend table; DXF layers CUT,
-  BEND_UP, BEND_DOWN, BEND_NOTES (R12 written by hand, no ezdxf); the viewer
-  colors DXF layers. Not built: hems, jogs, louvers, closed or non-90°
+  bend lines with `B1 UP 90° R1.5` and a bend table; the DXF is a clean cut
+  file: closed outlines on CUT, bend lines on BEND_UP / BEND_DOWN, no text
+  (shops reject or cut stray TEXT; labels only with `notes=True`), R12 written
+  by hand, no ezdxf; the viewer colors DXF layers. A sheet without bends (a
+  lid) unfolds to itself. Not built: hems, jogs, louvers, closed or non-90°
   corners, flanges on curved edges, rolled sheet.
 - Measure: `volume`, `area`, `bounds`, `center_of_mass`, `inertia`,
   `mass(material)`, `distance`.

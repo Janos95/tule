@@ -179,18 +179,80 @@ def test_holes_before_and_after_flanging_are_in_the_flat():
     assert fq.is_valid and fq.volume < flat.volume - 5
 
 
-def test_dxf_layers(tmp_path):
+def _dxf(text):
+    """A DXF read back by hand: header values, layer table, entities as (type, {code: [values]})."""
+    lines = text.split("\n")
+    pairs = [(int(c), v.strip()) for c, v in zip(lines[0::2], lines[1::2]) if c.strip()]
+    header = {pairs[i][1]: pairs[i + 1][1] for i in range(len(pairs) - 1) if pairs[i][0] == 9}
+    layers = {pairs[i + 1][1] for i in range(len(pairs) - 1) if pairs[i] == (0, "LAYER")}
+    start = pairs.index((2, "ENTITIES"))
+    ents = []
+    for c, v in pairs[start + 1:]:
+        if c == 0:
+            ents.append((v, {}))
+        else:
+            ents[-1][1].setdefault(c, []).append(v)
+    return header, layers, [e for e in ents if e[0] not in ("ENDSEC", "EOF")]
+
+
+def _outlines(ents):
+    """The closed outlines on CUT as (kind, area, layer): POLYLINE + VERTEX bulges added up exactly."""
+    out, i = [], 0
+    while i < len(ents):
+        kind, d = ents[i]
+        if kind == "CIRCLE":
+            out.append(("circle", math.pi * float(d[40][0]) ** 2, d[8][0]))
+        elif kind == "POLYLINE":
+            assert int(d[70][0]) & 1, "an open polyline"
+            vs = []
+            i += 1
+            while ents[i][0] == "VERTEX":
+                v = ents[i][1]
+                vs.append((float(v[10][0]), float(v[20][0]), float(v.get(42, [0])[0])))
+                i += 1
+            assert ents[i][0] == "SEQEND"
+            area = 0.0
+            for (x0, y0, b), (x1, y1, _) in zip(vs, vs[1:] + vs[:1]):
+                area += (x0 * y1 - x1 * y0) / 2
+                if b:
+                    th = 4 * math.atan(abs(b))
+                    r = math.hypot(x1 - x0, y1 - y0) / (2 * math.sin(th / 2))
+                    area += math.copysign(r * r / 2 * (th - math.sin(th)), b)
+            out.append(("poly", abs(area), d[8][0]))
+        elif kind in ("LINE", "ARC") and d[8][0] == "CUT":
+            out.append((kind.lower(), None, "CUT"))                       # loose cut geometry: not closed
+        i += 1
+    return out
+
+
+def test_dxf_is_a_clean_cut_file(tmp_path):
     s = base(100, 60) - cylinder(3, 10).at(50, 30, -1)
     p = s.flange(s.faces.normal(-Y), 20).flange(s.faces.normal(Y), 20, angle=-90)
-    path = p.export_dxf(str(tmp_path / "flat.dxf"))
-    text = open(path).read()
-    pairs = list(zip(text.split("\n")[0::2], text.split("\n")[1::2]))
-    layers = {v for k, v in pairs if k.strip() == "8"}
-    assert layers == {"CUT", "BEND_UP", "BEND_DOWN", "BEND_NOTES"}
+    p -= slot(30, 4).extrude(10).rotate(x=90).at(50, 5, 12)                 # a vent in the up flange
+    text = open(p.export_dxf(str(tmp_path / "flat.dxf"))).read()
+    header, layers, ents = _dxf(text)
+    assert header["$INSUNITS"] == "4" and layers == {"CUT", "BEND_UP", "BEND_DOWN"}
+    assert "TEXT" not in {k for k, _ in ents} and "%%d" not in text
     assert "LAYER\n2\nBEND_UP\n70\n0\n62\n3\n6\nDASHDOT" in text and "LTYPE\n2\nDASHDOT" in text
-    ents = [(pairs[i][1], pairs[i + 1][1]) for i in range(len(pairs) - 1) if pairs[i][0] == "0" and pairs[i + 1][0] == "8"]
-    assert ("CIRCLE", "CUT") in ents and ents.count(("LINE", "BEND_UP")) == 1 and ents.count(("LINE", "BEND_DOWN")) == 1
-    assert "B2 UP 90%%d R1.5" in text
+    kinds = [(k, d[8][0]) for k, d in ents]
+    assert kinds.count(("LINE", "BEND_UP")) == 1 and kinds.count(("LINE", "BEND_DOWN")) == 1
+    cut = _outlines(ents)
+    assert all(a is not None for _, a, _ in cut)                              # every cut is a closed outline
+    areas = sorted((a for _, a, _ in cut), reverse=True)
+    assert areas[1:] == pytest.approx([26 * 4 + math.pi * 4, math.pi * 9])     # the slot (arcs as bulges), the hole
+    assert areas[0] - sum(areas[1:]) == pytest.approx(p.unfold().volume / T, rel=1e-6)
+    noted = open(p.export_dxf(str(tmp_path / "noted.dxf"), notes=True)).read()  # the labels, when asked for
+    assert "B2 UP 90%%d R1.5" in noted and "BEND_NOTES" in noted
+
+
+def test_dxf_reads_in_ezdxf(tmp_path):
+    ezdxf = pytest.importorskip("ezdxf")
+    s = base(100, 60)
+    p = s.flange(s.faces.normal(-Y), 20) - cylinder(2, 50).rotate(x=45).at(70, 0, 0)   # a hole across the bend
+    doc = ezdxf.readfile(p.export_dxf(str(tmp_path / "flat.dxf")))
+    assert doc.header["$INSUNITS"] == 4
+    cut = [e for e in doc.modelspace() if e.dxf.layer == "CUT"]
+    assert {e.dxftype() for e in cut} == {"POLYLINE"} and all(e.is_closed for e in cut)
 
 
 def test_drawing_of_the_flat(tmp_path, monkeypatch):
@@ -203,7 +265,7 @@ def test_drawing_of_the_flat(tmp_path, monkeypatch):
     texts = facts["texts"]
     for i in range(1, 5):
         assert f"B{i} UP 90° R1.5" in texts
-    assert "BA" in texts and "BD" in texts and "3.39" in texts and "2.61" in texts
+    assert "BA" in texts and "BD" in texts and "3.393" in texts and "2.607" in texts
     assert "154.79" in texts and "114.79" in texts                                # the blank
     assert not drawing.collisions(facts["pages"][0][0])
     csv = open(os.path.join(folder, "tray-flat-bends.csv")).read().splitlines()
@@ -237,3 +299,89 @@ def test_errors_carry_hints():
     with pytest.raises(TuleError, match="inset"):                               # corners other than 90°
         hexagon.flange(hexagon.faces["side"], 15)
     assert len(hexagon.flange(hexagon.faces["side"], 15, inset=6).unfold().bends) == 6
+
+
+def test_a_sheet_without_bends_unfolds_to_itself(tmp_path, monkeypatch):
+    plate = rect(100, 110).sheet(1.6)
+    flat = plate.unfold()
+    assert flat.size == pytest.approx((100, 110, 1.6)) and flat.volume == pytest.approx(100 * 110 * 1.6)
+    assert flat.bends == [] and plate.bend_table() == [] and flat.bend_table() == []
+    lid = (rect(120, 80).sheet(1.5) - cylinder(1.7, 10).at(10, 10, -1)).rotate(x=90).at(5, 5, 50)
+    assert lid.unfold().bounds[0] == pytest.approx((0, 0, 0))                 # back where the sheet was made
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
+    folder = outputs.drawing("lid", lid, dxf="top")
+    assert sorted(os.listdir(folder)) == ["lid.dxf", "lid.pdf", "lid.svg"]    # no bends: no bend table
+    header, layers, ents = _dxf(open(os.path.join(folder, "lid.dxf")).read())
+    assert layers == {"CUT"} and sorted(k for k, _, _ in _outlines(ents)) == ["circle", "poly"]
+    assert sorted(a for _, a, _ in _outlines(ents)) == pytest.approx([math.pi * 1.7 ** 2, 120 * 80])
+
+
+def test_a_drawing_of_a_part_that_does_not_unfold_fails_once_naming_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
+    s = base(100, 60)
+    bad = (s.flange(s.faces.normal(-Y), 20) | box(5, 5, 5).at(50, 30, T)).named("bracket")
+    with pytest.raises(TuleError, match="sheet part 'bracket' does not unfold: this is not a sheet") as e:
+        outputs.drawing("bracket", bad, dxf="top")
+    assert e.value.hint and capsys.readouterr().err == ""                    # no warning before the error
+    with pytest.raises(TuleError, match="'bracket' does not unfold"):
+        bad.export_dxf(str(tmp_path / "b.dxf"))
+    folder = outputs.drawing("bracket-3d", bad)                               # no cut file asked: a warning
+    err = capsys.readouterr().err
+    assert err.count("drawing without a bend table") == 1 and "'bracket'" in err
+    assert sorted(os.listdir(folder)) == ["bracket-3d.pdf", "bracket-3d.svg"]
+
+
+def test_bend_numbers_keep_three_decimals():
+    s = rect(100, 60).sheet(1.524, bend_radius=0.762, k=0.4)                 # 16 ga
+    p = s.flange(s.faces.normal(-Y), 20)
+    b = p.bends[0]
+    assert b.label == "UP 90° R0.762"
+    row = p.bend_table()[0]
+    assert row["thickness"] == 1.524 and row["radius"] == 0.762
+    _, _, facts = drawing.render(p.unfold())
+    texts = facts["texts"]
+    assert "BENDS   t 1.524   K 0.4   (BA allowance, BD deduction)" in texts and "B1 UP 90° R0.762" in texts
+    assert "0.762" in texts and f"{row['allowance']:g}" in texts and f"{row['deduction']:g}" in texts
+
+
+def test_cuts_in_a_formed_sheet_are_called_out_thru():
+    s = base(120, 80)
+    p = s.flange(s.faces.normal(-Y) | s.faces.normal(Y), 30)                 # a U: a wall behind each vent
+    for i in range(3):
+        p -= slot(30, 4).extrude(10).rotate(x=90).at(60, 5, 10 + 6 * i)
+    _, _, facts = drawing.render(p)
+    assert "3× slot 4 × 30 THRU" in facts["texts"]
+
+
+def test_enclosure_end_to_end(tmp_path, monkeypatch):
+    """A 1.5 mm aluminium box for a laser-cut-and-bend shop: a U base with lips, holes and vents, a flat lid."""
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
+    t, W, D, H = 1.5, 120, 80, 40
+    s = rect(W, D).sheet(t, bend_radius=1.5, k=0.4)
+    b = s.flange(s.faces["side"].normal(-Y) | s.faces["side"].normal(Y), H)
+    b = b.flange(b.faces["tip"], 10, angle=-90)                               # mounting lips, outward
+    for x in (10, W - 10):
+        for y in (10, D - 10):
+            b -= cylinder(1.7, 10).at(x, y, -1)
+    for i in range(5):                                                        # the last one runs into a bend
+        b -= slot(30, 4).extrude(10).rotate(x=90).at(W / 2, 5, 12 + 6 * i)
+    lid = rect(W, D + 17).sheet(t)
+    for x in (10, W - 10):
+        for y in (5, D + 12):
+            lid -= cylinder(1.7, 10).at(x, y, -1)
+    fb, fl = b.unfold(), lid.unfold()
+    assert [x.direction for x in fb.bends] == ["down", "up", "up", "down"] and fl.bends == []
+    assert len(b.bend_table()) == 4 and lid.bend_table() == []
+    for name, part, n_cuts in (("base", b, 1 + 4 + 5), ("lid", lid, 1 + 4)):
+        flat = part.unfold()
+        folder = outputs.drawing(f"{name}-flat", flat, dxf="top", info={"material": "5052-H32"})
+        header, layers, ents = _dxf(open(os.path.join(folder, f"{name}-flat.dxf")).read())
+        cut = _outlines(ents)
+        assert header["$INSUNITS"] == "4" and "TEXT" not in {k for k, _ in ents}
+        assert len(cut) == n_cuts and all(a is not None and layer == "CUT" for _, a, layer in cut)
+        areas = sorted((a for _, a, _ in cut), reverse=True)
+        assert areas[0] - sum(areas[1:]) == pytest.approx(flat.volume / t, rel=1e-5)
+        assert (f"{name}-flat-bends.csv" in os.listdir(folder)) == bool(flat.bends)
+        outputs.drawing(name, part, dxf="top")                                # the formed part: the same flat
+        assert open(os.path.join(tmp_path, "outputs", name, f"{name}.dxf")).read() == \
+            open(os.path.join(folder, f"{name}-flat.dxf")).read()

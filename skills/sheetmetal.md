@@ -19,7 +19,7 @@ outputs.part("tray", tray.named("tray", "#9ab"))
 outputs.drawing("tray-flat", flat, dxf="top", info={"material": "DC01", "number": "TR-1"})
 ```
 
-`outputs.drawing` of a flat draws its top view with dash-dot bend lines labeled `B1 UP 90° R1.5`, the overall blank size, hole and slot callouts and a bend table, and writes `tray-flat-bends.csv`; `dxf=` writes the flat with layers CUT (outline, holes), BEND_UP and BEND_DOWN (dash-dot) and BEND_NOTES. `flat.export_dxf(path)` writes the same file. A drawing of the formed part also gets the bend table.
+`outputs.drawing` of a flat draws its top view with dash-dot bend lines labeled `B1 UP 90° R1.5`, the overall blank size, hole and slot callouts and a bend table, and writes `tray-flat-bends.csv`; `dxf=` writes the flat as a clean cut file for a laser shop (SendCutSend and the like): mm (`$INSUNITS` 4), outline and holes as closed outlines on layer CUT, bend lines on BEND_UP and BEND_DOWN (dash-dot), no text; the bend data is in the drawing and the CSV. `flat.export_dxf(path)` writes the same file (`notes=True` adds the labels as TEXT on BEND_NOTES). A drawing of the formed part also gets the bend table and the same DXF. A part without bends (a lid, a gusset) unfolds to itself with no bends, through the same path.
 
 ## Conventions
 
@@ -35,5 +35,5 @@ outputs.drawing("tray-flat", flat, dxf="top", info={"material": "DC01", "number"
 - A flange shorter than its bend (`min_length` in the error), flanges that would run into each other or a panel too narrow for two bends: shorten, change the angle, or inset.
 - A hole cut before flanging inside a bend zone: cut it after flanging (holes across bends unfold point by point).
 - Flanges meeting at a corner that is not 90° (a hexagon): inset them so they do not meet.
-- `unfold` checks the part is one sheet of thickness t (a union with a solid is not) and that the flat does not overlap or touch itself.
+- `unfold` checks the part is one sheet of thickness t (a union with a solid is not) and that the flat does not overlap or touch itself. `outputs.drawing(..., dxf=)` of a part that does not unfold stops with that error, naming the part; without `dxf=` it draws the part without a bend table and warns.
 - Not built: hems, jogs, louvers, lances, closed or mitered corners, flanges on curved edges, rolled (conical, cylindrical) sheets.

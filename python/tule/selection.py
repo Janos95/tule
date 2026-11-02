@@ -144,17 +144,29 @@ def _angle_deg(a: Vec, b: Vec) -> float:
 
 class Item:
     """One face, edge or vertex as ``filter`` sees it: ``center``, ``type`` and the rest of its
-    ``info()`` as attributes (None when it has none), the OCCT shape as ``wrapped``."""
+    ``info()`` as attributes (None when this item has none, e.g. ``normal`` of a curved face),
+    the OCCT shape as ``wrapped``. ``center_of_mass`` is ``center``. Any other name is an
+    AttributeError that lists the ones there are."""
 
-    def __init__(self, wrapped, info: dict):
+    ALIASES = {"center_of_mass": "center", "centroid": "center"}
+
+    def __init__(self, wrapped, info: dict, known: Iterable[str] = ()):
         self.wrapped = wrapped
         self._info = info
+        self._known = tuple(dict.fromkeys([*info, *known]))
 
     def __getattr__(self, k):
         if k.startswith("_"):
             raise AttributeError(k)
+        k = self.ALIASES.get(k, k)
+        if k not in self._known:
+            raise AttributeError(f"a selection item has no {k!r}; it has "
+                                 f"{', '.join(self._known + ('wrapped',))}")
         v = self._info.get(k)
         return Vec(*v) if k in ("center", "normal") and v is not None else v
+
+    def __dir__(self):
+        return [*self._known, "wrapped", *self.ALIASES]
 
     def __repr__(self):
         return f"Item({self._info})"
@@ -164,6 +176,7 @@ class Selection:
     """An ordered selection of sub-shapes of one kind belonging to a shape."""
 
     kind = "shape"
+    ITEM_KEYS: tuple[str, ...] = ("center",)  # what filter's items have (some None on some items)
 
     def __init__(self, owner: "Shape", items: Iterable, keys: tuple[str, ...] = ()):
         self.owner = owner
@@ -215,7 +228,7 @@ class Selection:
     def filter(self, pred: Callable) -> "Selection":
         """Keep the items for which ``pred(item)`` is true. ``item`` has what ``info()`` lists
         (``center``, ``type``, ``area`` or ``length``, ``radius``, ``normal``) and ``.wrapped``."""
-        return self._new([s for s, d in zip(self.items, self.info()) if pred(Item(s, d))])
+        return self._new([s for s, d in zip(self.items, self.info()) if pred(Item(s, d, self.ITEM_KEYS))])
 
     def info(self) -> list[dict]:
         return [{"center": tuple(round(c, 6) for c in self._center(s))} for s in self.items]
@@ -280,6 +293,7 @@ class Selection:
 
 class Faces(Selection):
     kind = "face"
+    ITEM_KEYS = ("id", "type", "area", "center", "normal", "radius", "tags")
 
     def _center(self, s) -> Vec:
         return face_center(s)
@@ -343,6 +357,7 @@ class Faces(Selection):
 
 class Edges(Selection):
     kind = "edge"
+    ITEM_KEYS = ("id", "type", "length", "center", "radius")
 
     def __init__(self, owner, items, keys=()):
         seams = owner._seams() if hasattr(owner, "_seams") else ()

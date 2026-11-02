@@ -2782,7 +2782,7 @@ def _bend_table(c: _Canvas, x0, y0, bends):
     x1, y1 = x0 + TB_W, y0 + h
     c.rect("thin", x0, y0, x1, y1)
     b0 = bends[0]
-    c.text(x0 + 1.5, y1 - 3.6, f"BENDS   t {_fmt(b0.thickness)}   K {_fmt(b0.k)}   (BA allowance, BD deduction)",
+    c.text(x0 + 1.5, y1 - 3.6, f"BENDS   t {_n(b0.thickness)}   K {_n(b0.k)}   (BA allowance, BD deduction)",
            size=2.0)
     y = y1 - 5.0
     c.line("thin", (x0, y), (x1, y))
@@ -2794,8 +2794,8 @@ def _bend_table(c: _Canvas, x0, y0, bends):
     y -= 5.0
     c.line("thin", (x0, y), (x1, y))
     for b in bends:
-        cells = (b.id, b.direction.upper(), f"{_fmt(b.angle)}°", _fmt(b.radius), f"{b.allowance:.2f}",
-                 f"{b.deduction:.2f}")
+        # three decimals at most, as in the bend CSV: 16 ga is t 1.524, not 1.52
+        cells = (b.id, b.direction.upper(), f"{_n(b.angle)}°", _n(b.radius), _n(b.allowance), _n(b.deduction))
         for x, v in zip(xs, cells):
             c.text(x + 1.5, y - 3.3, v, size=2.5)
         y -= BEND_LH
@@ -2981,7 +2981,7 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
     flat = shape.sheet_metal is not None and shape.sheet_metal.flat
     if flat and views is None and sheets is None:
         views = ("top",)  # a flat pattern is its top view
-    bends = _bends_of(shape)
+    bends = _bends_of(shape, name)
     specs = _sheet_specs(views, sheet, scale, callouts, sheets)
     wrapped = shape.wrapped
     lo, hi = shape.bounds
@@ -3027,6 +3027,9 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
              for si in range(len(specs))]
     nb = {k: _neighbors(k, g) for g in grids for k in g}
     feats = _features(wrapped, tol_)
+    if shape.sheet_metal is not None:  # a cut in a sheet goes through it, also with a wall or flange beyond
+        for x in feats[1] + feats[2]:
+            x.open = (True, True)
     try:
         linear, picks, planes = _parse_dims(dims, V, alias, tol_)
     except TuleError as e:  # say which entry: parsed alone, the first one that fails
@@ -3066,19 +3069,21 @@ def render(item, views=None, dims=(), title=None, info=None, sheet=None, scale=N
         chosen.append({"sheet": size, "scale": _scale_text(s)})
     facts = {"scale": chosen[0]["scale"], "sheet": chosen[0]["sheet"], "sheets": chosen, "title": title, "rev": rev,
              "texts": [t for p, _ in pages for t, _ in p.labels], "frames": [f for p, _ in pages for f in p.frames],
-             "pages": pages}
+             "pages": pages, "bends": bends}
     return pages[0][0], pages[0][1], facts
 
 
-def _bends_of(shape) -> list:
+def _bends_of(shape, name=None) -> list:
     """A sheet part's bends for its drawing (none when it is no sheet part or does not unfold)."""
     sm = shape.sheet_metal
     if sm is None:
         return []
     if sm.flat:
         return list(sm.bends)
+    from .sheetmetal import _flat
+
     try:
-        return shape.bends
+        return list(_flat(shape, "drawing", name)._sm.bends)
     except TuleError as e:
         print(f"tule: drawing without a bend table: {e}", file=sys.stderr, flush=True)
         return []
@@ -3439,10 +3444,14 @@ def to_dxf_entities(prims, texts=(), layers=None) -> str:
         elif p[0] == "arc":
             out.append(g(0, "ARC") + L + g(10, num(p[1])) + g(20, num(p[2])) + g(30, 0) + g(40, num(p[3]))
                        + g(50, num(p[4])) + g(51, num(p[5])))
-        else:
-            out.append(g(0, "POLYLINE") + L + g(66, 1) + g(10, 0) + g(20, 0) + g(30, 0) + g(70, 0))
-            for x, y in p[1]:
-                out.append(g(0, "VERTEX") + L + g(10, num(x)) + g(20, num(y)) + g(30, 0))
+        else:  # ("poly", points) open, or ("poly", points, closed, bulges): arcs as bulges tan(sweep / 4)
+            closed = len(p) > 2 and p[2]
+            bulges = p[3] if len(p) > 3 else ()
+            out.append(g(0, "POLYLINE") + L + g(66, 1) + g(10, 0) + g(20, 0) + g(30, 0) + g(70, 1 if closed else 0))
+            for i, (x, y) in enumerate(p[1]):
+                b = bulges[i] if i < len(bulges) else 0.0
+                out.append(g(0, "VERTEX") + L + g(10, num(x)) + g(20, num(y)) + g(30, 0)
+                           + (g(42, num(b)) if abs(b) > 1e-12 else ""))
             out.append(g(0, "SEQEND") + L)
     for layer, x, y, h, angle, text in texts:
         out.append(g(0, "TEXT") + g(8, layer) + g(10, num(x)) + g(20, num(y)) + g(30, 0) + g(40, num(h))
@@ -3454,8 +3463,8 @@ def to_dxf_entities(prims, texts=(), layers=None) -> str:
 def dxf(item, path: str, view: str = "top") -> str:
     """Write one view's visible edges as a DXF at 1:1 in mm (laser, waterjet, CNC). Returns the path.
 
-    A sheet part (``sheet``, ``unfold``) writes its flat pattern instead, whatever the view: outline
-    and holes on layer CUT, bend lines on BEND_UP / BEND_DOWN, their labels on BEND_NOTES."""
+    A sheet part (``sheet``, ``unfold``) writes its flat pattern instead, whatever the view: the
+    outline and holes as closed outlines on layer CUT, bend lines on BEND_UP / BEND_DOWN, no text."""
     shape, _ = _as_shape(item)
     if shape.sheet_metal is not None:
         from .sheetmetal import export_dxf
@@ -3475,6 +3484,11 @@ def write(folder: str, base: str, item: Union[Shape, Assembly], views=None, dims
           notes=None, tol=None, revisions=None, callouts=None, sheets=None, datums=None) -> dict:
     """Write ``<base>.pdf`` (every sheet a page) and ``<base>.svg`` (``<base>-2.svg``, ... for further sheets),
     and ``<base>.dxf``, into ``folder``; returns facts (scale, texts)."""
+    shape, _ = _as_shape(item)
+    if dxf_view and shape.sheet_metal is not None:  # a cut file needs the flat: fail first, once, naming the part
+        from .sheetmetal import _flat
+
+        _flat(shape, "drawing", base)
     _, _, facts = render(item, views, dims, title, info, sheet, scale, hidden, projection, base, notes=notes, tol=tol,
                          revisions=revisions, callouts=callouts, sheets=sheets, datums=datums)
     pages = facts["pages"]
@@ -3484,10 +3498,8 @@ def write(folder: str, base: str, item: Union[Shape, Assembly], views=None, dims
         write_atomic(os.path.join(folder, base + (f"-{i + 1}" if i else "") + ".svg"),
                      to_svg(page, size, facts["title"] + (f" ({i + 1}/{n})" if n > 1 else "")))
     if dxf_view:
-        dxf(item, os.path.join(folder, base + ".dxf"), dxf_view)
-    shape, _ = _as_shape(item)
-    bends = _bends_of(shape)
-    if bends:
+        dxf(shape, os.path.join(folder, base + ".dxf"), dxf_view)
+    if facts["bends"]:  # found by render (a part that does not unfold has said so there, once)
         from .sheetmetal import bend_csv
 
         write_atomic(os.path.join(folder, base + "-bends.csv"), bend_csv(shape))

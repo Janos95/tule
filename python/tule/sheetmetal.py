@@ -124,7 +124,7 @@ class Bend:
     @property
     def label(self) -> str:
         """``UP 90° R1.5``: what goes beside the bend line."""
-        return f"{self.direction.upper()} {_num(self.angle)}° R{_num(self.radius)}"
+        return f"{self.direction.upper()} {_num(self.angle, 3)}° R{_num(self.radius, 3)}"
 
     def row(self) -> dict:
         return {"bend": self.id, "direction": self.direction, "angle": round(self.angle, 3),
@@ -133,8 +133,8 @@ class Bend:
                 "length": round(self.length, 3)}
 
 
-def _num(v: float) -> str:
-    s = f"{round(float(v), 2):.2f}".rstrip("0").rstrip(".")
+def _num(v: float, digits: int = 2) -> str:
+    s = f"{round(float(v), digits):.{digits}f}".rstrip("0").rstrip(".")
     return "0" if s in ("-0", "") else s
 
 
@@ -905,15 +905,20 @@ def unfold(part: "Shape") -> "Shape":
                         f"the sheet found from its bottom side would be {_num(expect_vol)} mm³", op=op,
                         hint="material was added that is not sheet (a union with a solid), or a cut left the "
                              "sheet's sides misaligned; keep extra parts as separate shapes")
-    # the flat: every face in the plane, fused into one
-    fuse = BRepAlgoAPI_Fuse()
-    fuse.SetArguments(shape_list(flat_faces[:1]))
-    fuse.SetTools(shape_list(flat_faces[1:]))
-    fuse.SetFuzzyValue(1e-5)
-    fuse.Build()
-    if not fuse.IsDone():
-        raise TuleError("could not join the unfolded faces", op=op)
-    u = ShapeUpgrade_UnifySameDomain(fuse.Shape(), True, True, False)
+    # the flat: every face in the plane, fused into one (a part without bends is its one face)
+    if len(flat_faces) == 1:
+        joined_faces = flat_faces[0]
+    else:
+        fuse = BRepAlgoAPI_Fuse()
+        fuse.SetArguments(shape_list(flat_faces[:1]))
+        fuse.SetTools(shape_list(flat_faces[1:]))
+        fuse.SetFuzzyValue(1e-5)
+        fuse.Build()
+        if not fuse.IsDone():
+            raise TuleError("could not join the unfolded faces", op=op,
+                            hint="check the part with part.is_valid; flanges that meet in the flat need a gap")
+        joined_faces = fuse.Shape()
+    u = ShapeUpgrade_UnifySameDomain(joined_faces, True, True, False)
     u.Build()
     faces = list(subshapes(u.Shape(), "face"))
     area = sum(_area(f) for f in faces)
@@ -1035,22 +1040,84 @@ def bend_csv(part: "Shape") -> str:
 LAYERS = {"CUT": (7, "CONTINUOUS"), "BEND_UP": (3, "DASHDOT"), "BEND_DOWN": (1, "DASHDOT"), "BEND_NOTES": (8, "CONTINUOUS")}
 
 
-def flat_dxf(part: "Shape") -> str:
-    """The flat pattern as an R12 DXF in mm: outline and holes on CUT, bend lines on BEND_UP /
-    BEND_DOWN (dash-dot), their labels (``B1 UP 90° R1.5``) on BEND_NOTES."""
-    from .drawing import _edge_prims, to_dxf_entities
+def _flat(part: "Shape", op: str, name: str | None = None) -> "Shape":
+    """``part.unfold()``, its error naming the part (``name`` when it has none): what a drawing or
+    cut file of it says."""
+    _need(part, op)
+    try:
+        return part.unfold()
+    except TuleError as e:
+        name = part.name or name
+        who = f"sheet part {name!r}" if name else "the sheet part"
+        raise TuleError(f"{who} does not unfold: {e.message}", op=op, faces=e.faces, edges=e.edges,
+                        hint=e.hint, **e.data) from None
 
-    flat = part.unfold()
+
+def _wire_prim(w, f, tol: float) -> tuple:
+    """One loop of the flat's bottom face as a closed outline: a CIRCLE for a round hole, else a
+    closed polyline, arcs as bulges, other curves (cuts across a bend) as points ``tol`` apart."""
+    from OCP.GCPnts import GCPnts_TangentialDeflection
+
+    edges = []
+    ex = BRepTools_WireExplorer(w, f)
+    while ex.More():
+        edges.append(ex.Current())
+        ex.Next()
+    if len(edges) == 1:
+        c = BRepAdaptor_Curve(edges[0])
+        if c.GetType() == GeomAbs_Circle and c.LastParameter() - c.FirstParameter() > 2 * math.pi - 1e-9:
+            o = c.Circle().Location()
+            return ("circle", o.X(), o.Y(), c.Circle().Radius())
+    pts: list = []
+    bulges: list = []
+    for e in edges:  # each edge from its start in the loop's direction: (point, bulge) pairs
+        c = BRepAdaptor_Curve(e)
+        t0, t1 = c.FirstParameter(), c.LastParameter()
+        rev = e.Orientation() == TopAbs_REVERSED
+        typ = c.GetType()
+        if typ == GeomAbs_Line:
+            run = [(t1 if rev else t0, 0.0)]
+        elif typ == GeomAbs_Circle:
+            ccw = (c.Circle().Axis().Direction().Z() > 0) != rev
+            run = [(t1 if rev else t0, math.tan((t1 - t0) / 4) * (1 if ccw else -1))]
+        else:
+            g = GCPnts_TangentialDeflection(c, 0.1, tol)
+            ts = sorted({t0, t1, *(g.Parameter(i) for i in range(1, g.NbPoints() + 1))})
+            run = [(t_, 0.0) for t_ in (ts[:0:-1] if rev else ts[:-1])]
+        for t_, bulge in run:
+            q = c.Value(t_)
+            if pts and math.dist(pts[-1], (q.X(), q.Y())) < 1e-9:
+                bulges[-1] = bulge
+                continue
+            pts.append((q.X(), q.Y()))
+            bulges.append(bulge)
+    if len(pts) > 1 and math.dist(pts[0], pts[-1]) < 1e-9:
+        pts.pop()
+        bulges.pop()
+    return ("poly", tuple(pts), True, tuple(bulges))
+
+
+def flat_dxf(part: "Shape", notes: bool = False) -> str:
+    """The flat pattern as an R12 DXF in mm (``$INSUNITS`` 4) for a laser or waterjet shop: the
+    outline and every hole as closed outlines (CIRCLE, closed POLYLINE) on CUT, bend lines on
+    BEND_UP / BEND_DOWN (dash-dot), no text. ``notes=True`` adds their labels (``B1 UP 90° R1.5``)
+    as TEXT on BEND_NOTES; the bend table and the drawing carry them anyway."""
+    from .drawing import to_dxf_entities
+
+    flat = _flat(part, "export_dxf")
     prims = []
     for f in flat._sub("face"):
         if _ftype(f) == "plane" and abs(_plane(f)[0].z) < 1e-9 and _plane(f)[1].z < -0.5:
-            for e in subshapes(f, "edge"):
-                prims += [("CUT", p) for p in _edge_prims(e, 1e-4)]
+            outer = static(BRepTools, "OuterWire")(f)
+            for w in [outer] + [w for w in subshapes(f, "wire") if not w.IsSame(outer)]:
+                prims.append(("CUT", _wire_prim(w, f, 0.01)))
     texts = []
     for b in flat._sm.bends:
         layer = "BEND_UP" if b.direction == "up" else "BEND_DOWN"
         (x0, y0), (x1, y1) = b.line
         prims.append((layer, ("line", x0, y0, x1, y1)))
+        if not notes:
+            continue
         ang = math.degrees(math.atan2(y1 - y0, x1 - x0))
         if ang <= -90 or ang > 90:
             ang -= 180 * (1 if ang > 0 else -1)
@@ -1060,12 +1127,12 @@ def flat_dxf(part: "Shape") -> str:
         nx, ny = -(y1 - y0) / L, (x1 - x0) / L
         tx, ty = x0 + (x1 - x0) * 0.1 + nx * 0.6 * h, y0 + (y1 - y0) * 0.1 + ny * 0.6 * h
         texts.append(("BEND_NOTES", tx, ty, h, ang, f"{b.id} {b.label}".replace("°", "%%d")))
-    return to_dxf_entities(prims, texts, LAYERS)
+    used = {x[0] for x in prims} | {x[0] for x in texts} | {"CUT"}
+    return to_dxf_entities(prims, texts, {k: v for k, v in LAYERS.items() if k in used})
 
 
-def export_dxf(part: "Shape", path: str) -> str:
-    """Write a sheet part's flat pattern as a layered DXF (see :func:`flat_dxf`). Returns the path."""
+def export_dxf(part: "Shape", path: str, notes: bool = False) -> str:
+    """Write a sheet part's flat pattern as a DXF for cutting (see :func:`flat_dxf`). Returns the path."""
     from .io import write_atomic
 
-    _need(part, "export_dxf")
-    return write_atomic(path, flat_dxf(part))
+    return write_atomic(path, flat_dxf(part, notes))

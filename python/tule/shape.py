@@ -664,11 +664,12 @@ class Shape:
 
         return export_stl(self, path, tolerance, angular)
 
-    def export_dxf(self, path: str) -> str:
-        """A sheet part's flat pattern as a layered DXF (CUT, BEND_UP, BEND_DOWN, BEND_NOTES)."""
+    def export_dxf(self, path: str, notes: bool = False) -> str:
+        """A sheet part's flat pattern as a DXF to cut from, in mm: closed outlines on layer CUT, bend
+        lines on BEND_UP / BEND_DOWN, no text (``notes=True`` adds the bend labels on BEND_NOTES)."""
         from .sheetmetal import export_dxf
 
-        return export_dxf(self, path)
+        return export_dxf(self, path, notes)
 
     def export_gltf(self, path: str) -> str:
         from .io import export_gltf
