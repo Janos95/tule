@@ -185,6 +185,7 @@ def codex_turn(home: Path, env: dict, msg: str, session: str | None, out: Path) 
             "-o", str(out.with_suffix(".last.txt"))]
     cmd = [CODEX, "exec", "resume", *opts, session, msg] if session else [CODEX, "exec", *opts, msg]
     run_logged(cmd, home, env, out)
+    reply = ""
     for line in out.read_text().splitlines():
         try:
             ev = json.loads(line)
@@ -192,8 +193,10 @@ def codex_turn(home: Path, env: dict, msg: str, session: str | None, out: Path) 
             continue
         if ev.get("type") == "thread.started":
             session = ev.get("thread_id") or session
+        if ev.get("type") == "item.completed" and ev.get("item", {}).get("type") == "agent_message":
+            reply = ev["item"].get("text", "")
     last = out.with_suffix(".last.txt")
-    return (last.read_text().strip() if last.exists() else ""), session
+    return (last.read_text().strip() if last.exists() and last.read_text().strip() else reply.strip()), session
 
 
 CLAUDE_SANDBOX = {"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
@@ -470,7 +473,7 @@ def cmd_stop(a):
 
 
 def cmd_start(a):
-    night = Path(a.night)
+    night = Path(a.night).resolve()
     run = night / a.name
     (run / "shots").mkdir(parents=True)
     (run / "home").mkdir()
@@ -499,7 +502,7 @@ def cmd_start(a):
 
 
 def cmd_say(a):
-    run = Path(a.run)
+    run = Path(a.run).resolve()
     st = state(run)
     if st["busy"]:
         raise SystemExit("the agent is still on the last turn; `wait` first")
@@ -538,7 +541,7 @@ def summarize(raw: Path) -> dict:
 
 
 def cmd_turn(a):
-    run = Path(a.run)
+    run = Path(a.run).resolve()
     st = state(run)
     n = st["turn"]
     msg = (run / f"turn-{n}.msg").read_text()
@@ -569,7 +572,7 @@ def cmd_turn(a):
 
 
 def cmd_wait(a):
-    run = Path(a.run)
+    run = Path(a.run).resolve()
     end = time.time() + a.max
     while state(run)["busy"] and time.time() < end:
         time.sleep(5)
@@ -604,7 +607,7 @@ def cmd_shell(a):
 
 
 def cmd_shot(a):
-    run = Path(a.run)
+    run = Path(a.run).resolve()
     st = state(run)
     path = a.path or f"/p/{st['project']}"
     out = run / "shots" / f"extra-{int(time.time())}.png"
@@ -613,7 +616,7 @@ def cmd_shot(a):
 
 
 def cmd_finish(a):
-    run = Path(a.run)
+    run = Path(a.run).resolve()
     st = state(run)
     (run / "machine.md").write_text(on_machine(st["machine"], MACHINE_DUMP))
     home = run / "home"

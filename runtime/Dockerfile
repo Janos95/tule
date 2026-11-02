@@ -30,7 +30,8 @@ RUN git config --system init.defaultBranch main \
  && git lfs install --system --skip-repo \
  && git config --system core.hooksPath /opt/tule/git-hooks \
  && git config --system lfs.locksverify false \
- && git config --system --add credential.helper "" && git config --system --add credential.helper tule
+ && git config --system --add credential.helper "" && git config --system --add credential.helper tule \
+ && printf '# SSH sessions and commands start in the project\n[ "$PWD" = "$HOME" ] && [ -d /workspace ] && cd /workspace\n' | cat - /root/.bashrc > /tmp/rc && mv /tmp/rc /root/.bashrc
 
 ENV TULE_WORKSPACE=/workspace PYTHONUNBUFFERED=1
 WORKDIR /workspace

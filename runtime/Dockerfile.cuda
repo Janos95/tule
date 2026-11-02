@@ -9,7 +9,7 @@ FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 \
+ && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq \
  && dpkg-query -W -f '${Package}\n' | grep -E '^(mesa-libgallium|libgallium.*|libgl1-mesa-dri|libglx-mesa0|libllvm[0-9]+|libz3-4)$' \
     | xargs -r dpkg --remove --force-depends \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
@@ -44,7 +44,8 @@ RUN git config --system init.defaultBranch main \
  && git lfs install --system --skip-repo \
  && git config --system core.hooksPath /opt/tule/git-hooks \
  && git config --system lfs.locksverify false \
- && git config --system --add credential.helper "" && git config --system --add credential.helper tule
+ && git config --system --add credential.helper "" && git config --system --add credential.helper tule \
+ && printf '# SSH sessions and commands start in the project\n[ "$PWD" = "$HOME" ] && [ -d /workspace ] && cd /workspace\n' | cat - /root/.bashrc > /tmp/rc && mv /tmp/rc /root/.bashrc
 
 ENV TULE_WORKSPACE=/workspace PYTHONUNBUFFERED=1
 WORKDIR /workspace
