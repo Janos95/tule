@@ -439,7 +439,7 @@ def _maybe_stale(root: str):
 
     for r in build.based_on_status(root):
         if r["changed"]:
-            print(f"tule: {r['path']} may be out of date ({', '.join(r['changed'])} changed): "
+            print(f"tule: check {r['path']} again ({', '.join(r['changed'])} changed): "
                   f"redo it, or if it still holds: tule based-on {r['path']}", file=sys.stderr)
 
 
@@ -469,7 +469,7 @@ def cmd_build(args):
 
 
 def cmd_based_on(args):
-    """Records what a piece of agent work in inputs/ was based on; without sources, that it still holds."""
+    """Records what a piece of agent work in work/ was based on; without sources, that it still holds."""
     from . import build
 
     root = None if args.project else build.find_root()
@@ -604,8 +604,8 @@ def main(argv=None):
     sp.add_argument("--check", action="store_true", help="say what is stale, run nothing")
     sp.add_argument("--force", action="store_true", help="run them even if nothing changed")
     sp.add_argument("--machine", help="which machine (when several run)")
-    sp = add("based-on", cmd_based_on, "record what agent work in inputs/ was made from, so it is flagged when that changes")
-    sp.add_argument("result", help="the work, e.g. inputs/suppliers/bracket.json")
+    sp = add("based-on", cmd_based_on, "record what agent work in work/ was made from, so it is flagged when that changes")
+    sp.add_argument("result", help="the work, e.g. work/suppliers/bracket.json")
     sp.add_argument("sources", nargs="*", help="what it was made from, e.g. outputs/bracket (none: it was checked and still holds)")
     sp.add_argument("--machine", help="which machine (when several run)")
     sp = add("save", cmd_save, "commit, merge the latest save, and push it (on the machine: this copy)")

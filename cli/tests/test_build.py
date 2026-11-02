@@ -112,26 +112,26 @@ def test_agent_work_is_flagged_when_what_it_was_based_on_changes(project):
     from tule_cli import build as b
 
     build(project)
-    (project / "inputs" / "suppliers").mkdir()
-    (project / "inputs" / "suppliers" / "plate.json").write_text('[{"supplier": "Acme", "price": 12.5}]')
-    r = subprocess.run([sys.executable, "-m", "tule_cli", "based-on", "inputs/suppliers/plate.json", "outputs/plate"],
+    (project / "work" / "suppliers").mkdir(parents=True)
+    (project / "work" / "suppliers" / "plate.json").write_text('[{"supplier": "Acme", "price": 12.5}]')
+    r = subprocess.run([sys.executable, "-m", "tule_cli", "based-on", "work/suppliers/plate.json", "outputs/plate"],
                        cwd=project, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert b.based_on_status(str(project))[0]["changed"] == []
 
     (project / "lib" / "params.py").write_text("WALL = 8\n")
     err = build(project)[1]
-    assert "inputs/suppliers/plate.json may be out of date (outputs/plate changed)" in err
+    assert "check work/suppliers/plate.json again (outputs/plate changed)" in err
     assert b.based_on_status(str(project))[0]["changed"] == ["outputs/plate"]
 
-    b.based_on(str(project), "inputs/suppliers/plate.json")  # checked: still holds
+    b.based_on(str(project), "work/suppliers/plate.json")  # checked: still holds
     assert b.based_on_status(str(project))[0]["changed"] == []
-    assert "may be out of date" not in build(project)[1]
+    assert "again (" not in build(project)[1]
 
 
-def test_agent_work_lives_in_inputs(project):
+def test_agent_work_lives_in_work(project):
     from tule_cli import build as b
 
     build(project)
-    with pytest.raises(b.BuildError, match="kept in inputs/"):
+    with pytest.raises(b.BuildError, match="kept in work/"):
         b.based_on(str(project), "src/plate.py", ["outputs/plate"])

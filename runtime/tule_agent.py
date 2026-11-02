@@ -83,11 +83,11 @@ def frame(kind: int, ident: int, payload: bytes) -> bytes:
 
 
 class Outputs:
-    """The index of the project's outputs/ and inputs/ (every file, by folder), whether each
-    output is up to date (tule build's records) and whether agent work in inputs/ may be out
-    of date (tule based-on); and tessellations cached by content hash."""
+    """The index of the project's outputs/, work/ and inputs/ (every file, by folder),
+    whether each output is up to date (tule build's records) and whether agent work in
+    work/ needs checking again (tule based-on); and tessellations cached by content hash."""
 
-    ROOTS = ("outputs", "inputs")
+    ROOTS = ("outputs", "work", "inputs")
     WATCHED = ("src", "lib")  # only for freshness: an edited script makes its output stale
 
     def __init__(self, root: str):
@@ -129,7 +129,8 @@ class Outputs:
             return os.sep not in sub and sub.endswith(".json") and not sub.startswith(("hashes", "result-"))
 
         self._walk("outputs", out, keep)
-        self._walk("inputs", out, lambda rel: rel == os.path.join("inputs", ".based-on.json"))
+        self._walk("work", out, lambda rel: rel == os.path.join("work", ".based-on.json"))
+        self._walk("inputs", out)
         for top in self.WATCHED:
             self._walk(top, out)
         return tuple(out)
@@ -154,7 +155,7 @@ class Outputs:
         return digest
 
     def index(self) -> list[dict]:
-        """One entry per folder (or loose file) in outputs/ and inputs/:
+        """One entry per folder (or loose file) in outputs/, work/ and inputs/:
         {name, root, files: [{path, file, hash, size, basedOn?}], meta, error?, building?, build?}.
         path is relative to /workspace; file to the entry's folder."""
         groups: dict[tuple, dict] = {}
@@ -195,7 +196,7 @@ class Outputs:
 
     def _freshness(self, groups: dict):
         """Adds tule build's view of each output (build: {state, why?, error?, log?}) and marks
-        agent work in inputs/ whose sources changed (file basedOn: {sources, changed})."""
+        agent work in work/ whose sources changed (file basedOn: {sources, changed})."""
         try:
             from tule_cli import build
         except ImportError:  # an image without the CLI: no freshness
@@ -227,7 +228,7 @@ class Outputs:
         for n in notes:
             parts = n["path"].split("/")
             name = parts[1] if len(parts) > 2 else os.path.splitext(parts[1])[0]
-            g = groups.get(("inputs", name))
+            g = groups.get(("work", name))
             if not g:
                 continue
             for f in g["files"]:
@@ -239,7 +240,7 @@ class Outputs:
             rel = "outputs/" + rel  # a page from before paths were relative to /workspace
         path = os.path.normpath(os.path.join(self.root, rel))
         if not any(path.startswith(os.path.join(self.root, r) + os.sep) for r in self.ROOTS):
-            raise ValueError(f"{rel}: not in outputs/ or inputs/")
+            raise ValueError(f"{rel}: not in outputs/, work/ or inputs/")
         return self.cached(digest, lambda: encode_mesh(path))
 
     def cached(self, key: str, make) -> bytes:
@@ -686,7 +687,7 @@ def _build(agent: "Agent", args: dict) -> dict:
 
 
 def _confirm(agent: "Agent", args: dict) -> dict:
-    """The viewer's "Still valid" on agent work in inputs/: records its sources as they are now."""
+    """The viewer's "Still valid" on agent work in work/: records its sources as they are now."""
     from tule_cli import build
 
     path = str(args.get("path") or "")

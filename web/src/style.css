@@ -1709,3 +1709,12 @@ button.link:hover { text-decoration-color: var(--link); }
   .page-body { padding: 48px 14px 28px; }
   .page-doc { font-size: 14px; }
 }
+
+/* the footer's Save: a link after the copy's state, while it has unsaved work */
+.side-foot { display: flex; align-items: center; gap: 8px; }
+.side-foot .machine { min-width: 0; flex: 0 1 auto; }
+.foot-save { all: unset; flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: 11.5px; font-weight: 500; color: var(--link); cursor: pointer; }
+.foot-save .unsaved-dot { display: inline-block; }
+.foot-save:hover { text-decoration: underline; }
+.foot-save:disabled { color: var(--faint); cursor: default; text-decoration: none; }
+.foot-save[hidden] { display: none; }

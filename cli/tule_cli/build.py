@@ -12,8 +12,8 @@ output is stale without running it.
 A script that reads another output (``outputs/bracket/…``) gets that one built first: if it
 is not up to date yet, the run stops, the other is built, and the script runs again.
 
-Agent work is never re-run: its result lives in ``inputs/`` and ``tule based-on`` records
-what it was based on (``inputs/.based-on.json``: each source's fingerprint). When a source
+Agent work is never re-run: its result lives in ``work/`` and ``tule based-on`` records
+what it was based on (``work/.based-on.json``: each source's fingerprint). When a source
 changes, the result is reported as possibly out of date until someone redoes it or confirms
 it still holds (``tule based-on <result>`` again records the sources as they are now).
 """
@@ -33,7 +33,7 @@ from collections import deque
 FORMAT = 1
 STATE = ".build"  # outputs/.build: records, staging folders, the hash cache
 NEEDS = 75  # the exit status of a run that needs another output first
-BASED_ON = "inputs/.based-on.json"
+BASED_ON = "work/.based-on.json"
 LOG_LINES = 40  # of a failed script's output, kept in its record for the viewer
 
 
@@ -384,12 +384,12 @@ def read_based_on(root: str) -> dict[str, dict[str, str]]:
 
 
 def based_on(root: str, result: str, sources: list[str] | None = None, hashes: Hashes | None = None) -> dict[str, str]:
-    """Records that inputs/<result> was made from `sources` as they are now (no sources: the
+    """Records that work/<result> was made from `sources` as they are now (no sources: the
     ones recorded before, i.e. it was checked and still holds). Returns {source: fingerprint}."""
     h = hashes or Hashes(root)
     result = _clean(root, result)
-    if not result.startswith("inputs/") or result == BASED_ON:
-        raise BuildError(f"{result}: agent work is kept in inputs/ (e.g. inputs/suppliers/bracket.json)")
+    if not result.startswith("work/") or result == BASED_ON:
+        raise BuildError(f"{result}: agent work is kept in work/ (e.g. work/suppliers/bracket.json)")
     if not os.path.exists(os.path.join(root, result)):
         raise BuildError(f"no {result}; write the result first, then record what it is based on")
     notes = read_based_on(root)
@@ -405,7 +405,7 @@ def based_on(root: str, result: str, sources: list[str] | None = None, hashes: H
         if not os.path.exists(os.path.join(root, x)):
             raise BuildError(f"no {x}")
     notes[result] = {x: fingerprint(root, x, h) for x in srcs}
-    os.makedirs(os.path.join(root, "inputs"), exist_ok=True)
+    os.makedirs(os.path.join(root, "work"), exist_ok=True)
     tmp = os.path.join(root, BASED_ON + ".tmp")
     with open(tmp, "w") as f:
         json.dump(notes, f, indent=1, sort_keys=True)

@@ -11,11 +11,11 @@
 // [rid u32][bytes] (an ArrayBuffer). {t: "event"} messages are the agent's
 // broadcasts. Credentials: auth.js, the only place that knows them.
 //
-// The index has one entry per folder of outputs/ and inputs/. An entry's geometry is
+// The index has one entry per folder of outputs/, work/ and inputs/. An entry's geometry is
 // drawn in 3D; each other file is its own view (files.js: tables, charts, documents,
 // images). Under the selected entry the sidebar lists its views and says when it is out
-// of date (tule build's records) with a Rebuild, or for agent work in inputs/, that what
-// it was based on changed, with a Still valid (runtime/tule_agent.py, _build, _confirm).
+// of date (tule build's records) with a Rebuild, or for work done by hand in work/, that
+// what it was based on changed, with a Still valid (runtime/tule_agent.py, _build, _confirm).
 //
 // Geometry kinds (output.json "kind"): part, assembly, sequence, overlay
 // (overlay.js has its format).
@@ -220,13 +220,17 @@ function machine(s) {
   const el = $("machine");
   el.dataset.state = st;
   const n = m && st !== "starting" && dirty(m);
+  state.viewing = m?.id ?? null;
+  $("save-now").hidden = !(n && st === "running");
   const text = $("machine-text");
   if (st === "offline") text.textContent = "reconnecting…";
   else if (!m) text.textContent = "not loaded on a machine";
   else {
     // the dot says running; the text says what is not obvious
-    text.textContent = `${machineName(m)}${st === "running" ? "" : ` · ${st}`}${n ? " · " : ""}`;
-    if (n) text.insertAdjacentHTML("beforeend", `<span class="unsaved">unsaved</span>`);
+    // unsaved: a running copy offers Save (which says it), a stopped one says so
+    const offer = n && st === "running";
+    text.textContent = `${machineName(m)}${st === "running" ? "" : ` · ${st}`}${n && !offer ? " · " : ""}`;
+    if (n && !offer) text.insertAdjacentHTML("beforeend", `<span class="unsaved">unsaved</span>`);
   }
   el.title = !m ? "Load it with: tule up" : `${machineName(m)}'s copy of /workspace${m.sessions ? ` · ${m.sessions} SSH session(s)` : ""}`;
   const pick = $("machine-pick");
@@ -244,6 +248,31 @@ function machine(s) {
   }
 }
 
+// Save: what tule save does (commit, merge what other machines saved, push), for this copy
+$("save-now").addEventListener("click", async () => {
+  const b = $("save-now");
+  b.disabled = true;
+  b.lastChild.textContent = "Saving…";
+  try {
+    const r = await auth.api(`/api/projects/${project}/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ machine: state.viewing, message: "Save from the viewer" }),
+    });
+    const body = await r.json();
+    const res = body.result ?? body;
+    if (res.conflicts?.length) flash(`Not saved: ${res.conflicts.join(", ")} changed here and on another machine. Ask your agent to merge them.`);
+    else if (res.error) flash(`Not saved: ${res.error}`);
+    else flash("Saved");
+  } catch (e) {
+    // the API answers 400 with {error, conflicts, hint} on a conflict
+    flash(/conflict/.test(e.message) ? "Not saved: this copy and another machine's save changed the same files. Ask your agent to merge them." : `Not saved: ${e.message}`);
+  } finally {
+    b.disabled = false;
+    b.lastChild.textContent = "Save";
+  }
+});
+
 $("machine-pick").addEventListener("change", (e) => {
   const id = e.target.value;
   const u = new URL(location.href);
@@ -254,18 +283,18 @@ $("machine-pick").addEventListener("change", (e) => {
 
 // ------------------------------------------------------------ outputs
 
-/** The index as the page uses it: id (an output's name, or inputs/<name>), files (geometry,
+/** The index as the page uses it: id (an output's name, or work/<name>, inputs/<name>), files (geometry,
  * drawn in 3D) and docs (the other files, a view each); paths relative to /workspace. */
 function prepare(list) {
   return list.map((o) => {
-    const root = o.root ?? "outputs"; // an agent from before inputs/ were shown sends no root
+    const root = o.root ?? "outputs"; // an agent from before work/ and inputs/ were shown sends no root
     const all = (o.files ?? []).map((f) => ({
       ...f,
       wire: f.path, // as the agent named it, for mesh requests
       path: o.root ? f.path : `outputs/${f.path}`,
       type: typeOf(f.file),
     }));
-    return { ...o, root, id: root === "outputs" ? o.name : `inputs/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry") };
+    return { ...o, root, id: root === "outputs" ? o.name : `${root}/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry") };
   });
 }
 
@@ -320,7 +349,8 @@ const building = (o) => o.building || o.build?.state === "building";
 function fact(o) {
   if (o.error || o.build?.state === "failed") return ["failed", "error"];
   if (building(o)) return ["building", "live"];
-  if (o.build?.state === "stale" || changed(o).length) return ["out of date", "warning"];
+  if (o.build?.state === "stale") return ["out of date", "warning"];
+  if (changed(o).length) return ["check again", "warning"];
   if (!o.files.length) return ["", ""];
   const kind = kindOf(o);
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -401,11 +431,13 @@ function renderList() {
   const all = state.outputs;
   state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (all.find((o) => o.root === "outputs")?.id ?? all[0]?.id ?? null);
   const outs = all.filter((o) => o.root === "outputs");
-  const ins = all.filter((o) => o.root === "inputs");
   $("outputs-empty").hidden = outs.length > 0;
   fill($("output-list"), outs);
-  $("inputs-head").hidden = !ins.length;
-  fill($("input-list"), ins);
+  for (const root of ["work", "inputs"]) {
+    const list = all.filter((o) => o.root === root);
+    $(`${root}-head`).hidden = !list.length;
+    fill($(`${root}-list`), list);
+  }
 }
 
 function fill(list, entries) {

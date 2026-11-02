@@ -53,23 +53,24 @@ Faces are named `f<id>` the same way in the viewer, in screenshots and in `part.
 ## Project layout
 
 ```
-inputs/    from outside: supplier STEP, scans, datasheets, prices; scripts only read it
+inputs/    from outside: supplier STEP, scans, datasheets, customer specs; scripts only read it
 src/       src/<name>.py makes outputs/<name>/: a part, an assembly, a BOM, a study
 lib/       code and parameters the scripts share (from lib.params import WALL)
+work/      done by hand from the design: supplier quotes, part comparisons, reviews
 outputs/   made by tule build; never edit it by hand
 ```
 
 A script may read inputs and other outputs (`import_step("outputs/bracket/bracket.step")`): `tule build` records what each script read, builds what it reads first, and reruns a script only when something it read changed. A script may write only its own output. `tule build --check` lists what is stale; the viewer marks it too, with a Rebuild button.
 
-## Your own research and judgment
+## Work done by hand
 
-Work that is not a script (finding suppliers, choosing a bearing, reading a datasheet) is never re-run by `tule build`. Save its result in `inputs/` (`inputs/suppliers/bracket.json`; a JSON list of records shows as a table) and record what it was based on:
+Work that is not a script (finding suppliers for the bracket, comparing bearings, a design review) is never re-run by `tule build`. Save its result in `work/` (`work/suppliers/bracket.json`; a JSON list of records shows as a table) and record what it was based on:
 
 ```sh
-tule based-on inputs/suppliers/bracket.json outputs/bracket
+tule based-on work/suppliers/bracket.json outputs/bracket
 ```
 
-When `outputs/bracket` changes, `tule build` and the viewer say the result may be out of date. Redo the work, or if it still holds, run `tule based-on inputs/suppliers/bracket.json` again (the user can also click Still valid in the viewer).
+When `outputs/bracket` changes, `tule build` and the viewer ask to check it again. Redo the work, or if it still holds, run `tule based-on work/suppliers/bracket.json` again (the user can also click Still valid in the viewer). A choice it leads to (which bearing) goes in code, `lib/params.py`.
 
 ## Saving
 
@@ -184,7 +185,7 @@ Read the message, change the input, rerun. See `tule docs occt` for what usually
 
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/` (and `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and any other files (tables, charts, documents, images: see below). `tule build` makes them: `src/<name>.py` writes `outputs/<name>/`, and the user sees it within a second. Other files go into `outputs.folder()`.
+The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and any other files (tables, charts, documents, images: see below). `tule build` makes them: `src/<name>.py` writes `outputs/<name>/`, and the user sees it within a second. Other files go into `outputs.folder()`.
 
 ```
 outputs/

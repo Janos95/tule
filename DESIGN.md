@@ -332,7 +332,9 @@ There are two separate kinds of saving:
   under it: an icon for where it runs (Tule cloud, RunPod, or the computer's
   OS), its name and GPU if any, and its state ("running", "starting",
   "· unsaved"); a stopped, saved copy is not shown. The viewer shows one copy;
-  its footer picks which when several are loaded. There is no view of main
+  its footer picks which when several are loaded, and offers Save while the
+  copy has unsaved work (what `tule save` does; a conflict is left to the
+  agent). There is no view of main
   alone: outputs come from a running copy.
 - **Hosting:** Tule hosts the repositories so one connector is still all a
   user sets up. Pushing to (or mirroring on) GitHub can come later.
@@ -343,7 +345,7 @@ There are two separate kinds of saving:
 
 ### Outputs
 
-The viewer renders `/workspace/outputs/` (and `inputs/`): one folder per
+The viewer renders `/workspace/outputs/` (and `work/`, `inputs/`): one folder per
 output, holding geometry files, an optional `output.json`, and any other
 files, each with its own view (see "Project layout, builds and output
 types").
@@ -418,11 +420,14 @@ every output, and a viewer for every kind of output.
 
 ```
 inputs/    from outside the project: supplier STEP, scans, datasheets,
-           catalogs, customer load cases, and the agent's research results
-           (read-only to scripts; big files in LFS)
+           catalogs, customer load cases (read-only to scripts; big files
+           in LFS); never out of date
 src/       scripts; src/<name>.py makes outputs/<name>/ (a part, an
            assembly, a BOM, an FEA run: all alike)
 lib/       shared code the scripts import; makes no outputs
+work/      done by hand (the agent or the user) from the design: supplier
+           quotes, part comparisons, reviews; in git, read by scripts,
+           never re-run, flagged to check again when its sources change
 outputs/   made by scripts only, never edited by hand, not in git
 ```
 
@@ -443,7 +448,7 @@ rest:
 - the fingerprint covers what the script actually read, recorded while it
   runs (a Python audit hook: file opens, folder listings, imports; files
   read by native code, like `import_step`, are reported by `tule`): the
-  script, the local modules it imports, the files it reads in `inputs/` and
+  script, the local modules it imports, the files it reads in `inputs/`, `work/` and
   `outputs/`, and the versions of `tule` and Python. Nothing is declared, so
   nothing can be forgotten. Files are compared by content, so a change that
   does not change an output (a comment) rebuilds nothing after it; STEP
@@ -463,14 +468,16 @@ rest:
 - an output that reads an out-of-date output is out of date too ("outputs/
   plate is out of date"), so the viewer shows everything a change affects.
 
-**Agent work is not re-run.** Finding suppliers, choosing a bearing or reading
-a datasheet is slow, costs money and takes judgment. Its result is saved in
-`inputs/` (e.g. `inputs/suppliers/bracket.json`) like anything imported, and
-scripts read it (`src/bom.py` puts prices in the BOM). `tule based-on
-inputs/suppliers/bracket.json outputs/bracket` records what it was based on
-(`inputs/.based-on.json`, in git: each source's fingerprint, a hash over a
-folder's files), so when the bracket changes the build and the viewer report
-it as possibly stale. The agent or the user then redoes the work or confirms
+**Work done by hand is not re-run.** Finding suppliers, comparing bearings or
+reviewing a design is slow, costs money and takes judgment. Its result is
+saved in `work/` (e.g. `work/suppliers/bracket.json`), and scripts read it
+(`src/bom.py` puts prices in the BOM). It is not an input (it is made from
+the design, so it can go stale; inputs come from outside and cannot) and not
+an output (no script can remake it); a first version kept it in `inputs/`,
+which mixed the two. `tule based-on work/suppliers/bracket.json
+outputs/bracket` records what it was based on (`work/.based-on.json`, in
+git: each source's fingerprint, a hash over a folder's files), so when the
+bracket changes the build and the viewer ask to check it again. The agent or the user then redoes the work or confirms
 it still holds (`tule based-on <result>` again, or Still valid in the
 viewer); confirming updates only the note. Nothing ever re-runs an agent by
 itself.
@@ -489,14 +496,15 @@ which, and `output.json` only adds meaning (titles, units, colors):
 | image | PNG, JPG, SVG | the image |
 | anything else | any file | listed with a download, never hidden |
 
-**In the viewer** (built): the sidebar lists outputs, then inputs, one row
-per folder. Under the selected one: what is wrong with it, inline with what
+**In the viewer** (built): the sidebar lists outputs, then work, then inputs,
+one row per folder. Under the selected one: what is wrong with it, inline with what
 to do ("lib/params.py changed · Rebuild", the last line of a failed build's
-error · Rebuild, "outputs/plate changed · Still valid"), then its views
+error · Rebuild, for work "check again": "outputs/plate changed · Still
+valid"), then its views
 when it has more than one: "3D" for its geometry (an assembly's parts under
 it), each other file, and a failed build's log. A view that is not 3D is a
 page over the stage. The machine's agent sends every file in the index with
-the build state of each output and the "based on" state of each input
+the build state of each output and the "based on" state of each piece of work
 (`runtime/tule_agent.py`, `Outputs`); Rebuild runs `tule build <name>` on
 the machine in the background. Files are read through the agent (cached by
 content hash); Vega-Lite and the Markdown renderer load only when a chart or
@@ -550,7 +558,7 @@ request `id`.
   it in `~/.config/tule/known_hosts` (`StrictHostKeyChecking=yes`).
 - **Keys:** the CLI makes its own key (`~/.config/tule/id_ed25519`) and adds
   it to the project the first time; `tule keys add` adds others.
-- **Outputs:** the agent polls `outputs/`, `inputs/`, `src/` and `lib/`
+- **Outputs:** the agent polls `outputs/`, `work/`, `inputs/`, `src/` and `lib/`
   (0.5 s; the last two only for freshness), hashes changed files and sends
   the index; the Durable Object stores the last index and broadcasts it
   to viewers. A viewer asks for a file by path and hash; the agent
@@ -905,5 +913,5 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
-| Project layout and outputs | `inputs/`, `src/`, `lib/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; agent results live in `inputs/`, record what they were based on (`tule based-on`), are flagged when stale and never re-run automatically; every file in an output has a view (table, Vega-Lite chart, document, image, download), not HTML; the viewer marks out-of-date and failed outputs inline with Rebuild (2026-11-02; see "Project layout, builds and output types") |
+| Project layout and outputs | `inputs/`, `src/`, `lib/`, `work/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; work done by hand lives in `work/`, records what it was based on (`tule based-on`), is flagged to check again and never re-run automatically; every file in an output has a view (table, Vega-Lite chart, document, image, download), not HTML; the viewer marks out-of-date and failed outputs inline with Rebuild, and saves from its footer (2026-11-02; see "Project layout, builds and output types") |
 | Machines | per project, several at once (2026-11-01): each with its own autosaved copy, saving and merging through git (see "Several machines per project, saves in git"); one Tule cloud machine per project. Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's save. The projects list shows each machine under its project: an icon and where it runs (Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token). |
