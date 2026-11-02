@@ -6,14 +6,15 @@ See [DESIGN.md](DESIGN.md).
 
 ## Use it
 
-1. Sign in at https://tule.janosmeny.com (Google; invite-only for now).
-2. Connect your agent: add `https://tule.janosmeny.com/mcp` as a custom
-   connector (Claude, ChatGPT) or remote MCP server (Claude Code, Codex, Cursor).
-3. Give it the CLI for the work:
+Add `https://tule.janosmeny.com/mcp` to your agent as a custom connector
+(Claude, ChatGPT) or remote MCP server (Claude Code, Codex, Cursor). That's it:
+the agent installs and signs in the `tule` CLI itself (the connector's
+`connect_info` gives it one command).
+
+By hand:
 
 ```sh
-pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"
-tule login                            # approve the code in the browser once
+curl -fsSL https://tule.janosmeny.com/cli.sh | sh    # installs the CLI; approve the sign-in in the browser
 tule new bracket && tule up -p bracket
 tule ssh -p bracket -- python - < examples/bracket.py
 tule open -p bracket                  # the viewer shows outputs/bracket

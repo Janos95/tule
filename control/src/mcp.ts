@@ -36,7 +36,7 @@ export const TOOLS: Tool[] = [
   { name: "gpus_list", description: "GPU machines on the user's RunPod account: price per hour and current availability.", inputSchema: obj({}), annotations: RO },
   { name: "machine_stop", description: "Save /workspace and stop the project's machine.", inputSchema: obj(project, ["project"]) },
   { name: "machine_status", description: "The project's machine: state, size, timings, SSH sessions, latest snapshot.", inputSchema: obj(project, ["project"]), annotations: RO },
-  { name: "connect_info", description: "How to work on the project's machine: install the tule CLI, sign it in, SSH in; the viewer link.", inputSchema: obj(project, ["project"]), annotations: RO },
+  { name: "connect_info", description: "How to work on the project's machine: one command that installs the tule CLI and signs it in (no user step), then SSH in; the viewer link.", inputSchema: obj(project, ["project"]), annotations: RO },
   { name: "join_token", description: "A join token for a machine started elsewhere (e.g. a pod made with the user's own RunPod connector): run the Tule image with these environment variables and it joins the project.", inputSchema: obj(project, ["project"]) },
   { name: "outputs_list", description: "The project's outputs (folders in /workspace/outputs) with viewer links.", inputSchema: obj(project, ["project"]), annotations: RO },
   { name: "snapshots_list", description: "Snapshots of /workspace, newest first.", inputSchema: obj({ ...project, limit: { type: "number" } }, ["project"]), annotations: RO },
@@ -86,7 +86,7 @@ async function call(env: Env, user: User, name: string, a: Record<string, unknow
     case "machine_status": return ops.status(env, user, a.project, origin);
     case "connect_info": {
       const p = await ops.resolve(env, user, a.project);
-      return ops.isRef(p) ? ops.connectInfo(origin, p.name) : p;
+      return ops.isRef(p) ? ops.connectInfo(env, user, origin, p.name) : p;
     }
     case "join_token": return ops.join(env, user, a.project, origin);
     case "outputs_list": return ops.outputs(env, user, a.project, origin);

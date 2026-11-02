@@ -88,8 +88,9 @@ export function layout(title: string, body: Html | string, user?: User | null): 
   }<script>${NEWP_JS}</script></body></html>`;
 }
 
-/** "+ New …" rows: opening focuses the field, Esc closes it again. */
-const NEWP_JS = `document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
+/** Copy buttons; "+ New …" rows: opening focuses the field, Esc closes it again. */
+const NEWP_JS = `document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)});
+document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
 document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
 
 export function page(title: string, body: Html | string, status = 200, user?: User | null): Response {
@@ -118,17 +119,6 @@ export function landing(_origin: string, note = ""): Response {
 export type ProjectRow = ProjectRef & { state: string; machine: string | null };
 
 /** How an agent connects: the MCP connector (the control plane) and the CLI (the work). */
-function connect(origin: string): Html {
-  return html`<div class="card">
-      <p><b>MCP connector</b> (projects, machines, keys): <code>${origin}/mcp</code><br>
-      <span class="muted">Add it as a custom connector in Claude or ChatGPT, or as a remote MCP server in Claude Code, Codex or Cursor.</span></p>
-      <p><b>CLI</b> (the work, over SSH):</p>
-      <pre>pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"
-tule login --url ${origin}
-tule ssh -p &lt;project&gt;</pre>
-    </div>`;
-}
-
 /** The last row of a list: "+ New …", which turns into a one-line field in place.
     Enter submits, Esc closes. */
 function addRow(label: string, actionUrl: string, field: Html, open = false, note: Html | string = "") {
@@ -159,8 +149,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
         ${create}
       </div>`
     : html`<div class="plist">${create}</div>
-      <h2>Connect your agent</h2>
-      ${connect(origin)}`;
+      ${agentSection(origin)}`;
   return page("Projects", body, 200, user);
 }
 
@@ -194,14 +183,20 @@ const rowButton = (actionUrl: string, text: string, id?: string, danger = false)
 
 const copyButton = (text: string) => html`<button type="button" class="small" data-copy="${text}">Copy</button>`;
 
-export function settingsPage(user: User, d: SettingsData): Response {
-  const cli = `pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"\ntule login --url ${d.origin}\ntule ssh -p <project>`;
-  const agent = section(
+/** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (connect_info).
+    Settings also shows the CLI command, for working on a machine by hand. */
+function agentSection(origin: string, cli = false): Html {
+  const cmd = `curl -fsSL ${origin}/cli.sh | sh\ntule ssh -p <project>`;
+  return section(
     "Connect your agent",
-    "The connector manages projects and machines; the CLI does the work over SSH.",
-    html`${item("MCP connector", html`<code>${d.origin}/mcp</code>`, copyButton(`${d.origin}/mcp`))}
-      <div class="item item-block"><span class="item-label">CLI</span><span class="item-action">${copyButton(cli)}</span><pre>${cli}</pre></div>`,
+    "Add this connector to your agent: a custom connector in Claude or ChatGPT, a remote MCP server in Claude Code, Codex or Cursor. Your agent sets up the rest.",
+    html`${item("Connector", html`<code>${origin}/mcp</code>`, copyButton(`${origin}/mcp`))}
+      ${cli ? html`<div class="item item-block"><span class="item-label">CLI, by hand</span><span class="item-action">${copyButton(cmd)}</span><pre>${cmd}</pre></div>` : ""}`,
   );
+}
+
+export function settingsPage(user: User, d: SettingsData): Response {
+  const agent = agentSection(d.origin, true);
 
   const rp = d.runpod;
   const runpod = user.guest
@@ -267,7 +262,6 @@ export function settingsPage(user: User, d: SettingsData): Response {
     ? section("Account", "You're a guest: your project is deleted a day after your last visit. Signing in keeps it.", item("Guest", "", html`<a class="button small primary" href="/auth/login">Sign in</a>`))
     : section("Account", "", item(user.email, "", html`<form method="post" action="/auth/logout"><button class="small">Sign out</button></form>`));
 
-  const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${computers}${runpod}${usage}${ssh}${api}${account}
-    <script>document.addEventListener("click",(e)=>{const b=e.target.closest("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)})</script>`;
+  const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${computers}${runpod}${usage}${ssh}${api}${account}`;
   return page("Settings", body, 200, user);
 }

@@ -296,6 +296,18 @@ export class Accounts extends DurableObject<Env> {
     return { deviceCode, userCode: code, expiresIn: DEVICE_MINUTES * 60 };
   }
 
+  /** A sign-in the connector hands to the agent: a device code approved in advance (works once, for an hour),
+      so the agent's `tule login --code` needs nothing from the user. */
+  async cliLoginCode(userId: string): Promise<string> {
+    const deviceCode = `tulel_${rand(24)}`;
+    this.sql.exec("DELETE FROM devices WHERE expires < ?", Date.now());
+    this.sql.exec(
+      "INSERT INTO devices (hash, user_code, client, expires, user_id, kind, host_name) VALUES (?, ?, ?, ?, ?, 'cli', NULL)",
+      await sha256hex(deviceCode), userCode(), "agent, via the connector", Date.now() + 60 * 60_000, userId,
+    );
+    return deviceCode;
+  }
+
   deviceInfo(code: string): { client: string; host: string | null } | null {
     const r = this.one<{ client: string; expires: number; user_id: string | null; host_name: string | null }>("SELECT client, expires, user_id, host_name FROM devices WHERE user_code = ?", code.toUpperCase());
     return r && r.expires > Date.now() && !r.user_id ? { client: r.client, host: r.host_name } : null;

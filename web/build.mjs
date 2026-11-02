@@ -46,7 +46,7 @@ async function finish() {
   console.log(`web/dist/${v}`);
 }
 
-// dist/install: the tule CLI as a wheel and install.sh naming it (served as /install.sh, see
+// dist/install: the tule CLI as a wheel, and install.sh and cli.sh naming it (served as /install.sh and /cli.sh, see
 // control/src/index.ts). Built once per run; the CLI's sources are outside web/src.
 let wheel;
 async function installer() {
@@ -58,8 +58,10 @@ async function installer() {
     wheel = path.join(tmp, (await fs.readdir(tmp)).find((f) => f.endsWith(".whl")));
   }
   await fs.copyFile(wheel, path.join(dir, path.basename(wheel)));
-  const sh = await fs.readFile(path.join(web, "src/install.sh"), "utf8");
-  await fs.writeFile(path.join(dir, "install.sh"), sh.replaceAll("__WHEEL__", path.basename(wheel)));
+  for (const name of ["install.sh", "cli.sh"]) {
+    const sh = await fs.readFile(path.join(web, "src", name), "utf8");
+    await fs.writeFile(path.join(dir, name), sh.replaceAll("__WHEEL__", path.basename(wheel)));
+  }
 }
 
 // empty dist but keep the folder, so a running `wrangler dev` sees the new files

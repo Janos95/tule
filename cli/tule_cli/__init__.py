@@ -290,6 +290,19 @@ def cmd_login(args):
         store(url=url, token=args.token, keyAdded=None)
         print(f"tule: logged in to {url}")
         return
+    if args.code:  # approved in advance: the connector's connect_info hands it to the agent
+        req = urllib.request.Request(f"{url}/api/device/token", data=json.dumps({"device_code": args.code}).encode(),
+                                     method="POST", headers={"Content-Type": "application/json", "User-Agent": "tule-cli/0.1"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                t = json.load(r)
+        except urllib.error.URLError as e:
+            raise CliError(f"cannot reach {url}: {getattr(e, 'reason', e)}") from None
+        if t.get("status") != "approved":
+            raise CliError("this sign-in code is used up or expired; ask the connector's connect_info for a new one")
+        store(url=url, token=t["apiKey"], keyAdded=None)
+        print(f"tule: logged in to {url} as {t['email']}", file=sys.stderr)
+        return
     req = urllib.request.Request(f"{url}/api/device/code", data=json.dumps({"client": f"tule CLI on {os.uname().nodename}"}).encode(),
                                  method="POST", headers={"Content-Type": "application/json", "User-Agent": "tule-cli/0.1"})
     try:
@@ -441,6 +454,7 @@ def main(argv=None):
     sp = add("login", cmd_login, "sign in (approve a code in the browser)", project=False)
     sp.add_argument("--url", help=f"the Tule site (default {DEFAULT_URL})")
     sp.add_argument("--token", help="an API key from Settings instead of the browser")
+    sp.add_argument("--code", help="a one-time sign-in code from the connector's connect_info (no browser)")
     sp.add_argument("--no-browser", action="store_true", help="only print the link")
     sp = add("new", cmd_new, "create a project", project=False)
     sp.add_argument("name")

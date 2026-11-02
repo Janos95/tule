@@ -307,10 +307,12 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (typeof b.key !== "string" || !b.key.startsWith("tulep_")) return error("expected {key: \"tulep_…\", name}", 400, "copy the command from Settings → Your computers");
     return reply(await accounts(env).pairHost(b.key, typeof b.name === "string" ? b.name : "computer", typeof b.token === "string" ? b.token : undefined));
   }
-  // the one command that adds a computer: curl -fsSL <origin>/install.sh | sh -s -- <key>
-  if (path === "/install.sh") {
-    const r = await env.ASSETS.fetch(new Request(new URL("/install/install.sh", url)));
-    if (!r.ok) return error("install.sh is missing from this deploy", 500);
+  // the one command that adds a computer (curl -fsSL <origin>/install.sh | sh -s -- <key>), and the
+  // one that installs and signs in the CLI (curl -fsSL <origin>/cli.sh | sh -s -- <code from connect_info>)
+  if (path === "/install.sh" || path === "/cli.sh") {
+    const r = await env.ASSETS.fetch(new Request(new URL(`/install${path}`, url)));
+    // a missing file comes back as the viewer's page (single-page fallback), not a 404
+    if (!r.ok || r.headers.get("Content-Type")?.startsWith("text/html")) return error(`${path.slice(1)} is missing from this deploy`, 500);
     const text = (await r.text()).replaceAll("__TULE_URL__", env.PUBLIC_URL || url.origin);
     return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
   }

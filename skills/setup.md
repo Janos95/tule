@@ -2,14 +2,15 @@
 
 Get from "the user has a Tule account" to a shell on the project's machine.
 
-## Log in once
+## Install and sign in, once per computer
+
+Call the connector's `connect_info` (any project) and run its `setup` command:
 
 ```sh
-pip install "git+https://github.com/Janos95/tule#subdirectory=cli"   # the `tule` command (Python 3.10+)
-tule login --url https://<tule host> --token <token>
+curl -fsSL https://<tule host>/cli.sh | sh -s -- tulel_…   # installs the tule CLI and signs it in
 ```
 
-The login is stored in `~/.config/tule/config.json`. (Device-code sign-in, where you show the user a link and code to approve, replaces the token with accounts.) The connector (MCP) signs in separately through the app's own OAuth flow.
+The code is approved in advance for the user who added the connector: nothing for the user to do. It works once, for an hour; ask `connect_info` again if it has expired. Skip this if `tule ls` already works. The login is stored in `~/.config/tule/config.json`. Without the connector, `tule login --url https://<tule host>` shows the user a link and code to approve.
 
 ## Machines
 

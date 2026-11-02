@@ -63,9 +63,12 @@ Tule does not run or bill for an agent. Users bring their own.
 3. **Link the agent to the account.** The first time the agent uses the
    connector, the app opens Tule's sign-in page (MCP OAuth): the user signs
    in with Google and approves "Allow Claude to manage your Tule projects".
-   The agent's CLI is linked the same way when the agent first runs
-   `tule login` (device code: the agent shows a link and code, the user
-   approves it in the browser). No keys are copied by hand.
+   That is the user's only step. The agent sets up its CLI itself:
+   `connect_info` returns one command, `curl -fsSL <tule>/cli.sh | sh -s --
+   tulel_…`, that installs the CLI (with uv, else pip) from Tule's own
+   `/install/` wheel and signs it in with a code the connector approved in
+   advance (works once, for an hour). The user never opens a terminal, copies
+   a key or approves a code; the web pages show only the connector address.
 4. **Connect RunPod (optional)** in Tule's settings: paste a RunPod API key;
    Tule validates it and shows the balance. RunPod's own limits (prepaid
    balance, account spend limit) are the budget; Tule adds no cap of its own.
@@ -389,6 +392,8 @@ request `id`.
 - **Sign-in:** Google (OAuth code flow with PKCE) sets an HttpOnly session
   cookie for 30 days. `tule login` uses a device code: it shows a link and a
   code, the user approves it at `/device`, and the CLI receives an API key.
+  `tule login --code tulel_…` redeems a device code the connector's
+  `connect_info` approved in advance, so agents sign in without the user.
   API keys (`tule_…`) are also made in Settings. `DEV_TOKEN` remains as an
   admin credential acting as a "dev" user, for tests.
 - **MCP:** `@cloudflare/workers-oauth-provider` wraps the Worker: `/mcp` takes
@@ -443,7 +448,7 @@ No exec or file tools: like RunPod's, the MCP never carries the work. Plus
 ### `tule` CLI (on the agent's machine)
 
 ```
-tule login                     # device code: approve in the browser
+tule login [--code tulel_…]    # device code: approve in the browser, or a code from connect_info
 tule keys add ~/.ssh/id_ed25519.pub
 tule new bracket               # create a project from the template
 tule up [--gpu rtx4090]        # start / resize the project's machine

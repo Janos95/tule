@@ -140,10 +140,10 @@ export async function removeSshKey(env: Env, user: User, id: unknown): Promise<R
   return ok ? { removed: id } : fail(`no SSH key ${JSON.stringify(id)}`, "list them with ssh_keys_list");
 }
 
-export function connectInfo(origin: string, name: string): Result {
+export async function connectInfo(env: Env, user: User, origin: string, name: string): Promise<Result> {
+  const code = await accounts(env).cliLoginCode(user.id);
   return {
-    install: `pip install "tule-cli @ git+https://github.com/Janos95/tule#subdirectory=cli"`,
-    login: `tule login --url ${origin}   # shows a link and a code; the user approves it in the browser once`,
+    setup: `curl -fsSL ${origin}/cli.sh | sh -s -- ${code}   # installs the tule CLI and signs it in; once per computer (the code works once, for an hour). Skip it if \`tule ls\` already works.`,
     ssh: `tule ssh -p ${name}            # a shell; tule ssh -p ${name} -- <command> runs one command`,
     sshConfig: `tule ssh --config -p ${name}   # then plain: ssh tule-${name}`,
     viewer: viewerUrl(origin, name),
