@@ -252,6 +252,12 @@ class Profile:
 
         return extrude(self, h, center=center, **kw)
 
+    def sheet(self, thickness: float, bend_radius: float | None = None, k: float = 0.44):
+        """A sheet part of this outline; see :func:`tule.sheet`."""
+        from .sheetmetal import sheet
+
+        return sheet(self, thickness, bend_radius, k)
+
     def revolve(self, angle: float = 360):
         from .sweeps import revolve
 

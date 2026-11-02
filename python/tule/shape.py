@@ -109,7 +109,7 @@ def _tag_aliases(*shapes: "Shape") -> dict:
 class Shape:
     """An immutable solid (or compound) with tags, provenance and metadata."""
 
-    __slots__ = ("_s", "_groups", "_alias", "name", "color", "_cache")
+    __slots__ = ("_s", "_groups", "_alias", "name", "color", "_cache", "_sm")
 
     def __init__(
         self,
@@ -118,6 +118,7 @@ class Shape:
         alias: dict | None = None,
         name: str | None = None,
         color: str | None = None,
+        sm=None,
     ):
         self._s = shape
         self._groups: Groups = dict(groups or {})
@@ -125,6 +126,7 @@ class Shape:
         self.name = name
         self.color = color
         self._cache: dict = {}
+        self._sm = sm  # sheet metal: thickness, bend radius, K-factor (tule.sheetmetal)
 
     # ------------------------------------------------------------ basics
     @property
@@ -139,14 +141,15 @@ class Shape:
             self._alias if alias is None else alias,
             self.name if keep_meta else None,
             self.color if keep_meta else None,
+            self._sm,
         )
 
     def named(self, name: str, color: str | None = None) -> "Shape":
         """The same shape with a part name and (optionally) a color like ``"#4a8"``."""
-        return Shape(self._s, self._groups, self._alias, name, color or self.color)
+        return Shape(self._s, self._groups, self._alias, name, color or self.color, self._sm)
 
     def colored(self, color: str) -> "Shape":
-        return Shape(self._s, self._groups, self._alias, self.name, color)
+        return Shape(self._s, self._groups, self._alias, self.name, color, self._sm)
 
     def __repr__(self) -> str:
         n = f" {self.name!r}" if self.name else ""
@@ -292,7 +295,7 @@ class Shape:
         groups[key] = tuple(ShapeSet(list(groups.get(key, ())) + list(sel.items)))
         alias = dict(self._alias)
         alias[name] = key
-        return Shape(self._s, groups, alias, self.name, self.color)
+        return Shape(self._s, groups, alias, self.name, self.color, self._sm)
 
     def _with_roles(self, roles: dict[str, Iterable], fid: int | None = None) -> "Shape":
         """Attach feature roles (``{"top": faces, ...}``) as groups and aliases."""
@@ -313,7 +316,7 @@ class Shape:
                 groups[key + ":edges"] = tuple(edges)
             if role not in alias or not alias[role].startswith("tag:"):
                 alias[role] = key
-        return Shape(self._s, groups, alias, self.name, self.color)
+        return Shape(self._s, groups, alias, self.name, self.color, self._sm)
 
     # ------------------------------------------------------------ Booleans
     def __or__(self, other: "Shape") -> "Shape":
@@ -339,7 +342,12 @@ class Shape:
     def _apply_trsf(self, t: gp_Trsf, copy: bool = False) -> "Shape":
         b = BRepBuilderAPI_Transform(self._s, t, copy)
         res = b.Shape()
-        return self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
+        out = self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
+        if self._sm is not None:
+            from .sheetmetal import moved
+
+            out._sm = moved(self._sm, t)
+        return out
 
     def at(self, x: float | VecLike = 0, y: float = 0, z: float = 0) -> "Shape":
         """Translate by ``(x, y, z)``; ``s.at((1, 2, 3))`` works too."""
@@ -359,6 +367,8 @@ class Shape:
 
     def scale(self, x: float, y: float | None = None, z: float | None = None, about: VecLike = (0, 0, 0)) -> "Shape":
         """Uniform ``scale(f)`` or per-axis ``scale(fx, fy, fz)``."""
+        if self._sm is not None and not (x == 1 and y in (None, 1) and z in (None, 1)):
+            return Shape(self._s, self._groups, self._alias, self.name, self.color).scale(x, y, z, about)
         if y is None and z is None:
             t = gp_Trsf()
             t.SetScale(pnt(about), float(x))
@@ -537,6 +547,57 @@ class Shape:
             inner.extend(g for g in from_list(mk.Generated(f)) if kind_of(g) == "face")
         return self._derive(res, groups)._with_roles({"inner": inner})
 
+    # ------------------------------------------------------------ sheet metal
+    @property
+    def sheet_metal(self):
+        """``SheetMetal(thickness, radius, k)`` for a sheet part (``sheet(...)``), else None."""
+        return self._sm
+
+    def flange(self, edges: Selection, length: float, angle: float = 90, radius: float | None = None,
+               inset: float | Sequence[float] = 0, relief: str = "rect") -> "Shape":
+        """Bend a flange from each selected edge of a sheet part (``sheet(profile, t)``).
+
+        ``edges``: straight edges of the sheet, or its flat edge faces (``part.faces["side"]``).
+        ``length`` is the outside length, from the virtual sharp to the tip (for 90°: the outside
+        height); the flange's outside face is flush with the edge (the profile is the outside
+        footprint). ``angle`` > 0 folds toward the top side, < 0 toward the bottom. ``radius``:
+        inside radius (default: the sheet's). ``inset``: how far the flange stays back from the
+        edge's ends (one value, or two: lower then upper end by x, y, z); a flange that stops
+        short of the panel's end gets a ``relief`` cut (``"rect"`` or ``"obround"``, t wide,
+        reaching t/2 past the bend). Where a flange meets an earlier one at a corner of the
+        panel, both stop at each other's bend (a square corner relief). New faces get the roles
+        ``flange``, ``bend`` and ``tip`` (the end faces: flange them for a return).
+        """
+        from .sheetmetal import flange
+
+        return flange(self, edges, length, angle, radius, inset, relief)
+
+    def unfold(self) -> "Shape":
+        """The flat pattern of a sheet part: a plate ``t`` thick in the xy plane, reference (bottom)
+        side at z = 0, up-bends folding toward +z. Its ``bends`` give each bend's direction,
+        angle, inside radius, allowance and line; the lines are edges of the top face, tagged
+        ``bend_up`` / ``bend_down``. Holes and cuts on the part, also across bends, are in it."""
+        if "unfold" not in self._cache:
+            from .sheetmetal import unfold
+
+            self._cache["unfold"] = unfold(self)
+        return self._cache["unfold"]
+
+    @property
+    def bends(self) -> list:
+        """The bends of a sheet part or flat pattern (``Bend``: id, direction, angle, radius, k,
+        allowance, deduction, line in the flat), in reading order of the flat (B1 top left)."""
+        from .sheetmetal import bends
+
+        return bends(self)
+
+    def bend_table(self) -> list[dict]:
+        """The bend table for the shop: one dict per bend (bend, direction, angle, radius, k,
+        thickness, allowance, deduction, length)."""
+        from .sheetmetal import bend_table
+
+        return bend_table(self)
+
     # ------------------------------------------------------------ measurements
     @property
     def volume(self) -> float:
@@ -602,6 +663,12 @@ class Shape:
         from .io import export_stl
 
         return export_stl(self, path, tolerance, angular)
+
+    def export_dxf(self, path: str) -> str:
+        """A sheet part's flat pattern as a layered DXF (CUT, BEND_UP, BEND_DOWN, BEND_NOTES)."""
+        from .sheetmetal import export_dxf
+
+        return export_dxf(self, path)
 
     def export_gltf(self, path: str) -> str:
         from .io import export_gltf
@@ -672,7 +739,7 @@ def _boolean(op_cls, op_name: str, args: list[Shape], tools: list[Shape], simpli
         except OCC_ERRORS:
             pass
     first = args[0]
-    return Shape(res, groups, _tag_aliases(*inputs), first.name, first.color)
+    return Shape(res, groups, _tag_aliases(*inputs), first.name, first.color, first._sm)
 
 
 def union(*shapes) -> Shape:

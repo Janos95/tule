@@ -33,6 +33,7 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 | `modeling` | writing geometry with `tule` (values, operators, selections, tags) |
 | `outputs` | what the viewer shows and how to write it |
 | `drawings` | shop drawings: dimensions, tolerances, callouts, sections |
+| `sheetmetal` | bent sheet parts: flanges, flat patterns, bend tables, DXF for the laser |
 | `occt` | an operation failed: fillets, Booleans, shells, tolerances |
 | `annotations` | the user drew on the model in the viewer |
 | `fea` | stress, deflection and safety factor of a part under loads |

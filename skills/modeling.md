@@ -31,6 +31,7 @@ outputs.part("bracket", part)
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
 - Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching). `asm.clashes(ignore=[("pin", "link")])` lists overlapping parts `(a, b, mm³)`, `asm.gaps(below=0.5)` closer ones: run them on every frame of a motion study (gears: step by a fraction of a tooth, or every frame checks the same mesh phase).
 - Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference, then `pair.place(gear2, angle=)` meshes gear 2 at `pair.distance`. Bevel: `pair = bevel_pair(module, z1, z2, width, shaft_angle=90)` meshes `pair.gear1`, `pair.gear2`; `pair.place(bevel_gear(..., mating_teeth=z1), turn=)`.
+- Sheet metal (flanges, flats): `tule docs sheetmetal`.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
 ## Selecting faces and edges
@@ -59,7 +60,7 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 
 ## Drawings
 
-`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts found from the model. Don't hand-draw one; read `tule docs drawings` for your own dimensions, per-feature tolerances, callout sides, sections and scale.
+`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts from the model. Don't hand-draw one; `tule docs drawings` adds your dimensions, tolerances, sections, scale.
 
 ## Errors
 
