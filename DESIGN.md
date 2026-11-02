@@ -655,6 +655,15 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   (1.3 GB with recommends) for its GTK/wx/OCCT dependencies, so the
   estimate raises with that command when it is missing. 100 % infill sets
   a rectilinear pattern on that object (gyroid refuses it).
+  Printer presets (2026-11-02, from QA: a P1S plate was estimated as an
+  i3): `estimate="bambu-p1s"` (also `bambu-x1c`, `bambu-a1`, `prusa-mk4`,
+  `prusa-core-one`, `ender-3`, `voron-2.4`; True is `generic`) gives the
+  slicer that printer's speeds, accelerations, machine limits, PLA flow and
+  bed, from its maker's default profile (Bambu Studio 2.08, PrusaSlicer
+  2.9). PrusaSlicer's planner times each move with them (trapezoids), so no
+  correction of our own. The printer's bed is the default `bed`; a plate
+  that does not fit names it. A 50 mm box (2 walls, 15 %): P1S 19 min,
+  Ender-3 87 min (Bambu Studio itself: 19 and 84 min).
 - Later: variants side by side.
 
 ### Isolation and quotas

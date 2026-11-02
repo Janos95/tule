@@ -297,6 +297,37 @@ def test_outputs_plate_estimate(outdir, tmp_path, monkeypatch):
     assert "--export-gcode" in used and "print.3mf" in used
     for line in ("nozzle_diameter = 0.4", "filament_density = 1.27", "fill_density = 20%", "fill_pattern = gyroid", "perimeters = 2"):
         assert line in used
+    assert meta["plate"]["printer"] == "generic" and meta["info"]["estimate"] == "generic 0.4 mm printer, PrusaSlicer"
+
+
+def test_outputs_plate_printer(outdir, tmp_path, monkeypatch):
+    # a stand-in slicer whose print time follows the loaded profile's infill speed and acceleration
+    fake_slicer(tmp_path, monkeypatch, "cfg = dict(l.split(' = ', 1) for l in open(args[args.index('--load') + 1]).read().splitlines())\n"
+                                       "s = 3e5 / float(cfg['infill_speed']) + 3e6 / float(cfg['infill_acceleration'])\n"
+                                       "open(out, 'w').write(f'; estimated printing time (normal mode) = {s:.0f}s\\n')")
+    times = {}
+    for printer in (True, "bambu-p1s", "Ender-3", "voron-2.4"):
+        meta = json.load(open(f"{outputs.plate('print', [box(20)], estimate=printer)}/output.json"))
+        times[meta["plate"]["printer"]] = meta["plate"]["estimate"]["print_time_s"]
+    assert times["bambu-p1s"] < times["voron-2.4"] < times["generic"] < times["ender-3"]
+    assert meta["plate"]["estimate"]["profile"].startswith("Voron 2.4 350, 0.4 mm nozzle, PLA")
+    assert meta["info"]["estimate"] == "Voron 2.4 350, PrusaSlicer" and meta["info"]["bed"] == "350 × 350 mm"
+    with pytest.raises(TuleError, match="unknown printer 'bambu-p2x'") as e:
+        outputs.plate("other", [box(20)], estimate="bambu-p2x")
+    assert "bambu-p1s" in e.value.hint and "ender-3" in e.value.hint and not (outdir / "other").exists()
+
+
+def test_outputs_plate_printer_bed(outdir, tmp_path, monkeypatch):
+    fake_slicer(tmp_path, monkeypatch, f"open(out, 'w').write({GCODE_TAIL!r})")
+    long = box(240, 20, 5).named("rail")
+    folder = outputs.plate("print", [long], estimate="bambu-p1s")  # 256 mm bed: fits
+    assert json.load(open(f"{folder}/output.json"))["info"]["bed"] == "256 × 256 mm"
+    with pytest.raises(TuleError, match=r"part 'rail' \(240.0 × 20.0 × 5.0 mm\) does not fit the Creality Ender-3's bed \(220 × 220 × 250 mm\)") as e:
+        outputs.plate("print", [long], estimate="ender-3")
+    assert "larger bed" in e.value.hint
+    with pytest.raises(TuleError, match=r"5 parts do not fit on the Prusa MK4S's bed \(250 × 210 mm\).*need about"):
+        outputs.plate("print", [("tile", box(100, 100, 5), {"copies": 5})], estimate="prusa-mk4")
+    outputs.plate("print", [long], bed=(250, 250), estimate="ender-3")  # the user's own bed= wins
 
 
 def test_outputs_plate_estimate_errors(outdir, tmp_path, monkeypatch):
@@ -324,3 +355,8 @@ def test_outputs_plate_estimate_with_prusa_slicer(outdir):
     folder = outputs.plate("print", [box(20).named("cube"), ("pin", cylinder(4, 30), {"copies": 2})], estimate=True)
     est = json.load(open(f"{folder}/output.json"))["plate"]["estimate"]
     assert 300 < est["print_time_s"] < 7200 and 3 < est["filament_g"] < 30 and est["filament_m"] > 1
+    # a 50 mm box, 2 walls, 15 % infill: Bambu Studio says 19 min on a P1S, 84 min on an Ender-3 V2
+    s = {"walls": 2, "infill": 15}
+    t = {p: json.load(open(f"{outputs.plate(p, [box(50, 50, 20)], settings=s, estimate=p)}/output.json"))["plate"]["estimate"]["print_time_s"]
+         for p in ("bambu-p1s", "ender-3")}
+    assert 15 * 60 < t["bambu-p1s"] < 25 * 60 and 70 * 60 < t["ender-3"] < 100 * 60

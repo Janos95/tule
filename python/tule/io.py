@@ -724,9 +724,11 @@ def _shelves(sizes, width: float, gap: float):
     return pos, (total_w, y - gap)
 
 
-def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -> list[tuple[str, "Shape", dict, int, int]]:
+def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
+           printer: str | None = None) -> list[tuple[str, "Shape", dict, int, int]]:
     """Parts laid out on the bed (origin at its front left corner), each dropped to z = 0:
-    (name, shape, settings, copy, copies), one entry per copy (copy 1 to copies, next to each other)."""
+    (name, shape, settings, copy, copies), one entry per copy (copy 1 to copies, next to each other).
+    ``printer``: whose bed it is, for the errors."""
     listed = _plate_items(items)
     if not arrange and any(n > 1 for *_, n in listed):
         raise TuleError("copies need arrange=True (with arrange=False they would sit on each other)", op="export_3mf",
@@ -737,15 +739,18 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -
     if len(bed) not in (2, 3) or min(bed) <= 0:
         raise TuleError(f"bed is (width, depth) or (width, depth, height) in mm, got {bed}", op="export_3mf", hint="bed=(256, 256)")
     W, D = bed[:2]
+    the_bed = f"the {printer}'s bed" if printer else "the bed"
+    bigger = "a printer with a larger bed" if printer else "the printer's real bed="
     boxes = [s.bounds for _, s, _ in parts]
     sizes = [(hi.x - lo.x, hi.y - lo.y) for lo, hi in boxes]
     for (name, _, _), (lo, hi), (w, d) in zip(parts, boxes, sizes):
         h = hi.z - lo.z
         if w > W + 1e-6 or d > D + 1e-6 or (len(bed) == 3 and h > bed[2] + 1e-6):
             turn = d <= W and w <= D and (len(bed) == 2 or h <= bed[2])
-            raise TuleError(f"part {name!r} ({w:.1f} × {d:.1f} × {h:.1f} mm) does not fit the bed ({' × '.join(f'{b:g}' for b in bed)} mm)",
+            raise TuleError(f"part {name!r} ({w:.1f} × {d:.1f} × {h:.1f} mm) does not fit {the_bed} ({' × '.join(f'{b:g}' for b in bed)} mm)",
                             op="export_3mf", hint="turn it: part.rotate(z=90)" if turn else
-                            "lay it on another face, split it, or give the printer's bed=(width, depth, height)")
+                            "lay it on another face, split it, or " +
+                            (bigger if printer else "give the printer's bed=(width, depth, height)"))
     if arrange:
         best = None
         widths = sorted({W} | {min(W, sum(w for w, _ in sizes[:k]) + gap * (k - 1)) for k in range(1, len(sizes) + 1)})
@@ -760,9 +765,9 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -
         if best is None:
             pos, (lw, ld) = _shelves(sizes, W, gap)
             area = sum(w * d for w, d in sizes)
-            raise TuleError(f"{len(parts)} parts do not fit on one {W:g} × {D:g} mm bed with {gap:g} mm between them "
+            raise TuleError(f"{len(parts)} parts do not fit on {the_bed} ({W:g} × {D:g} mm) with {gap:g} mm between them "
                             f"(they need about {lw:.0f} × {ld:.0f} mm)", op="export_3mf",
-                            hint=f"print them on two plates (two calls), a smaller gap=, or the printer's real bed= "
+                            hint=f"print them on two plates (two calls), a smaller gap=, or {bigger} "
                                  f"(footprints alone cover {100 * area / (W * D):.0f} % of the bed)")
         _, pos, (lw, ld) = best
         x0, y0 = (W - lw) / 2, (D - ld) / 2
@@ -773,7 +778,7 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True) -
         lw = max(hi.x for _, hi in boxes) - lo_x
         ld = max(hi.y for _, hi in boxes) - lo_y
         if lw > W + 1e-6 or ld > D + 1e-6:
-            raise TuleError(f"the parts as placed span {lw:.0f} × {ld:.0f} mm, more than the {W:g} × {D:g} mm bed",
+            raise TuleError(f"the parts as placed span {lw:.0f} × {ld:.0f} mm, more than {the_bed} ({W:g} × {D:g} mm)",
                             op="export_3mf", hint="arrange=True lays them out")
         x0, y0 = (W - lw) / 2, (D - ld) / 2
         targets = [(x0 + lo.x - lo_x, y0 + lo.y - lo_y) for lo, _ in boxes]
@@ -893,33 +898,93 @@ def _prusa_slicer() -> str:
                                         "or leave estimate=False: the 3MF does not need it")
 
 
-def _slicer_config(settings: dict, bed) -> dict:
-    """A generic printer for the estimate: 0.4 mm nozzle, 1.75 mm filament, moderate speeds and
-    accelerations (an i3-class printer at its quality preset; a fast CoreXY one prints sooner)."""
+@dataclass(frozen=True)
+class Printer:
+    """A printer for the estimate, from its maker's default slicer profile (0.2 mm layers)."""
+    label: str
+    bed: tuple    # mm: width, depth, height
+    speed: tuple  # mm/s: outer wall, inner wall, sparse infill, solid infill, top surface, travel, first layer, its infill
+    accel: tuple  # mm/s²: default, outer wall, inner wall, sparse infill, solid infill, top surface, travel, first layer
+    limits: tuple  # the machine's: acceleration mm/s², speed mm/s, jerk mm/s
+    flow: float   # mm³/s: the default PLA's max volumetric speed
+    nozzle: float = 0.4
+    infill: str = "grid"  # the profile's sparse pattern
+
+
+# Bambu Studio 2.08: "Bambu Lab P1S 0.4 nozzle" (the X1C's limits too), "0.20mm Standard @BBL X1C", Bambu PLA Basic
+_P1S = dict(bed=(256, 256, 250), speed=(200, 300, 270, 250, 200, 500, 50, 105),
+            accel=(10000, 5000, 10000, 10000, 10000, 2000, 10000, 500), limits=(20000, 500, 9), flow=21)
+PRINTERS = {
+    # tule's own: an i3-class printer at moderate speeds
+    "generic": Printer("generic 0.4 mm printer", (256, 256, 256), (40, 60, 120, 100, 60, 200, 25, 25),
+                       (1500, 800, 1000, 2000, 1500, 800, 2500, 600), (3000, 500, 10), 12, infill="gyroid"),
+    "bambu-p1s": Printer("Bambu Lab P1S", **_P1S),
+    "bambu-x1c": Printer("Bambu Lab X1C", **_P1S),
+    # Bambu Studio 2.08: "Bambu Lab A1 0.4 nozzle", "0.20mm Standard @BBL A1" (travel 700 mm/s), Bambu PLA Basic
+    "bambu-a1": Printer("Bambu Lab A1", (256, 256, 256), (200, 300, 270, 250, 200, 700, 50, 105),
+                        (6000, 5000, 6000, 6000, 6000, 2000, 6000, 500), (12000, 500, 9), 21),
+    # PrusaSlicer 2.9: "Original Prusa MK4S 0.4 nozzle", "0.20mm SPEED @MK4S 0.4", Prusament PLA
+    "prusa-mk4": Printer("Prusa MK4S", (250, 210, 220), (170, 170, 200, 200, 100, 300, 40, 100),
+                         (4000, 4000, 4000, 4000, 4000, 1500, 4000, 500), (4000, 300, 8), 15),
+    # PrusaSlicer 2.9: "Prusa CORE One 0.4 nozzle", "0.20mm SPEED @COREONE 0.4", Prusament PLA
+    "prusa-core-one": Printer("Prusa CORE One", (250, 220, 270), (170, 170, 200, 200, 100, 350, 45, 100),
+                              (3000, 3000, 6000, 7000, 6000, 2000, 7000, 500), (7000, 350, 10), 15),
+    # Bambu Studio 2.08: "Creality Ender-3 V2 0.4 nozzle", "0.20mm Standard @Creality Ender3V2"; Cura's
+    # creality_base (walls 25, infill 50, travel 150 mm/s, 500 mm/s²) and PrusaSlicer's agree
+    "ender-3": Printer("Creality Ender-3", (220, 220, 250), (25, 40, 50, 40, 30, 150, 20, 20),
+                       (500,) * 8, (500, 500, 8), 12),
+    # Bambu Studio 2.08: "Voron 2.4 350 0.4 nozzle", "0.20mm Standard @Voron", Generic PLA @Voron
+    "voron-2.4": Printer("Voron 2.4 350", (350, 350, 325), (120, 200, 200, 200, 100, 350, 50, 105),
+                         (5000, 3000, 5000, 5000, 5000, 3000, 7000, 500), (20000, 500, 9), 12),
+}
+
+
+def _printer(estimate) -> tuple[str, Printer] | None:
+    """``estimate=``: False (none), True (generic) or a name in ``PRINTERS``."""
+    if estimate is None or estimate is False:
+        return None
+    if estimate is True:
+        return "generic", PRINTERS["generic"]
+    key = estimate.strip().lower().replace("_", "-").replace(" ", "-") if isinstance(estimate, str) else None
+    if key not in PRINTERS:
+        raise TuleError(f"unknown printer {estimate!r} for estimate=", op="estimate",
+                        hint="estimate=True (generic) or one of: " + ", ".join(PRINTERS))
+    return key, PRINTERS[key]
+
+
+def _slicer_config(settings: dict, bed, printer: Printer | None = None) -> dict:
+    """PrusaSlicer's config for the estimate: ``printer``'s speeds, accelerations and machine limits
+    (PrusaSlicer's planner then times every move with them), the plate's settings, 1.75 mm filament."""
+    p = printer or PRINTERS["generic"]
     material = settings.get("material", "PLA")
     density, nozzle_t, bed_t = MATERIALS[material]
     W, D = (float(b) for b in tuple(bed)[:2])
     infill = settings.get("infill", 15)
     walls = settings.get("walls", 2)
+    outer, inner, sparse, solid, top, travel, first, first_infill = p.speed
+    a_default, a_outer, a_inner, a_sparse, a_solid, a_top, a_travel, a_first = p.accel
+    a_max, v_max, jerk = p.limits
     return {
-        "nozzle_diameter": 0.4, "filament_diameter": 1.75, "filament_type": material, "filament_density": density,
+        "nozzle_diameter": p.nozzle, "filament_diameter": 1.75, "filament_type": material, "filament_density": density,
         "temperature": nozzle_t, "first_layer_temperature": nozzle_t, "bed_temperature": bed_t, "first_layer_bed_temperature": bed_t,
         "bed_shape": f"0x0,{W:g}x0,{W:g}x{D:g},0x{D:g}", "max_print_height": float(tuple(bed)[2]) if len(tuple(bed)) > 2 else 256,
         "gcode_flavor": "marlin2", "machine_limits_usage": "time_estimate_only",
         "layer_height": settings.get("layer_height", 0.2), "first_layer_height": 0.2,
         "perimeters": walls, "top_solid_layers": 5, "bottom_solid_layers": 4,
         "top_solid_min_thickness": 0.7, "bottom_solid_min_thickness": 0.5,
-        "fill_density": f"{infill:g}%", "fill_pattern": "gyroid" if infill < 100 else "rectilinear",
+        "fill_density": f"{infill:g}%", "fill_pattern": p.infill if infill < 100 else "rectilinear",
         "support_material": int(settings.get("supports", False)), "support_material_auto": 1,
         "brim_width": settings.get("brim", 0), "skirts": 1, "skirt_distance": 3,
-        "perimeter_speed": 60, "small_perimeter_speed": 40, "external_perimeter_speed": 40, "infill_speed": 120,
-        "solid_infill_speed": 100, "top_solid_infill_speed": 60, "gap_fill_speed": 40, "bridge_speed": 30,
-        "support_material_speed": 60, "travel_speed": 200, "first_layer_speed": 25, "max_volumetric_speed": 12,
-        "default_acceleration": 1500, "perimeter_acceleration": 1000, "external_perimeter_acceleration": 800,
-        "infill_acceleration": 2000, "solid_infill_acceleration": 1500, "top_solid_infill_acceleration": 800,
-        "bridge_acceleration": 1000, "first_layer_acceleration": 600, "travel_acceleration": 2500,
-        "machine_max_acceleration_x": 3000, "machine_max_acceleration_y": 3000, "machine_max_acceleration_extruding": 2500,
-        "machine_max_acceleration_travel": 3000, "machine_max_acceleration_retracting": 1500,
+        "perimeter_speed": inner, "small_perimeter_speed": outer, "external_perimeter_speed": outer, "infill_speed": sparse,
+        "solid_infill_speed": solid, "top_solid_infill_speed": top, "gap_fill_speed": outer, "bridge_speed": min(50, outer),
+        "support_material_speed": inner, "travel_speed": travel, "first_layer_speed": first,
+        "first_layer_infill_speed": first_infill, "max_volumetric_speed": p.flow,
+        "default_acceleration": a_default, "perimeter_acceleration": a_inner, "external_perimeter_acceleration": a_outer,
+        "infill_acceleration": a_sparse, "solid_infill_acceleration": a_solid, "top_solid_infill_acceleration": a_top,
+        "bridge_acceleration": a_outer, "first_layer_acceleration": a_first, "travel_acceleration": a_travel,
+        "machine_max_acceleration_x": a_max, "machine_max_acceleration_y": a_max, "machine_max_acceleration_extruding": a_max,
+        "machine_max_acceleration_travel": a_max, "machine_max_acceleration_retracting": 1500,
+        "machine_max_feedrate_x": v_max, "machine_max_feedrate_y": v_max, "machine_max_jerk_x": jerk, "machine_max_jerk_y": jerk,
     }
 
 
@@ -967,8 +1032,8 @@ def _duration(secs: float) -> str:
     return f"{m // 60} h {m % 60} min" if m >= 60 else f"{m} min"
 
 
-def _slice_estimate(path: str, settings: dict, bed, timeout: float | None = None) -> dict:
-    """Slices the 3MF at ``path`` with PrusaSlicer on a generic profile (``_slicer_config``) and
+def _slice_estimate(path: str, settings: dict, bed, timeout: float | None = None, printer: Printer | None = None) -> dict:
+    """Slices the 3MF at ``path`` with PrusaSlicer on ``printer``'s profile (``_slicer_config``) and
     reads its estimate: ``{"print_time_s", "filament_g", "filament_m", "filament_cm3", "profile"}``."""
     import re
     import subprocess
@@ -976,9 +1041,10 @@ def _slice_estimate(path: str, settings: dict, bed, timeout: float | None = None
 
     exe = _prusa_slicer()
     timeout = timeout or SLICE_TIMEOUT
-    cfg = _slicer_config(settings, bed)
+    p = printer or PRINTERS["generic"]
+    cfg = _slicer_config(settings, bed, p)
     with tempfile.TemporaryDirectory(prefix="tule-slice-") as tmp:
-        ini = os.path.join(tmp, "generic.ini")
+        ini = os.path.join(tmp, "printer.ini")
         with open(ini, "w") as f:
             f.writelines(f"{k} = {v}\n" for k, v in cfg.items())
         gcode = os.path.join(tmp, "plate.gcode")
@@ -998,7 +1064,7 @@ def _slice_estimate(path: str, settings: dict, bed, timeout: float | None = None
             f.seek(max(0, os.path.getsize(gcode) - (1 << 20)))
             text = f.read().decode("utf-8", "replace")
     out = _parse_gcode_estimate(text, cfg["filament_density"])
-    out["profile"] = f"generic 0.4 mm nozzle, {cfg['filament_type']} ({cfg['filament_density']:g} g/cm³), PrusaSlicer"
+    out["profile"] = f"{p.label}, {p.nozzle:g} mm nozzle, {cfg['filament_type']} ({cfg['filament_density']:g} g/cm³), PrusaSlicer"
     return out
 
 
