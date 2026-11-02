@@ -43,9 +43,9 @@ def test_plate_drawing_files_and_dims(outdir):
     t = svg_texts(outdir / "plate-drawing" / "plate-drawing.svg")
     # overall sizes, each once, and the holes as callouts with their count
     assert t.count("100") == 1 and t.count("60") == 1 and t.count("6") == 1
-    assert "4× ⌀5.5" in t and "⌀20" in t
+    assert "4× ⌀5.5 THRU" in t and "⌀20 THRU" in t
     assert "aluminium 6061" in t and "1:1" in t and "mm" in t and "A4" in t
-    assert "Material" in t and "plate" in t
+    assert "Material" in t and "plate" in t and "ISO 2768-m" in t  # general tolerances by default
 
 
 def test_hidden_lines_present_or_dropped():
@@ -127,7 +127,7 @@ def test_counterbore_depth_and_round_part():
     f -= cylinder(5.5, 6).at(0, 0, 6)
     t = texts(item=f.named("flange"))
     assert "⌀60" in t and "12" in t
-    assert "⌀11 depth 6" in t and "⌀6.6" in t
+    assert "⌀6.6 THRU" in t and "⌴ ⌀11 ↧6" in t  # one callout, standard form
 
 
 def test_dxf_has_circles_where_the_holes_are(tmp_path):
@@ -149,7 +149,7 @@ def test_assembly_and_list(outdir):
     base = box(80, 40, 5).named("base")
     post = (box(10, 10, 30).at(35, 15, 5) - cylinder(2, 50, center=True).at(40, 20, 0)).named("post")
     t = texts(item=Assembly(base, post, name="stand"))
-    assert "80" in t and "40" in t and "35" in t and "⌀4 depth 20" in t and "stand" in t  # blind from below
+    assert "80" in t and "40" in t and "35" in t and "⌀4 ↧20" in t and "stand" in t  # blind from below
     outputs.drawing("stand", [base, post], views=("front", "top"), projection="third", scale="1:2")
     t = svg_texts(outdir / "stand" / "stand.svg")
     assert "1:2" in t and "35" in t
@@ -179,3 +179,99 @@ def test_scale_is_chosen_or_checked():
         drawing.render(plate(), scale="5:1")
     _, _, facts = drawing.render(plate(), scale="1:2", sheet="A3")
     assert facts["scale"] == "1:2" and facts["sheet"] == "A3"
+
+
+@functools.cache
+def motor_plate():
+    """A NEMA 23 plate: 4 counterbored holes, 4 slots, a slotted center opening."""
+    p = box(88, 108, 8)
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            p -= slot(11.5, 5.5).rotate(90).extrude(10).at(44 + sx * 23.57, 60 + sy * 23.57, -1)
+    p -= slot(44.6, 38.6).rotate(90).extrude(10).at(44, 60, -1)
+    for x in (8, 80):
+        for y in (8, 100):
+            p -= cylinder(3.3, 10).at(x, y, -1)
+            p -= cylinder(5.5, 8).at(x, y, 1.5)
+    return p.named("motor plate")
+
+
+MOTOR_DIMS = [("top", (0, 0, 8), (44, 60, 8), {"along": "h"}),
+              ("top", (0, 0, 8), (44, 60, 8), {"along": "v", "tol": "±0.05"}),
+              ("top", (20.43, 36.43, 8), (67.57, 36.43, 8), {"along": "h"}),
+              ("top", (0, 0, 8), (8, 8, 8), {"along": "h"}),
+              ("top", (0, 0, 8), (8, 8, 8), {"along": "v"}),
+              ("top", (0, 0, 8), (8, 100, 8), {"along": "v"})]
+
+
+def test_slots_and_counterbores_in_standard_form():
+    t = texts(item=motor_plate())
+    assert "4× ⌀6.6 THRU" in t and "⌴ ⌀11 ↧6.5" in t
+    assert "4× slot 5.5 × 11.5 THRU" in t and "slot 38.6 × 44.6 THRU" in t
+    blind = box(40, 20, 6) - slot(12, 6).extrude(3).at(20, 10, 3)
+    assert "slot 6 × 12 ↧3" in texts(item=blind)
+    sunk = box(30, 30, 6) - cylinder(2, 10, center=True).at(15, 15, 0) - cone(2, 2, 4).at(15, 15, 4)
+    t = texts(item=sunk)
+    assert "⌀4 THRU" in t and "⌵ ⌀8 × 90°" in t
+
+
+def test_tolerances():
+    t = texts(item=motor_plate(), dims=MOTOR_DIMS,
+              tol={"⌀6.6": "+0.2/0", "Ø11": "+0.1/0", "88": 0.1, "slot 5.5": "+0.1/0", "depth 6.5": "±0.1",
+                   "47.14": "H7"})
+    assert "4× ⌀6.6 +0.2/0 THRU" in t and "⌴ ⌀11 +0.1/0 ↧6.5 ±0.1" in t
+    assert "88 ±0.1" in t and "60 ±0.05" in t and "47.14 H7" in t
+    assert "4× slot 5.5 +0.1/0 × 11.5 THRU" in t
+    t = texts(item=plate(), dims=[("top", plate().edges.circles(r=10), {"tol": "H7"})])
+    assert "⌀20 H7" in t
+    with pytest.raises(TuleError, match="nothing on the drawing is '⌀6.5'") as e:
+        texts(item=motor_plate(), tol={"⌀6.5": 0.1})
+    assert "⌀6.6" in e.value.hint  # the sizes it could have meant
+    with pytest.raises(TuleError, match="cannot read tolerance"):
+        texts(item=plate(), tol={"100": "loose"})
+    assert drawing._tol("0/-0.1") == ("dev", "0", "-0.1") and drawing._tol("+0.1/-0.1") == ("pm", "0.1")
+
+
+def test_title_block_fields_revisions_and_notes():
+    _, _, facts = drawing.render(
+        plate(), info={"number": "MP-1", "material": "6061-T6", "finish": "Clear anodize", "drawn": "JM",
+                       "date": "2026-11-02", "batch": 20},
+        notes=["Break all edges 0.3", "Anodize clear, MIL-A-8625 Type II"],
+        revisions=[("A", "First issue"), ("B", "Slots 2 mm longer", "2026-11-02")])
+    t = facts["texts"]
+    for s in ("Part number", "MP-1", "6061-T6", "Finish", "Clear anodize", "JM", "2026-11-02", "Batch", "20",
+              "General tolerances", "ISO 2768-m", "NOTES", "1.", "Break all edges 0.3", "Slots 2 mm longer"):
+        assert s in t, s
+    assert facts["rev"] == "B" and "B" in t
+    t = texts(item=plate(), info={"rev": "C", "tolerance": "ISO 2768-f"})
+    assert "C" in t and "ISO 2768-f" in t and "ISO 2768-m" not in t
+    assert "General tolerances" not in texts(item=plate(), info={"tolerance": ""})
+    with pytest.raises(TuleError, match="not the last revision"):
+        texts(item=plate(), info={"rev": "A"}, revisions=[("A", "x"), ("B", "y")])
+
+
+def test_no_text_touches_a_line_or_another_text():
+    kw = dict(dims=MOTOR_DIMS, info={"number": "MP-23", "material": "6061-T6", "rev": "B"},
+              notes=["Break all edges 0.3", "Anodize clear"], tol={"⌀6.6": "+0.2/0", "88": "±0.1"})
+    for sheet in ("A4", "A3"):
+        page, _, facts = drawing.render(motor_plate(), sheet=sheet, **kw)
+        assert drawing.collisions(page) == [], sheet
+        assert facts["scale"] == {"A4": "1:2", "A3": "1:1"}[sheet]
+    base = box(80, 40, 5).named("base")
+    post = (box(10, 10, 30).at(35, 15, 5) - cylinder(2, 50, center=True).at(40, 20, 0)).named("post")
+    for item in (plate(), Assembly(base, post, name="stand")):
+        assert drawing.collisions(drawing.render(item)[0]) == []
+    # and the check itself sees one
+    c = drawing._Canvas()
+    c.line("vis", (0, 0), (20, 0))
+    c.text(5, -1, "88")
+    assert drawing.collisions(c) and not drawing.collisions(drawing._Canvas())
+
+
+def test_grouped_name_and_drawn_symbols(outdir):
+    folder = outputs.drawing("drawings/motor-plate", motor_plate())
+    path = outdir / "drawings" / "motor-plate" / "motor-plate.svg"
+    assert folder == str(path.parent) and path.exists()
+    t = svg_texts(path)
+    assert "4× ⌀6.6 THRU" in t and "⌀11" in t  # "⌴" and "↧" are strokes: Helvetica has no such glyphs
+    assert not any("⌴" in s or "↧" in s for s in t)
