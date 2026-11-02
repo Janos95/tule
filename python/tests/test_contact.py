@@ -93,3 +93,10 @@ def test_errors_say_what_to_change():
         touch(plate, lambda z: peg.at(5, 5, z), 10, 20)
     assert e.value.data["gap"] == pytest.approx(18, abs=0.05)
     assert touch(plate, lambda z: peg.at(5, 5, z), 10, -5).t == pytest.approx(2, abs=1e-3)
+
+
+def test_cycloidal_clearance_gives_play():
+    d = cycloidal_drive(12, 60, 6, 1.5, 6, clearance=0.15)
+    disc = d.place(d.disc, 0)
+    gap = disc.distance(d.pins)
+    assert 0.1 < gap <= 0.15 + 1e-3

@@ -670,7 +670,7 @@ def _hole_wire(radius, x=0.0, y=0.0):
 
 
 def cycloidal_disc(pins: int, pin_circle_d: float, pin_d: float, eccentricity: float, width: float | None = None, *,
-                   bore: float | None = None, holes: tuple | None = None):
+                   bore: float | None = None, holes: tuple | None = None, clearance: float = 0.0):
     """The disc of a cycloidal drive: ``pins - 1`` lobes rolling inside ``pins`` pins, from z = 0 up to ``width``.
 
     ``pins`` pins of diameter ``pin_d`` stand on a circle of diameter
@@ -684,10 +684,12 @@ def cycloidal_disc(pins: int, pin_circle_d: float, pin_d: float, eccentricity: f
     Without ``width`` it is a Profile. Faces: ``lobes``, ``top``, ``bottom``,
     ``bore``, ``holes``. Raises when the eccentricity undercuts the lobes
     (``e.data["max_eccentricity"]``); ``cycloidal_drive`` builds the pins and
-    places the disc.
+    places the disc. ``clearance``: the lobes stand that far off every pin (printed: 0.1 to 0.2).
     """
     op = "cycloidal_disc"
-    c = _Cycloid(pins, pin_circle_d, pin_d, eccentricity, op)
+    if clearance < 0:
+        raise TuleError(f"clearance is 0 or more, got {clearance}", op=op)
+    c = _Cycloid(pins, pin_circle_d, pin_d + 2 * clearance, eccentricity, op)
     curve = c.lobe(_TOL * pin_circle_d / pins)
     lobes = c.n - 1
     pitch = 2 * math.pi / lobes
@@ -767,14 +769,15 @@ class CycloidalDrive:
 
 
 def cycloidal_drive(pins: int, pin_circle_d: float, pin_d: float, eccentricity: float, width: float, *,
-                    bore: float | None = None, holes: tuple | None = None) -> CycloidalDrive:
+                    bore: float | None = None, holes: tuple | None = None, clearance: float = 0.0) -> CycloidalDrive:
     """A cycloidal disc and its ``pins`` pins (from z = 0 up to ``width``, the first on +x).
 
-    Arguments as for ``cycloidal_disc``. ``drive.place(drive.disc, angle)``
+    Arguments as for ``cycloidal_disc`` (``clearance=0.15``: play, so ``touch`` can drive it).
+    ``drive.place(drive.disc, angle)``
     is the disc with the crank at ``angle`` degrees; ``drive.ratio`` is
     pins - 1.
     """
-    disc = cycloidal_disc(pins, pin_circle_d, pin_d, eccentricity, width, bore=bore, holes=holes)
+    disc = cycloidal_disc(pins, pin_circle_d, pin_d, eccentricity, width, bore=bore, holes=holes, clearance=clearance)
     c = _Cycloid(pins, pin_circle_d, pin_d, eccentricity, "cycloidal_drive")
     comp = TopoDS_Compound()
     b = BRep_Builder()

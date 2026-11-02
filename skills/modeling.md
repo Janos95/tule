@@ -32,7 +32,7 @@ outputs.part("bracket", part)
 - Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching), `a.closest(b)`: `(gap, pa, pb)`.
 - Clearance: `r = clearance(frames, contacts=[("pin", "link")])` on an assembly or motion (Assemblies, `outputs.sequence`): each overlap or gap under `below=0.5` mm at its worst frame. `print(r)`, `r.show(name)`, `assert r.ok`.
 - Contact: `touch(cam.rotate(z=a), lambda y: follower.at(0, y, 0), 40, 0)`: first `t` from 40 to 0 where it touches (`.t`, `.shape`). Drive the input, followers by contact: lift and ratio are measured.
-- Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference; `pair.place(gear2, turn=)` meshes gear 2. Bevel: `pair = bevel_pair(module, z1, z2, width, shaft_angle=90)` meshes `pair.gear1`, `pair.gear2`; `pair.place(bevel_gear(..., mating_teeth=z1), turn=)`. Cycloidal: `d = cycloidal_drive(pins, pin_circle_d, pin_d, eccentricity, width)` has `d.disc`, `d.pins`, `d.place(d.disc, crank_angle)`.
+- Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference; `pair.place(gear2, turn=)` meshes gear 2. Bevel: `pair = bevel_pair(module, z1, z2, width, shaft_angle=90)` meshes `pair.gear1`, `pair.gear2`; `pair.place(bevel_gear(..., mating_teeth=z1), turn=)`. Cycloidal: `d = cycloidal_drive(pins, pin_circle_d, pin_d, e, width, clearance=0.15)` has `d.disc`, `d.pins`, `d.place(d.disc, crank_deg)`.
 - Sheet metal (flanges, flats): `tule docs sheetmetal`.
 - Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
