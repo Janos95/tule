@@ -13,7 +13,7 @@ Typical session: find or create the project with the connector (or `tule up -p <
 
 ## On the machine
 
-- Work on the machine, not on your own computer: files written locally are not in the project and the user never sees them. Write a file with `tule ssh -p <name> -- 'cat > src/bracket.py' <<'EOF'` … `EOF`, or edit it on the machine.
+- Work on the machine, not on your own computer: files written locally are not in the project and the user never sees them. Write a file with `tule ssh -p <name> -- 'cat > src/bracket.py' <<'EOF'` … `EOF`, or edit it on the machine. Give the user viewer links (`tule open -p <name> --print`; `?o=<output>` opens one output) for results, never paths on your computer.
 - `/workspace` is the project and the only thing that persists (a git repository; `tule save` saves it). Everything else is rebuilt from the image at every boot.
 - `src/<name>.py` makes `outputs/<name>/`; `tule build` runs the scripts whose inputs changed (nothing runs by itself). The viewer shows outputs as soon as they appear.
 - Look at your own work: `tule screenshot -o /tmp/view.png --labels`, then read the PNG (to view it on your own computer: `tule ssh -p <name> -- tule screenshot --labels -o - > /tmp/view.png`). `tule inspect <file>` lists faces with ids, types, areas and tags.
@@ -133,7 +133,7 @@ outputs.part("bracket", part)
 ## Building blocks
 
 - Solids: `box(x, y, z, center=)`, `cube`, `cylinder(r, h, center=)`, `cone(r, h, r2)`, `sphere(r)`, `torus(R, r)`, `wedge`, `polyhedron(points, faces)`.
-- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner). Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
+- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (a third value rounds that corner). `text("MK4", size, bold=, align=)` for lettering (extrude it, or cut it to engrave). Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
 - Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x is the radius, y becomes z), `loft([p1, p2], heights=[0, 30])`.
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)` for many.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.

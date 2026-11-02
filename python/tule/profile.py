@@ -315,3 +315,45 @@ def slot(length: float, width: float) -> Profile:
     r = width / 2
     body = rect(length - width, width, center=True)
     return body | circle(r, (-(length / 2 - r), 0)) | circle(r, ((length / 2 - r), 0))
+
+
+# fonts-dejavu-core on Tule machines; elsewhere a font file's path, or a name the system knows
+FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+FONTS = {"sans": "DejaVuSans", "serif": "DejaVuSerif", "mono": "DejaVuSansMono"}
+
+
+def text(s: str, size: float = 10, font: str = "sans", bold: bool = False, align: str = "left") -> Profile:
+    """Text as a profile, on the x axis from the origin (``align`` left, center or right of it).
+
+    ``size`` is the font size in mm (capitals are about 0.73 × size tall). ``font``: sans,
+    serif, mono, or a .ttf/.otf path. Extrude it for raised lettering, or cut it for engraving::
+
+        plate = box(80, 20, 3) + text("MK4 TOOLS", 8, bold=True).at(4, 6).extrude(1).at(0, 0, 3)
+    """
+    import os
+
+    from OCP.Font import Font_FontAspect
+    from OCP.Graphic3d import Graphic3d_HTA_CENTER, Graphic3d_HTA_LEFT, Graphic3d_HTA_RIGHT, Graphic3d_VTA_BOTTOM
+    from OCP.gp import gp_Ax3
+    from OCP.NCollection import NCollection_String
+    from OCP.StdPrs import StdPrs_BRepFont, StdPrs_BRepTextBuilder
+
+    halign = {"left": Graphic3d_HTA_LEFT, "center": Graphic3d_HTA_CENTER, "right": Graphic3d_HTA_RIGHT}.get(align)
+    if halign is None:
+        raise TuleError(f"align is left, center or right, not {align!r}", op="text")
+    if not s.strip():
+        raise TuleError("text needs some characters", op="text")
+    if font not in FONTS and not os.path.isfile(font):
+        raise TuleError(f"no font {font!r}", op="text", hint="use sans, serif, mono, or the path of a .ttf/.otf file")
+    f = StdPrs_BRepFont()
+    name = FONTS.get(font, font)
+    path = font if os.path.isfile(font) else os.path.join(FONT_DIR, name + ("-Bold" if bold else "") + ".ttf")
+    ok = f.Init(NCollection_String(path), float(size), 0) if os.path.isfile(path) else \
+        f.Init(NCollection_String(name), Font_FontAspect.Font_FA_Bold if bold else Font_FontAspect.Font_FA_Regular, float(size))
+    if not ok:
+        raise TuleError(f"no font {font!r}", op="text", hint="use sans, serif, mono, or the path of a .ttf/.otf file")
+    shape = StdPrs_BRepTextBuilder().Perform(f, NCollection_String(s), gp_Ax3(), halign, Graphic3d_VTA_BOTTOM)
+    if shape.IsNull():
+        raise TuleError(f"could not make text {s!r}", op="text")
+    return Profile(shape)
+

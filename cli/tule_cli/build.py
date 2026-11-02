@@ -254,7 +254,9 @@ class Build:
                 return
             self.running.append(name)
             try:
-                while needs := self.run(name, why):
+                after = []  # the outputs it stopped for: run it again once they are built
+                while needs := self.run(name, why, after):
+                    after = needs
                     for n in needs:
                         if n in self.running:
                             loop = " → ".join(self.running[self.running.index(n):] + [n])
@@ -268,7 +270,7 @@ class Build:
         finally:
             self.stack.pop()
 
-    def run(self, name: str, why: str) -> list[str]:
+    def run(self, name: str, why: str, after: list[str] = ()) -> list[str]:
         """Runs src/<name>.py once; returns the outputs it needs first (empty when it finished)."""
         outputs = os.path.join(self.root, "outputs")
         state = os.path.join(outputs, STATE)
@@ -277,7 +279,7 @@ class Build:
         os.makedirs(stage)
         result = os.path.join(state, f"result-{name}-{os.getpid()}.json")
         pending = [t for t in self.all if self.done.get(t) not in ("built", "fetched", "up to date", "skipped")]
-        log(f"{name}: building ({why})")
+        log(f"{name}: building again, now that {', '.join(f'outputs/{n}' for n in after)} is built" if after else f"{name}: building ({why})")
         t0 = time.time()
         env = dict(os.environ, TULE_OUTPUTS=stage, TULE_BUILD_TARGET=name, TULE_BUILD_ROOT=self.root,
                    TULE_BUILD_RESULT=result, TULE_BUILD_PENDING=json.dumps(pending), PYTHONDONTWRITEBYTECODE="1")

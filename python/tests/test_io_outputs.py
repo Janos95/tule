@@ -117,12 +117,12 @@ def test_overlay(outdir):
                            part.faces["mount"]: {"role": "fixed"}},
                     arrows=[{"at": (0, 5, 18), "dir": (0, 0, -1), "label": "500 N"}])
     meta = json.load(open(outdir / "loads" / "output.json"))
-    assert meta["kind"] == "overlay" and meta["file"] == "bracket.step" and meta["title"] == "Load case 1"
+    assert meta["kind"] == "overlay" and meta["file"] == "loads.step" and meta["title"] == "Load case 1"
     assert meta["faces"][str(load)] == {"role": "load", "label": "500 N"}
     assert meta["faces"]["1"] == {"label": "fillet"}
     assert meta["faces"][str(part.faces["mount"].ids[0])] == {"role": "fixed"}
     assert meta["arrows"] == [{"at": [0.0, 5.0, 18.0], "dir": [0.0, 0.0, -1.0], "label": "500 N"}]
-    assert import_step(str(outdir / "loads" / "bracket.step")).tags == ["load", "mount"]
+    assert import_step(str(outdir / "loads" / "loads.step")).tags == ["load", "mount"]
     with pytest.raises(TuleError, match="99 is not a face"):
         outputs.overlay("bad", part, faces={99: "x"})
 

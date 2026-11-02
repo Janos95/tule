@@ -647,7 +647,8 @@ async function show() {
     $("strip").hidden = $("legend").hidden;
     state.meshes = all;
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
-    offerDownload(kind === "assembly" ? o.files : shownFiles);
+    // a part's or assembly's folder may hold more than the model (an STL to print, a 3MF): offer them all, the shown ones first
+    offerDownload(kind === "sequence" ? shownFiles : [...shownFiles, ...o.files.filter((f) => !shownFiles.includes(f) && f.file !== "output.json")]);
     const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles${grid}`;

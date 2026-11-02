@@ -401,15 +401,17 @@ def inspect_file(path: str) -> list[dict]:
 
 
 def cmd_inspect(args):
-    path = args.file
-    if os.path.isdir(path):
-        files = [os.path.join(path, f) for f in sorted(os.listdir(path)) if f.lower().endswith(GEOMETRY)]
-        if not files:
-            raise CliError(f"{path}: no STEP or STL files")
-    elif os.path.exists(path):
-        files = [path]
-    else:
-        raise CliError(f"{path}: no such file")
+    files = []
+    for path in args.file:
+        if os.path.isdir(path):
+            found = [os.path.join(path, f) for f in sorted(os.listdir(path)) if f.lower().endswith(GEOMETRY)]
+            if not found:
+                raise CliError(f"{path}: no STEP or STL files")
+            files += found
+        elif os.path.exists(path):
+            files.append(path)
+        else:
+            raise CliError(f"{path}: no such file")
     result = {f: inspect_file(f) for f in files}
     if args.json:
         print(json.dumps(result, indent=1, default=float))
@@ -516,7 +518,7 @@ def add_commands(add):
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
     sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)
-    sp.add_argument("file", help="a STEP/STL file or an output folder")
+    sp.add_argument("file", nargs="+", help="STEP/STL files or output folders")
     sp.add_argument("--json", action="store_true", help="print JSON instead of text")
     sp = add("docs", cmd_docs, "the agent instructions: tule docs lists topics, tule docs <topic> prints one", project=False)
     sp.add_argument("topic", nargs="?")

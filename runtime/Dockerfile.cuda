@@ -9,11 +9,12 @@ FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq \
+ && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq fonts-dejavu-core \
  && dpkg-query -W -f '${Package}\n' | grep -E '^(mesa-libgallium|libgallium.*|libgl1-mesa-dri|libglx-mesa0|libllvm[0-9]+|libz3-4)$' \
-    | xargs -r dpkg --remove --force-depends \
+    | while read -r p; do dpkg -L $p | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
-# (OCP only needs libGL.so.1 to load; the Mesa drivers are for rendering)
+# (OCP only needs libGL.so.1 to load; the Mesa drivers are for rendering. Their files go but the packages
+# stay installed, so apt keeps working)
 
 # Python 3.13: a relocatable standalone build (via uv) in /usr/local, as in the CPU image,
 # so python, pip and console scripts are on every SSH session's PATH

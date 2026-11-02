@@ -175,7 +175,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
         _write_json(folder, meta)
         return folder
     fmt = fmt or "step"
-    fname = f"{_slug(shape.name or name)}.{fmt}"
+    fname = f"{_slug(name)}.{fmt}"  # named after the output, so its path stays put when the label changes
     _write_geometry(os.path.join(folder, fname), shape)
     meta = {"kind": "part", "file": fname}
     if title:
@@ -335,7 +335,7 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
         scale = {k: (float(v) if k in ("min", "max") else str(v)) for k, v in scale.items() if v is not None}
     entries = _face_entries(part, faces)
     folder = _folder(name)
-    fname = f"{_slug(part.name or name)}.step"
+    fname = f"{_slug(name)}.step"
     _write_geometry(os.path.join(folder, fname), part)
     meta: dict[str, Any] = {"kind": "overlay", "file": fname}
     if title:

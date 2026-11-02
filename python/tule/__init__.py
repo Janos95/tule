@@ -17,7 +17,7 @@ from .errors import TuleError
 from .geom import ORIGIN, Vec, X, Y, Z
 from .io import Mesh, export_gltf, export_step, export_stl, import_step, tessellate
 from .primitives import box, cone, cube, cylinder, polyhedron, sphere, torus, wedge
-from .profile import Profile, circle, ellipse, polygon, rect, regular_polygon, slot
+from .profile import Profile, circle, ellipse, polygon, rect, regular_polygon, slot, text
 from .selection import Edges, Faces, Selection, Vertices
 from .shape import Shape, difference, intersection, union
 from .sweeps import extrude, loft, revolve
@@ -28,6 +28,6 @@ __all__ = [
     "Assembly", "Edges", "Faces", "Mesh", "ORIGIN", "Profile", "Selection", "Shape", "TuleError",
     "Vec", "Vertices", "X", "Y", "Z", "box", "circle", "cone", "cube", "cylinder", "difference",
     "ellipse", "export_gltf", "export_step", "export_stl", "extrude", "import_step", "intersection",
-    "loft", "outputs", "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "slot",
+    "loft", "outputs", "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "slot", "text",
     "sphere", "tessellate", "topopt", "torus", "union", "wedge",
 ]
