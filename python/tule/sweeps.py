@@ -151,3 +151,124 @@ def _loft(profiles: Sequence[Profile], heights: Sequence[float], ruled: bool = T
 def loft(profiles: Sequence[Profile], heights: Sequence[float], ruled: bool = True) -> Shape:
     """Join profiles placed at z = ``heights[i]`` with ruled (or smooth) sides and flat caps."""
     return _loft(profiles, heights, ruled)
+
+
+def _path(path, smooth: bool):
+    """A wire from a Shape (an edge or wire) or 3D points: a smooth spline through them, else a polyline."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakePolygon, BRepBuilderAPI_MakeWire
+    from OCP.TopoDS import TopoDS
+
+    if isinstance(path, Shape):
+        k = kind_of(path.wrapped)
+        if k == "wire":
+            return cast(path.wrapped)
+        edges = [path.wrapped] if k == "edge" else list(subshapes(path.wrapped, "edge"))
+        mk = BRepBuilderAPI_MakeWire()
+        for e in edges:
+            mk.Add(static(TopoDS, "Edge")(e))
+        if not mk.IsDone():
+            raise TuleError("the path's edges do not join into one line", op="sweep")
+        return mk.Wire()
+    pts = [tuple(float(c) for c in p) for p in path]
+    if len(pts) < 2 or any(len(p) != 3 for p in pts):
+        raise TuleError("a path is two or more (x, y, z) points, or an edge or wire", op="sweep")
+    pts = [p for i, p in enumerate(pts) if i == 0 or math.dist(p, pts[i - 1]) > 1e-9]
+    if smooth and len(pts) > 2:
+        from OCP.GeomAPI import GeomAPI_Interpolate
+
+        try:
+            from OCP.collections import HArray1_gp_Pnt  # OCP 8
+        except ImportError:  # pragma: no cover
+            from OCP.TColgp import TColgp_HArray1OfPnt as HArray1_gp_Pnt
+
+        arr = HArray1_gp_Pnt(1, len(pts))  # kept in a variable: the interpolation holds a handle to it
+        for i, p in enumerate(pts):
+            arr.SetValue(i + 1, gp_Pnt(*p))
+        it = GeomAPI_Interpolate(arr, False, 1e-7)
+        it.Perform()
+        if not it.IsDone():
+            raise TuleError("could not fit a smooth path through the points", op="sweep", hint="points too close together or doubling back")
+        curve = it.Curve()
+        return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(curve).Edge()).Wire()
+    poly = BRepBuilderAPI_MakePolygon()
+    for p in pts:
+        poly.Add(gp_Pnt(*p))
+    return poly.Wire()
+
+
+def _sweep_wire(wire, path_wire, start, tangent, roles_out=None):
+    """One closed profile wire (in the xy plane) swept along the path: a solid."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_TransitionMode
+    from OCP.gp import gp_Ax3
+
+    t = gp_Trsf()
+    z = gp_Dir(*tangent)
+    x = gp_Dir(1, 0, 0) if abs(tangent[0]) < 0.9 else gp_Dir(0, 1, 0)
+    x = gp_Dir(gp_Vec(z).Crossed(gp_Vec(x)).Crossed(gp_Vec(z)).Reversed())
+    t.SetTransformation(gp_Ax3(gp_Pnt(*start), z, x), gp_Ax3())
+    placed = cast(BRepBuilderAPI_Transform(wire, t, True).Shape())
+    mk = BRepOffsetAPI_MakePipeShell(path_wire)
+    mk.SetMode(False)  # corrected Frenet: the profile does not twist about the path
+    mk.SetTransitionMode(BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RoundCorner)
+    mk.Add(placed, False, False)
+    try:
+        mk.Build()
+        ok = mk.IsDone() and mk.MakeSolid()
+    except Standard_Failure:
+        ok = False
+    if not ok:
+        raise TuleError("could not sweep the profile along the path", op="sweep",
+                        hint="a bend tighter than the profile's size folds it onto itself: smooth the path or make the profile smaller")
+    if roles_out is not None:
+        roles_out["start"] = _faces_of(mk.FirstShape())
+        roles_out["end"] = _faces_of(mk.LastShape())
+    return mk.Shape()
+
+
+def sweep(profile: Profile, path, smooth: bool = True) -> Shape:
+    """Sweep ``profile`` along a 3D ``path``: points ``[(x, y, z), ...]`` (a smooth spline through them,
+    or a polyline with rounded corners with ``smooth=False``) or an edge or wire.
+
+    The profile's xy plane is set square to the path at its start, its origin on the path, and is
+    carried along without twisting. Faces: ``start``, ``end``, ``side``. A tube: a profile with a hole.
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_CompCurve
+
+    pw = _path(path, smooth)
+    c = BRepAdaptor_CompCurve(pw)
+    p0, v0 = gp_Pnt(), gp_Vec()
+    c.D1(c.FirstParameter(), p0, v0)
+    if v0.Magnitude() < 1e-12:
+        raise TuleError("the path has no direction at its start", op="sweep")
+    v0.Normalize()
+    start, tangent = (p0.X(), p0.Y(), p0.Z()), (v0.X(), v0.Y(), v0.Z())
+    faces = profile.faces
+    if not faces:
+        raise TuleError("the profile is empty", op="sweep")
+    roles: dict = {}
+    out = None
+    for face in faces:
+        wires = list(subshapes(face, "wire"))
+        outer = static(BRepTools, "OuterWire")(face)
+        solid = Shape(_sweep_wire(outer, pw, start, tangent, roles))
+        for w in wires:
+            if not w.IsSame(outer):
+                solid = solid - Shape(_sweep_wire(w, pw, start, tangent))
+        out = solid if out is None else out | solid
+    if len(faces) == 1 and len(list(subshapes(faces[0], "wire"))) == 1:
+        side = [f for f in out._sub("face") if not any(f.IsSame(c) for c in roles["start"] + roles["end"])]
+        return out._with_roles({"start": roles["start"], "end": roles["end"], "side": side})
+    return out
+
+
+def pipe(points, r: float, wall: float | None = None, smooth: bool = True) -> Shape:
+    """A round rod of radius ``r`` along 3D points (a tendon, a cable, a wire); with ``wall`` a tube."""
+    from .profile import circle
+
+    p = circle(r)
+    if wall is not None:
+        if not 0 < wall < r:
+            raise TuleError("a tube's wall must be between 0 and r", op="pipe")
+        p = p - circle(r - wall)
+    return sweep(p, points, smooth)

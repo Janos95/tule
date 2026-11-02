@@ -215,3 +215,18 @@ def test_step_keeps_tags_on_left_handed_faces(tmp_path):
     assert back.tags == ["load"] and back.faces["load"].info()[0]["center"][2] == pytest.approx(18)
     flat = lambda s: [v for f in s.faces.info() for v in f["center"]]  # the same faces, in the same order
     assert flat(back) == pytest.approx(flat(part), abs=1e-6)
+
+
+def test_sequence_warns_when_frames_rebuild_their_parts(outdir, monkeypatch, capsys):
+    monkeypatch.setattr(outputs.Sequence, "WARN_TOTAL", 20_000)
+    with outputs.sequence("moved") as seq:  # made once, moved: no warning
+        base, arm = box(10).named("base"), box(2, 2, 20).named("arm")
+        for a in range(6):
+            seq.add([base, arm.rotate(y=a)])
+    assert "MB after" not in capsys.readouterr().err
+    with outputs.sequence("rebuilt") as seq:
+        for a in range(6):
+            seq.add([(cylinder(5, 20) - box(2).at(a, 0, 0)).named("arm")])
+    err = capsys.readouterr().err
+    assert err.count("sequence 'rebuilt'") == 1 and "make each part once and move it" in err
+    assert "new" not in json.load(open(outdir / "rebuilt" / "output.json"))["frames"][0]["parts"][0]

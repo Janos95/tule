@@ -82,6 +82,7 @@ import atexit
 import io
 import json
 import os
+import sys
 import time
 from pathlib import Path
 import re
@@ -289,6 +290,8 @@ class Sequence:
     ``info``: facts shown under the view, as for a part.
     """
 
+    WARN_TOTAL = 50 << 20  # new geometry per sequence before the warning (and 1/50 of it per frame)
+
     def __init__(self, name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None):
         self.name = name
         self.title = title
@@ -299,6 +302,8 @@ class Sequence:
         self.folder = _folder(name)
         self.frames: list[dict] = []
         self._parts: list[tuple] = []  # (geometry, name, color, file): each part's file, written once
+        self._bytes = 0  # written so far, for the warning when frames carry their geometry each time
+        self._warned = False
         self.status = "running"
         self._flush()
 
@@ -330,9 +335,33 @@ class Sequence:
             frame["values"] = {k: float(v) for k, v in values.items()}
         self.frames.append(frame)
         self._added = time.monotonic()
+        self._check_size(fname, placed if fname is None else None)
         if len(self.frames) == 1 or time.monotonic() - self._written >= 1.0:  # not a rewrite per frame
             self._flush()
         return fname or ""
+
+    def _check_size(self, fname, placed):
+        """Warns once when the frames carry their geometry every time (a motion study that rebuilds its
+        parts per pose): hundreds of MB that the viewer and autosaves must carry."""
+        new = [fname] if fname else [e["file"] for e in placed or () if e.get("new")]
+        for e in placed or ():
+            e.pop("new", None)
+        for f in new:
+            try:
+                self._bytes += os.path.getsize(os.path.join(self.folder, f))
+            except OSError:
+                pass
+        n = len(self.frames)
+        if n == 1:
+            self._first = self._bytes  # the first frame writes every part: what comes after is the question
+        later = self._bytes - getattr(self, "_first", 0)
+        if self._warned or n < 3 or later < self.WARN_TOTAL or later / (n - 1) < self.WARN_TOTAL / 50:
+            return
+        self._warned = True
+        how = ("make each part once and move it per frame (part.rotate(...).at(...)): a moved part costs only its placement"
+               if fname is None else "add a list of parts (or an Assembly) per frame, each made once and moved, not one merged shape")
+        print(f"tule: sequence {self.name!r}: {self._bytes >> 20} MB after {n} frames, about {later / (n - 1) / 2**20:.1f} MB "
+              f"of new geometry per frame; {how}", file=sys.stderr, flush=True)
 
     def _place(self, name: str, part: Shape) -> dict:
         """A frame's entry for one part: its file (written the first time this solid appears) and placement."""
@@ -348,7 +377,9 @@ class Sequence:
                 fname, k = f"{stem}_{k}.step", k + 1
             _write_geometry(os.path.join(self.folder, fname), Shape(base, name=name, color=part.color))
             self._parts.append((base, name, part.color, fname))
-        entry: dict[str, Any] = {"file": fname, "name": name}
+            entry: dict[str, Any] = {"file": fname, "name": name, "new": True}
+        else:
+            entry = {"file": fname, "name": name}
         if part.color:
             entry["color"] = part.color
         if not loc.IsIdentity():

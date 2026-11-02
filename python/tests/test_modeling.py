@@ -298,3 +298,20 @@ def test_distance_and_clashes():
     assert [(x, y) for x, y, _ in asm.clashes(ignore=[("pin", "a")])] == [("b", "c"), ("a", "b")]
     gaps = Assembly(box(10).named("a"), box(10).at(10.3, 0, 0).named("b"), box(10).at(0, 30, 0).named("c")).gaps(below=0.5)
     assert [(x, y) for x, y, _ in gaps] == [("a", "b")] and gaps[0][2] == pytest.approx(0.3)
+
+
+def test_sweep_and_pipe_along_a_3d_path():
+    import math
+
+    straight = pipe([(0, 0, 0), (10, 0, 0)], 1)
+    assert straight.volume == pytest.approx(math.pi * 10, rel=1e-6)
+    pts = [(0, 0, 0), (0, 0, 20), (5, 10, 40), (20, 10, 50), (30, 0, 55)]
+    tendon = pipe(pts, 1.0)
+    assert tendon.is_valid and tendon.faces["start"].info()[0]["center"] == pytest.approx((0, 0, 0), abs=1e-6)
+    assert tendon.faces["end"].info()[0]["center"] == pytest.approx((30, 0, 55), abs=1e-6)
+    tube = pipe(pts, 2, wall=0.5)
+    assert tube.is_valid and tube.volume == pytest.approx(tendon.volume * (4 - 2.25), rel=0.02)
+    bar = sweep(rect(4, 2, center=True), [(0, 0, 0), (0, 0, 10), (10, 0, 20)], smooth=False)  # rounded corner
+    assert bar.is_valid and bar.volume == pytest.approx(8 * (10 + 200 ** 0.5), rel=0.01)
+    with pytest.raises(TuleError, match="two or more"):
+        pipe([(0, 0, 0)], 1)
