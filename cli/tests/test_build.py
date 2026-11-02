@@ -98,6 +98,19 @@ def test_a_failure_keeps_the_end_of_its_output(project):
     assert "ValueError: boom" in rec["failed"]["log"]
 
 
+def test_undoing_a_breaking_change_clears_the_failure(project):
+    build(project)
+    (project / "src" / "plate.py").write_text("raise ValueError('boom')\n")
+    build(project, "plate")
+    (project / "src" / "plate.py").write_text(PLATE)
+    check = subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=project,
+                           capture_output=True, text=True).stdout
+    assert check.strip() == "everything is up to date"
+    build(project, "plate")
+    rec = json.loads((project / "outputs" / ".build" / "plate.json").read_text())
+    assert "failed" not in rec
+
+
 def test_an_output_that_reads_a_stale_one_is_stale_too(project):
     from tule_cli import build as b
 

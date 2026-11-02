@@ -215,6 +215,9 @@ class Build:
             why = "forced" if self.force else why_stale(self.root, name, self.hashes, self.env)
             if why is None:
                 self.done[name] = "up to date"
+                rec = read_record(self.root, name)
+                if rec and rec.pop("failed", None):  # back to what last built: the failure is moot
+                    write_record(self.root, name, rec)
                 return
             asked: set[str] = set()
             while True:
@@ -369,7 +372,7 @@ def status(root: str, hashes: Hashes | None = None) -> list[dict]:
         w = upstream(n)
         row = {"name": n, "state": "up to date" if w is None else "stale", **({"why": w} if w else {})}
         rec = recs[n]
-        if rec.get("failed") and (rec.get("built") or 0) < rec["failed"]["at"]:
+        if w and rec.get("failed") and (rec.get("built") or 0) < rec["failed"]["at"]:
             row["failed"] = rec["failed"]["error"]
             if rec["failed"].get("log"):
                 row["log"] = rec["failed"]["log"]
