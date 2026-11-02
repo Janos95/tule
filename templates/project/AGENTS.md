@@ -26,7 +26,7 @@ Typical session: find or create the project with the connector (or `tule up -p <
 
 ## Topics
 
-Read one with `tule docs <topic>` (on the machine) or the connector's `guide(topic)`.
+Read one with `tule docs <topic>` (on the machine) or the connector's `guide(topic)`. `tule docs Shape`, `tule docs outputs.sequence` print the library's signatures and docstrings: read those, not the source.
 
 | topic | read it when |
 |---|---|

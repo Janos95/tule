@@ -55,6 +55,20 @@ def test_tule_docs(capsys, monkeypatch):
         main(["docs", "nope"])
 
 
+def test_tule_docs_prints_the_library_reference(capsys, monkeypatch):
+    monkeypatch.setenv("TULE_SKILLS", SKILLS)
+    main(["docs", "Shape.fillet"])
+    out = capsys.readouterr().out
+    assert out.startswith("Shape.fillet(edges: Selection, radius: float) -> Shape") and "Round" in out
+    main(["docs", "Assembly"])
+    out = capsys.readouterr().out
+    assert out.startswith("class Assembly(") and "  gaps(below: float = 1.0" in out
+    main(["docs", "tule.outputs"])  # "outputs" alone is the topic
+    assert "  sequence(name: str" in capsys.readouterr().out
+    main(["docs", "tule.fea"])
+    assert "  static(" in capsys.readouterr().out
+
+
 def test_agents_md_is_generated_from_skills():
     build = runpy.run_path(os.path.join(ROOT, "tools", "build_agents_md.py"))["build"]
     with open(os.path.join(ROOT, "templates", "project", "AGENTS.md")) as f:

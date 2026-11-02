@@ -673,6 +673,78 @@ def summary(path: str) -> str:
     return ""
 
 
+def _sig(name: str, obj) -> str:
+    import inspect
+
+    class Ann(str):  # string annotations (from __future__ import annotations) shown as written
+        def __repr__(self):
+            return self.strip("'\"")
+
+    if isinstance(obj, property) or not callable(obj):
+        return name
+    try:
+        sig = inspect.signature(obj)
+    except (TypeError, ValueError):
+        return name
+    ann = lambda a: Ann(a) if isinstance(a, str) else a  # noqa: E731
+    params = [p.replace(annotation=ann(p.annotation)) for p in sig.parameters.values() if p.name != "self"]
+    return name + str(sig.replace(parameters=params, return_annotation=ann(sig.return_annotation)))
+
+
+def _first(obj) -> str:
+    import inspect
+
+    doc = inspect.getdoc(obj.fget if isinstance(obj, property) else obj) or ""
+    return doc.split("\n\n")[0].replace("\n", " ")
+
+
+def reference(name: str) -> str | None:
+    """Signatures and docs of a library name (``Shape``, ``Shape.fillet``, ``outputs``,
+    ``fea.solve``): a function in full, a class or module as a list of its public members."""
+    import importlib
+    import inspect
+
+    try:
+        tule = importlib.import_module("tule")
+    except ImportError:
+        return None
+    path = name.removeprefix("tule.").split(".")
+    try:
+        obj = importlib.import_module("tule." + path[0])
+    except ImportError:
+        obj = getattr(tule, path[0], None)
+    for part in path[1:]:
+        if obj is None:
+            break
+        obj = inspect.getattr_static(obj, part, None) if inspect.isclass(obj) else getattr(obj, part, None)
+    if obj is None or obj is tule or path[0].startswith("_"):
+        return None
+    if isinstance(obj, (staticmethod, classmethod)):
+        obj = obj.__func__
+    title = _sig(name, obj)
+    if not (inspect.isclass(obj) or inspect.ismodule(obj)):
+        doc = inspect.getdoc(obj.fget if isinstance(obj, property) else obj) or ""
+        return f"{title}\n\n{doc}\n" if doc else f"{title}\n"
+    lines = [("class " if inspect.isclass(obj) else "") + title, "", inspect.getdoc(obj) or "", ""]
+    if inspect.ismodule(obj):
+        members = [(n, v) for n, v in vars(obj).items() if not n.startswith("_")
+                   and (inspect.isclass(v) or inspect.isfunction(v)) and getattr(v, "__module__", "") == obj.__name__]
+    else:
+        members = [(n, v) for n, v in vars(obj).items() if not n.startswith("_")
+                   and (callable(v) or isinstance(v, (property, staticmethod, classmethod)))]
+        for base in obj.__mro__[1:]:
+            if base.__module__.startswith("tule"):
+                members += [(n, v) for n, v in vars(base).items() if not n.startswith("_") and n not in dict(members)
+                            and (callable(v) or isinstance(v, (property, staticmethod, classmethod)))]
+    for n, v in members:
+        if isinstance(v, (staticmethod, classmethod)):
+            v = v.__func__
+        lines.append(f"  {_sig(n, v)}")
+        if _first(v):
+            lines.append(f"      {_first(v)}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def cmd_docs(args):
     d = skills_dir()
     names = topics(d)
@@ -680,9 +752,14 @@ def cmd_docs(args):
         print("tule docs <topic>:")
         for n in names:
             print(f"  {n:<13} {summary(os.path.join(d, n + '.md'))}")
+        print("or a library name for its signatures and docs: tule docs Shape, tule docs outputs.sequence, tule docs tule.fea")
         return
     if args.topic not in names:
-        raise CliError(f"no topic {args.topic!r}; topics: {', '.join(names)}")
+        ref = reference(args.topic)
+        if ref is None:
+            raise CliError(f"no topic {args.topic!r}; topics: {', '.join(names)}, or a library name (tule docs Shape.fillet)")
+        sys.stdout.write(ref)
+        return
     with open(os.path.join(d, args.topic + ".md")) as f:
         sys.stdout.write(f.read())
 
