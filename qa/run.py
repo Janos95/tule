@@ -46,9 +46,10 @@ PORT = int(os.environ.get("TULE_QA_PORT", "8788"))
 URL = f"http://127.0.0.1:{PORT}"
 MACHINE_URL = f"http://host.docker.internal:{PORT}"
 # Machines on another computer (start with TULE_QA_DOCKER=ssh://rechenknecht): its Docker runs them, and
-# `run.py tunnel rechenknecht` carries their connection to this control plane (docker0's address there).
+# `run.py tunnel rechenknecht` carries their connection to this control plane: there, docker0's PORT (what
+# host.docker.internal is) leads to its 127.0.0.1:REMOTE_PORT, the ssh -R end. So they use MACHINE_URL
+# as local ones do, the address the control plane gives out (git LFS uploads go there).
 REMOTE_PORT = PORT + 10000
-REMOTE_URL = f"http://172.17.0.1:{REMOTE_PORT}"
 IMAGE = os.environ.get("TULE_QA_IMAGE", "tule-runtime:dev")
 TURN_MINUTES = 40
 # the Codex CLI of the ChatGPT app is newer than Homebrew's and knows the newest models
@@ -149,8 +150,6 @@ def cores(name: str) -> str:
 
 def start_machine(g: Guest, project: str, name: str):
     env = g.api("POST", f"/api/projects/{project}/join", {})["env"]
-    if os.environ.get("DOCKER_HOST"):
-        env["TULE_URL"] = REMOTE_URL
     sh("docker", "rm", "-f", name, check=False)
     # each its own share, as a cloud machine has (cpu-4: 4 vCPUs, 12 GiB), not the whole Docker VM
     sh("docker", "run", "-d", "--name", name, "--add-host", "host.docker.internal:host-gateway", "--memory", "12g",
@@ -692,14 +691,14 @@ async def pipe(r, w):
         w.close()
 async def client(r, w):
     try:
-        r2, w2 = await asyncio.open_connection("127.0.0.1", PORT)
+        r2, w2 = await asyncio.open_connection("127.0.0.1", UP)
     except OSError:
         return w.close()
     await asyncio.gather(pipe(r, w2), pipe(r2, w), return_exceptions=True)
 async def main():
-    s = await asyncio.start_server(client, "172.17.0.1", PORT)
+    ss = [await asyncio.start_server(client, "172.17.0.1", p) for p in (PORT, UP)]  # UP too: machines from before
     print("forwarding", flush=True)
-    await s.serve_forever()
+    await asyncio.gather(*(s.serve_forever() for s in ss))
 asyncio.run(main())
 """
 
@@ -707,7 +706,7 @@ asyncio.run(main())
 def cmd_tunnel(a):
     """Runs until stopped: the control plane at <host>'s 127.0.0.1:REMOTE_PORT (ssh -R), and from there on
     docker0, where that computer's machines reach it."""
-    code = FORWARD.replace("PORT", str(REMOTE_PORT))
+    code = FORWARD.replace("UP", str(REMOTE_PORT)).replace("PORT", str(PORT))
     while True:
         subprocess.run(["ssh", "-o", "ServerAliveInterval=20", "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes",
                         "-R", f"127.0.0.1:{REMOTE_PORT}:127.0.0.1:{PORT}", a.host, "python3", "-u", "-c", shlex.quote(code)])
