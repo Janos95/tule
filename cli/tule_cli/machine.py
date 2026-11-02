@@ -12,6 +12,7 @@ Outputs live in $TULE_OUTPUTS, else $TULE_WORKSPACE/outputs, else
 from __future__ import annotations
 
 import json
+import io
 import os
 import re
 import socket
@@ -323,11 +324,18 @@ def cmd_screenshot(args):
     size = P.max(0) - P.min(0)
     caption += " · size " + " x ".join(_g(v) for v in size)
     img, rep = render(parts, args.view, args.size, args.labels, overlay, caption)
-    out = os.path.abspath(args.o)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    tmp = out + ".tmp.png"
-    img.save(tmp)
-    os.replace(tmp, out)
+    if args.o == "-":  # to stdout, e.g. to your own computer: tule ssh -p bracket -- tule screenshot -o - > view.png
+        out = "the PNG to stdout"
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        sys.stdout.buffer.write(buf.getvalue())
+        sys.stdout.flush()
+    else:
+        out = os.path.abspath(args.o)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        tmp = out + ".tmp.png"
+        img.save(tmp)
+        os.replace(tmp, out)
     lines = [f"tule: wrote {out} ({img.width}×{img.height}, view {args.view}): {target}"]
     if (args.labels or overlay is not None) and not any(p.faces for p in parts):
         lines.append("  no labels: a mesh (STL) has no B-rep faces; write STEP to get face ids")
@@ -337,7 +345,7 @@ def cmd_screenshot(args):
             lines.append(f"  visible but too small to label: {_ids(rep['small'])}")
     if rep["hidden"]:
         lines.append(f"  not visible from {args.view}: {_ids(rep['hidden'])} (try another --view)")
-    print("\n".join(lines))
+    print("\n".join(lines), file=sys.stderr if args.o == "-" else sys.stdout)
 
 
 def _ids(names: list[str]) -> str:
@@ -502,7 +510,7 @@ def add_commands(add):
     """Registers the machine commands with the CLI's `add(name, fn, help, project)`."""
     sp = add("screenshot", cmd_screenshot, "render an output or a STEP/STL file to PNG (the agent's eyes)", project=False)
     sp.add_argument("file", nargs="?", help="a STEP/STL file or an output folder (default: the newest output)")
-    sp.add_argument("-o", default="view.png", help="the PNG to write (default: view.png)")
+    sp.add_argument("-o", default="view.png", help="the PNG to write, or - for stdout (default: view.png)")
     sp.add_argument("--output", help="an output's name in the outputs folder")
     sp.add_argument("--view", default="iso", help="iso (default), front, back, left, right, top, bottom")
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")

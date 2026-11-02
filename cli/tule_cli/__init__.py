@@ -250,7 +250,7 @@ def cmd_ssh(args):
             s = up(p, live(s)[0]["size"] if live(s) else "cpu-1")
     ensure_access(p, s)
     argv = ["ssh", *ssh_options(p)]
-    if args.command and not sys.stdin.isatty():
+    if args.command and not (sys.stdin.isatty() and sys.stdout.isatty()):  # no terminal: bytes pass unchanged
         argv.append("-T")
     argv += [f"root@{HOST_PREFIX}{p}.{slot}", *args.command]
     if os.name == "nt":
