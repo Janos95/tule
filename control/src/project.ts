@@ -68,6 +68,7 @@ type Machine = {
   joinHash?: string;
   upAt?: number; // started
   helloAt?: number; // the agent connected after the last start
+  lostAt?: number; // the agent's connection closed and it has not come back
   agentStarted?: number; // the agent process started (its clock)
   readyAt?: number; // the agent restored /workspace
   restoreMs?: number;
@@ -286,9 +287,17 @@ export class Project extends DurableObject<Env> {
 
   machineState(m: Machine): "running" | "starting" | "stopped" {
     const agent = !!this.agent(m.id);
+    if (!agent && this.lost(m)) return "stopped";
     const ready = agent && !!m.readyAt && !!m.helloAt && m.readyAt >= m.helloAt;
     const up = m.kind === "cloud" ? !!this.ctx.container?.running : !!m.on;
     return ready ? "running" : agent || (m.on && up) ? "starting" : "stopped";
+  }
+
+  /** A machine (not Tule cloud, whose container we see) whose agent went away over 90 s ago:
+   * the computer, pod or container stopped or crashed, e.g. out of memory. */
+  lost(m: Machine): string | null {
+    if (m.kind === "cloud" || !m.on || !m.lostAt || Date.now() - m.lostAt < 90_000 || this.agent(m.id)) return null;
+    return `lost contact at ${new Date(m.lostAt).toISOString().slice(11, 16)} UTC: the machine stopped or crashed (out of memory?); start it again (tule up --machine ${m.id})`;
   }
 
   machineStatus(m: Machine): Result {
@@ -301,7 +310,7 @@ export class Project extends DurableObject<Env> {
       state: this.machineState(m),
       ...(m.pod ? { gpu: m.pod.gpu, pricePerHour: m.pod.cost, cloud: m.pod.cloud } : {}),
       ...(m.host ? { computer: m.host.name } : {}),
-      ...(m.hostError ? { lastError: m.hostError } : {}),
+      ...(m.hostError || this.lost(m) ? { lastError: m.hostError ?? this.lost(m) } : {}),
       sessions: this.sessions(m.id),
       unsaved,
       snapshot: m.snapshot ?? null,
@@ -826,6 +835,7 @@ export class Project extends DurableObject<Env> {
       case "hello": {
         if (!me) return;
         me.helloAt = Date.now();
+        me.lostAt = undefined;
         me.agentStarted = typeof m.started === "number" ? m.started : undefined;
         me.lastActive = Date.now();
         await this.save();
@@ -941,6 +951,11 @@ export class Project extends DurableObject<Env> {
     } else if (tags.includes("agent")) {
       const slot = (ws.deserializeAttachment() as { m: string }).m;
       if (!this.agent(slot)) {
+        const m = this.machines[slot];
+        if (m?.on) {
+          m.lostAt = Date.now();
+          await this.save();
+        }
         for (const s of this.ctx.getWebSockets(`sm:${slot}`)) s.close(4003, "the machine disconnected");
         this.broadcast();
       }
