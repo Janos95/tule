@@ -489,7 +489,7 @@ def _check(root: str, names: list[str] | None = None):
         took = f"last run {r['seconds']:g} s" if r.get("seconds") is not None else ""
         if r["name"] in now:
             lines.append((r["name"], "building", f"started {time.strftime('%H:%M', time.localtime(now[r['name']]))}; "
-                          "tule build again waits for it", took))
+                          "tule build again waits for it; --stop ends it", took))
         elif r.get("failed"):
             last = (r.get("log") or "").strip().splitlines()[-1:]  # the exception, for a script that raised
             lines.append((r["name"], "failed", last[0] if last and r["failed"].startswith("exit status") else r["failed"], took))
@@ -515,8 +515,12 @@ def cmd_build(args):
 
     root = None if args.project else build.find_root()
     if root is None:
-        return _over_ssh(args, ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else [])
+        return _over_ssh(args, ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else []) + (["--stop"] if args.stop else [])
                          + (["--dependents"] if args.dependents else []) + [x for n in args.skip for x in ("--skip", n)])
+    if args.stop:
+        pids = build.stop(root)
+        print(f"stopped {len(pids)} build{'s' * (len(pids) != 1)}" if pids else "no build is running", file=sys.stderr)
+        return
     if not args.check and not os.environ.get("TULE_BUILD_CHILD"):
         return _build_detached(root, sys.argv[sys.argv.index("build") + 1:] if "build" in sys.argv else [])
     try:
@@ -718,6 +722,7 @@ def main(argv=None):
     sp.add_argument("names", nargs="*", help="only these (and what they read); patterns work: 'plate-*'")
     sp.add_argument("--check", action="store_true", help="list what is out of date or failed (and work to check again); run nothing")
     sp.add_argument("--force", action="store_true", help="run them even if nothing changed")
+    sp.add_argument("--stop", action="store_true", help="stop the builds running here (and those waiting for them)")
     sp.add_argument("--dependents", action="store_true", help="also rebuild what reads them (the BOM after the part)")
     sp.add_argument("--skip", action="append", default=[], metavar="NAME", help="leave this one as it is (a long study); repeatable, patterns work")
     sp.add_argument("--machine", help="which machine (when several run)")

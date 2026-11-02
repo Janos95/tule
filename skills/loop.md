@@ -1,6 +1,6 @@
 # The loop: edit, build, look, iterate
 
-How to work on a Tule machine so that the user can follow along and nothing is lost.
+Work so the user can follow along and nothing is lost.
 
 ## One iteration
 
@@ -45,7 +45,7 @@ When `outputs/bracket` changes, `tule build` asks to check it again. Redo the wo
 tule save -m "Bracket: 4 M5 holes, 2 mm fillets"
 ```
 
-`tule save` commits, merges what other machines saved, and pushes. If it reports a conflict, open the listed files, resolve the `<<<<<<<` sections (keep both sides' intent), and `tule save` again; for a binary file pick one side (`git checkout --ours <file>` or `--theirs`). Plain `git commit` works too; the next `tule save` pushes it. Files over 5 MB go to Git LFS by themselves; if a save is refused for a large file, run the command in the error.
+`tule save` commits, merges what other machines saved, and pushes. If it reports a conflict, open the listed files, resolve the `<<<<<<<` sections (keep both sides' intent), and `tule save` again; for a binary file pick one side (`git checkout --ours <file>` or `--theirs`). Files over 5 MB go to Git LFS by themselves; if a save is refused for a large file, run the command in the error.
 
 For **variants** the user compares side by side, put the model in a function in `lib/` and make a script per variant (`src/bracket-thin.py` calls `make(wall=1.5)`). A branch (`git switch -c thin-wall`) is for trying something you may throw away; `tule save` on it saves the branch, not main.
 
@@ -53,13 +53,13 @@ Old revisions live in git history (`git show <rev>:src/bracket.py`): never copy 
 
 ## Long jobs
 
-`tule build` goes on when the SSH command that started it ends (a timeout, a dropped connection); `tule build study` again waits for it (log: `outputs/.build/build.log`). Write progress as a sequence output.
+`tule build` goes on when the SSH command that started it ends (a timeout, a dropped connection); `tule build study` again waits for it (log: `outputs/.build/build.log`); `tule build --stop` ends it. Write progress as a sequence output.
 
 The machine stops after 30 minutes without SSH sessions or traffic; a background job does not keep it alive, so keep a session open during long runs. Everything in `/workspace` is autosaved when it stops; save before you leave work for another machine or session.
 
 ## Housekeeping
 
 - `pip install`, or `apt-get update && apt-get install -y prusa-slicer`; list them in `tule.toml` (`[packages] pip = [...]`, `apt = [...]`) to keep them after a restart.
-- Big generated data stays out of `/workspace` unless it must persist; scratch goes to `/tmp`.
+- Scratch and big generated data go to `/tmp`. From your computer, write a file without quoting: `tule ssh -p <name> -- 'cat > src/a.py' < a.py`.
 - Several load cases or variants of one study: one overlay output with a field each, not an output per case.
 - Put notes for the next session (decisions, open questions) in `NOTES.md` and save it.

@@ -516,6 +516,25 @@ def build(root: str, names: list[str] | None = None, force: bool = False,
 
 
 
+def stop(root: str) -> list[int]:
+    """Stops every tule build of this project (running or waiting for another): the pids it signalled."""
+    import signal
+
+    me, out = os.getpid(), []
+    for d in os.listdir("/proc") if os.path.isdir("/proc") else []:
+        if not d.isdigit() or int(d) == me:
+            continue
+        try:
+            env = open(f"/proc/{d}/environ", "rb").read().split(b"\0")
+            if b"TULE_BUILD_CHILD=1" not in env or os.path.realpath(f"/proc/{d}/cwd") != os.path.realpath(root):
+                continue
+            os.killpg(os.getpgid(int(d)), signal.SIGTERM)
+            out.append(int(d))
+        except (OSError, ProcessLookupError):
+            pass
+    return out
+
+
 def running(root: str) -> dict[str, float]:
     """Outputs a tule build is making now: {name: when its run started} (stage folders of a live process)."""
     state = os.path.join(root, "outputs", STATE)

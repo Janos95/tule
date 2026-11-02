@@ -344,8 +344,10 @@ function prepare(list) {
 function views(o) {
   const v = [];
   // a document named after the output is what it is for (shopping-list/shopping-list.md): it opens first, the 3D after it
-  // (a set of parts with their drawings opens on the first drawing)
-  const named = o.files.length && (o.docs.find((f) => f.type !== "file" && base(f.file) === o.name.split("/").pop()) ?? drawn(o)[0]);
+  // (a set of parts with their drawings opens on the first drawing); data beside a model (motion.csv, plate.gcode)
+  // and motions and plates open on the 3D
+  const moving = o.meta?.kind === "sequence" || o.meta?.frames || o.meta?.plate;
+  const named = o.files.length && !moving && (o.docs.find((f) => ["document", "pdf", "dxf"].includes(f.type) && base(f.file) === o.name.split("/").pop()) ?? drawn(o)[0]);
   if (o.files.length && !named) v.push({ id: "3d", label: "3D", type: "geometry" });
   // the file named after the output first (parts-list/parts-list.csv), then documents; beside a model,
   // files with no view of their own (an STL, a .3mf) are only in Download
