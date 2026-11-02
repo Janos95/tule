@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-READ_MAX = 30 << 20  # one WebSocket message through the control plane
+READ_MAX = 256 << 20  # sent in chunks (tule_agent.send_bytes); more is for scp
 
 
 def resolve(root: str, rel) -> str:

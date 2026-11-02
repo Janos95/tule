@@ -63,7 +63,8 @@ from files import REQUESTS as FILE_REQUESTS, resolve
 from workspace import Api, Workspace
 
 VERSION = 1
-SSH, MESH = 1, 2
+SSH, MESH, MESH_PART = 1, 2, 3  # MESH_PART: a big binary reply's chunk, before its last one (MESH)
+CHUNK = 8 << 20  # one WebSocket message through the control plane stays well under its 32 MiB
 WORKSPACE = os.environ.get("TULE_WORKSPACE", "/workspace")
 OUTPUTS = os.path.join(WORKSPACE, "outputs")
 ETC = os.environ.get("TULE_ETC", "/etc/tule")
@@ -584,6 +585,14 @@ class Agent:
         if self.ws is not None:
             await self.ws.send(m if isinstance(m, bytes) else json.dumps(m))
 
+    async def send_bytes(self, rid: int, data: bytes):
+        """A binary reply in chunks of CHUNK (the last one MESH), so no message is too big to relay."""
+        view = memoryview(data)
+        for at in range(0, max(len(data) - CHUNK, 0), CHUNK):
+            await self.send(frame(MESH_PART, rid, bytes(view[at:at + CHUNK])))
+        last = (max(len(data) - 1, 0) // CHUNK) * CHUNK
+        await self.send(frame(MESH, rid, bytes(view[last:])))
+
     async def handle(self, msg):
         if isinstance(msg, bytes):
             kind, ident = struct.unpack_from(">BI", msg)
@@ -647,7 +656,7 @@ class Agent:
     async def mesh(self, rid: int, path: str, digest: str):
         try:
             data = await asyncio.to_thread(self.outputs.mesh, path, digest)
-            await self.send(frame(MESH, rid, data))
+            await self.send_bytes(rid, data)
         except Exception as e:  # report every failure to the viewer
             await self.send({"t": "mesh-error", "rid": rid, "error": f"{type(e).__name__}: {e}"})
 
@@ -764,7 +773,7 @@ class Agent:
                 raise ValueError(f"unknown request {op!r}; known: {', '.join(sorted(REQUESTS))}")
             out = await asyncio.to_thread(fn, self, m.get("args") or {})
             if isinstance(out, (bytes, bytearray)):
-                await self.send(frame(MESH, rid, bytes(out)))
+                await self.send_bytes(rid, bytes(out))
             else:
                 event = (out or {}).pop("broadcast", None)  # a handler's event for every viewer
                 await self.send({"t": "res", "rid": rid, **(out or {})})

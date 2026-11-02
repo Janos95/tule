@@ -605,6 +605,8 @@ def cmd_save(args):
         files = "".join(f"\n  {f}" for f in r.get("conflicts") or [])
         raise CliError(f"{r['error']}{files}" + (f"\n{r['hint']}" if r.get("hint") else ""))
     print(f"tule: saved {r['saved'][:12]}" + (" (merged the latest save)" if r.get("merged") else "") + ("" if r.get("committed", True) else " (nothing new to commit)"))
+    if r.get("warning"):
+        print(f"tule: {r['warning']}", file=sys.stderr)
 
 
 def cmd_status(args):

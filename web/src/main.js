@@ -115,6 +115,7 @@ async function connect(delay = 500) {
   ws.onclose = (e) => {
     for (const p of pending.values()) p.reject(new Error("disconnected"));
     pending.clear();
+    chunks.clear();
     machine({ state: "offline" });
     if (e.code === 1008 || e.code === 4401) return setStatus("Not authorized for this project: sign in with the account that owns it");
     setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay);
@@ -155,12 +156,27 @@ function req(op, args = {}, timeoutMs = 120_000) {
   });
 }
 
+const chunks = new Map(); // rid -> the parts of a big binary answer so far (they come with the rid's top bit set)
 function onMesh(buf) {
   const dv = new DataView(buf);
-  const id = dv.getUint32(0);
+  let id = dv.getUint32(0);
+  if (id & 0x80000000) {
+    id &= 0x7fffffff;
+    if (pending.has(id)) chunks.set(id, [...(chunks.get(id) ?? []), buf.slice(4)]);
+    return;
+  }
   const p = pending.get(id);
   pending.delete(id);
+  const before = chunks.get(id);
+  chunks.delete(id);
   if (!p) return;
+  if (before) {
+    const all = [...before, buf.slice(4)];
+    const whole = new Uint8Array(4 + all.reduce((n, c) => n + c.byteLength, 0));
+    let at = 4;
+    for (const c of all) whole.set(new Uint8Array(c), at), (at += c.byteLength);
+    buf = whole.buffer;
+  }
   try {
     p.resolve(p.raw ? buf.slice(4) : decode(buf, 4));
   } catch (e) {

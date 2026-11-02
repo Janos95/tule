@@ -53,6 +53,7 @@ const GUEST_IDLE_MS = 10 * 60_000; // the same for guests
 const CHECK_MS = 5 * 60_000;
 const SSH = 1;
 const MESH = 2;
+const MESH_PART = 3; // a big binary reply's chunk before its last one (MESH); to the viewer with the rid's top bit set
 
 type Kind = "cloud" | "gpu" | "computer" | "joined";
 /** One slot: a machine the project is (or was) loaded on, and its working copy. */
@@ -713,13 +714,13 @@ export class Project extends DurableObject<Env> {
     return grid;
   }
 
-  /** Who asked request `grid` (it is answered: forgotten). */
-  async answer(grid: number): Promise<{ ws: WebSocket; rid: number } | undefined> {
+  /** Who asked request `grid` (it is answered: forgotten, unless `more` of the answer is to come). */
+  async answer(grid: number, more = false): Promise<{ ws: WebSocket; rid: number } | undefined> {
     const p = this.pending.get(grid);
-    this.pending.delete(grid);
+    if (!more) this.pending.delete(grid);
     const key = `rq:${grid}`;
     const saved = p ? undefined : await this.ctx.storage.get<{ v: string; rid: number }>(key);
-    void this.ctx.storage.delete(key);
+    if (!more) void this.ctx.storage.delete(key);
     if (p) return p;
     const ws = saved && this.ctx.getWebSockets(`v:${saved.v}`)[0];
     return ws ? { ws, rid: saved!.rid } : undefined;
@@ -862,11 +863,11 @@ export class Project extends DurableObject<Env> {
         if (s) s.send(b.subarray(5));
         else ws.send(JSON.stringify({ t: "ssh-close", sid: id }));
         this.touch(slot);
-      } else if (kind === MESH) {
-        const p = await this.answer(id);
+      } else if (kind === MESH || kind === MESH_PART) {
+        const p = kind === MESH ? await this.answer(id) : await this.answer(id, true);
         if (p && p.ws.readyState === WebSocket.OPEN) {
           const out = new Uint8Array(b.byteLength - 1);
-          new DataView(out.buffer).setUint32(0, p.rid);
+          new DataView(out.buffer).setUint32(0, kind === MESH ? p.rid : (p.rid | 0x80000000) >>> 0);
           out.set(b.subarray(5), 4);
           p.ws.send(out);
         }

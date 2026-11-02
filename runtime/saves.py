@@ -149,6 +149,7 @@ def save(root: str, message: str = "", who: str = "") -> dict:
         return _conflict(root)
     _track_large(root)
     git(root, "add", "-A", check=True)
+    big = _big_adds(root)
     committed = False
     if git(root, "diff", "--cached", "--quiet").returncode:
         git(root, "commit", "-q", "-m", message.strip() or f"Save from {who or 'a Tule machine'}", check=True)
@@ -169,7 +170,7 @@ def save(root: str, message: str = "", who: str = "") -> dict:
             if git(root, "symbolic-ref", "-q", "HEAD").returncode == 0:
                 git(root, "branch", "-q", "--set-upstream-to", f"{REMOTE}/{b}")
             head = git(root, "rev-parse", "HEAD").stdout.strip()
-            return {"saved": head, "branch": b, "committed": committed, "merged": merged}
+            return {"saved": head, "branch": b, "committed": committed, "merged": merged, **({"warning": big} if big else {})}
         if "non-fast-forward" not in p.stderr and "moved on the remote" not in p.stderr and "fetch first" not in p.stderr:
             raise RuntimeError((p.stderr or p.stdout).strip())
     raise RuntimeError("main kept moving while saving; try again")
@@ -190,6 +191,29 @@ def _track_large(root: str):
         if git(root, "check-attr", "filter", "--", path).stdout.strip().endswith(": lfs"):
             continue
         git(root, "lfs", "track", "--filename", "--", path)
+
+
+BIG_SAVE = 500 << 20
+
+
+def _big_adds(root: str) -> str | None:
+    """A warning when what is about to be saved adds a lot (solver scratch, caches): every save of it is kept for good."""
+    names = git(root, "diff", "--cached", "--name-only", "-z", "--diff-filter=AM").stdout.split("\0")
+    sizes: dict[str, int] = {}
+    for n in filter(None, names):
+        try:
+            size = os.path.getsize(os.path.join(root, n))
+        except OSError:
+            continue
+        top = "/".join(n.split("/")[:2]) if "/" in n else n
+        sizes[top] = sizes.get(top, 0) + size
+    total = sum(sizes.values())
+    if total < BIG_SAVE:
+        return None
+    mb = lambda v: f"{v / 2**30:.1f} GB" if v >= 1 << 30 else f"{v >> 20} MB"
+    where = ", ".join(f"{k} ({mb(v)})" for k, v in sorted(sizes.items(), key=lambda kv: -kv[1])[:3])
+    return (f"this save adds {mb(total)}, mostly {where}; saves are kept for good. Scratch (solver "
+            f"meshes, decks, results) belongs in /tmp, or list it in .gitignore")
 
 
 def _markers(root: str, path: str) -> bool:
