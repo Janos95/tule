@@ -104,6 +104,24 @@ class Outputs:
                 except FileNotFoundError:
                     continue
                 out.append((os.path.relpath(p, self.root), st.st_size, st.st_mtime_ns))
+        # an output tule build is making right now (a sequence grows there until the script ends)
+        stages = os.path.join(self.root, ".build")
+        try:
+            names = sorted(n for n in os.listdir(stages) if n.startswith("stage-"))
+        except OSError:
+            names = []
+        for n in names:
+            for d, dirs, files in os.walk(os.path.join(stages, n)):
+                dirs[:] = sorted(dirs)
+                for f in sorted(files):
+                    if f.startswith(".") or ".tmp" in f:
+                        continue
+                    p = os.path.join(d, f)
+                    try:
+                        st = os.stat(p)
+                    except FileNotFoundError:
+                        continue
+                    out.append((os.path.relpath(p, self.root), st.st_size, st.st_mtime_ns))
         return tuple(out)
 
     def changed(self) -> bool:
@@ -128,10 +146,18 @@ class Outputs:
     def index(self) -> list[dict]:
         """One entry per output folder (or loose file directly in outputs/)."""
         groups: dict[str, dict] = {}
+        staged: dict[str, dict] = {}
         for rel, size, mtime in self.stamp or ():
             top, _, rest = rel.partition(os.sep)
+            into = groups
+            if top == ".build":  # .build/stage-<name>-<pid>/<name>/<file>
+                _, _, rest = rest.partition(os.sep)
+                top, _, rest = rest.partition(os.sep)
+                if not rest:
+                    continue
+                into = staged
             name = top if rest else os.path.splitext(top)[0]
-            g = groups.setdefault(name, {"name": name, "files": [], "meta": None})
+            g = into.setdefault(name, {"name": name, "files": [], "meta": None})
             if rest == "output.json":
                 try:
                     with open(os.path.join(self.root, rel)) as f:
@@ -146,6 +172,9 @@ class Outputs:
             except FileNotFoundError:
                 continue
             g["files"].append({"path": rel.replace(os.sep, "/"), "file": rest or top, "hash": digest, "size": size})
+        for name, g in staged.items():  # shown instead of the last built one once it has something to show
+            if g["files"]:
+                groups[name] = {**g, "building": True}
         return [g for g in groups.values() if g["files"] or g.get("error")]
 
     def mesh(self, rel: str, digest: str) -> bytes:
@@ -590,7 +619,7 @@ REQUESTS = {"ping": _ping, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
 
 
 def new_project(root: str):
-    """A new project: the template (AGENTS.md, CLAUDE.md, tule.toml, main.py) and a git repository."""
+    """A new project: the template (AGENTS.md, CLAUDE.md, tule.toml, src/part.py) and a git repository."""
     os.makedirs(root, exist_ok=True)
     if os.path.isdir(TEMPLATE):
         shutil.copytree(TEMPLATE, root, dirs_exist_ok=True)

@@ -278,7 +278,7 @@ machine is rebuilt from the image every boot.
 - **`tule.toml`:** extra packages to install at boot (the heavy stack is in
   the image), entry point, parameters.
 - **New projects** start from a template: `AGENTS.md`/`CLAUDE.md` with the
-  agent instructions, `tule.toml`, `main.py`, empty `outputs/`.
+  agent instructions, `tule.toml`, `src/part.py`, empty `outputs/`.
 
 #### Several machines per project, saves in git (2026-11-01)
 
@@ -396,13 +396,15 @@ outputs/
   frame by frame.
 - **History for free:** outputs are part of `/workspace`, so the viewer can
   show any output as of any snapshot. They are not in git (they are
-  generated; see "Planned: project layout, builds and output types").
+  generated; see "Project layout, builds and output types").
 - `tule.outputs` has small helpers that write these folders; nothing requires
   them.
 
-#### Planned: project layout, builds and output types (2026-11-02)
+#### Project layout, builds and output types (2026-11-02)
 
-Not built. Outputs can be out of step with the code that makes them (edit a
+Built: the layout, `tule build` and the template (`src/part.py`). Not yet:
+output types beyond geometry, freshness in the viewer, agents' "based on"
+notes. Outputs can be out of step with the code that makes them (edit a
 script and forget to run it; a save merges code nobody ran), and nothing
 says so. The plan: a fixed layout, one build command that knows what made
 every output, and a viewer for every kind of output.
@@ -434,15 +436,24 @@ several files. No registry: the file name is the target, and extra facts
 rest:
 
 - the fingerprint covers what the script actually read, recorded while it
-  runs (an import hook and file-open tracking): the script, the local modules
-  it imports, the files it reads in `inputs/` and `outputs/`, and the version
-  of the `tule` library. Nothing is declared, so nothing can be forgotten;
+  runs (a Python audit hook: file opens, folder listings, imports; files
+  read by native code, like `import_step`, are reported by `tule`): the
+  script, the local modules it imports, the files it reads in `inputs/` and
+  `outputs/`, and the versions of `tule` and Python. Nothing is declared, so
+  nothing can be forgotten. Files are compared by content, so a change that
+  does not change an output (a comment) rebuilds nothing after it; STEP
+  files have no time of writing in them for this reason;
 - a script that reads `outputs/bracket/` gets `bracket` built first, so the
   order needs no declaring either;
-- each script writes into a fresh temporary folder that replaces its output
-  only when it succeeds; writing anywhere else is an error;
-- the fingerprint is stored with the output, so the agent and the viewer can
-  tell an output is stale without running anything.
+- each script writes into a fresh staging folder (`outputs/.build/`) that
+  replaces its output only when it succeeds; writing anywhere else in the
+  project is refused. While it runs, the viewer shows the staging folder once
+  it has geometry, so a long study's frames still appear live;
+- the record (`outputs/.build/<name>.json`: what was read and its hashes) is
+  kept apart from the output, so the agent (`tule build --check`) and later
+  the viewer can tell an output is stale without running anything;
+- a failed script keeps its last output and records the error; one build
+  runs at a time per project.
 
 **Agent work is not re-run.** Finding suppliers, choosing a bearing or reading
 a datasheet is slow, costs money and takes judgment. Its result is saved in
@@ -626,7 +637,7 @@ work inside them (the same limit as RunPod).
 
 ### On the machine
 
-- `python main.py`, any script, any tool; results go to `outputs/`.
+- `tule build` (or any script, any tool); results go to `outputs/`.
 - `tule screenshot`, `tule docs [topic]`, `tule inspect <file>`.
 - The libraries: `tule` (modeling), `tule.topopt`, `tule.outputs`,
   later `tule.fea`.
@@ -868,5 +879,5 @@ tule/
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
 | Project visibility | private by default, shareable read-only viewer links |
-| Project layout and outputs | `inputs/`, `src/`, `lib/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; agent results live in `inputs/`, are flagged when stale and never re-run automatically; charts as Vega-Lite, not HTML (2026-11-02; see "Planned: project layout, builds and output types") |
+| Project layout and outputs | `inputs/`, `src/`, `lib/`, `outputs/`; scripts are functions rebuilt by `tule build` from recorded fingerprints; agent results live in `inputs/`, are flagged when stale and never re-run automatically; charts as Vega-Lite, not HTML (2026-11-02; see "Project layout, builds and output types") |
 | Machines | per project, several at once (2026-11-01): each with its own autosaved copy, saving and merging through git (see "Several machines per project, saves in git"); one Tule cloud machine per project. Considered: machines per user with projects mounted onto them (instant switching, cross-project work, one GPU pod). Kept per project for isolation between parallel agents, a clean environment per project (`tule.toml`), simple sharing, and because a cached cold start is ~1 s. Cross-project reuse would come as read-only mounts of another project's save. The projects list shows each machine under its project: an icon and where it runs (Tule cloud, a computer by OS, RunPod and the GPU, "other machine" for one that joined with a token). |

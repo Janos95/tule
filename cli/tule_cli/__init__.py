@@ -427,6 +427,31 @@ def cmd_forget(args):
     print(f"tule: {p}: forgot the copy on {r['forgot']} (its unsaved work is gone)", file=sys.stderr)
 
 
+def cmd_build(args):
+    """Runs the scripts in src/ whose inputs changed: here when this is a project (a machine's /workspace), else on the machine over SSH."""
+    from . import build
+
+    root = None if args.project else build.find_root()
+    if root is None:
+        cmd = ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else [])
+        return cmd_ssh(argparse.Namespace(project=args.project, machine=args.machine, config=False,
+                                          command=[f"cd /workspace && {shlex.join(cmd)}"]))
+    try:
+        if args.check:
+            rows = build.status(root)
+            for r in rows:
+                note = f"failed: {r['failed']}" if r.get("failed") else r.get("why", "")
+                print(f"{r['name']:<24} {r['state']:<11} {note}".rstrip())
+            return
+        done = build.build(root, args.names or None, force=args.force)
+    except build.BuildError as e:
+        raise CliError(str(e)) from None
+    counts = {k: sum(1 for v in done.values() if v == k) for k in ("built", "up to date", "failed")}
+    print("tule: " + ", ".join(f"{n} {k}" for k, n in counts.items() if n), file=sys.stderr)
+    if counts["failed"]:
+        sys.exit(1)
+
+
 def cmd_save(args):
     """Commit, merge what other machines saved, push to main: on the machine through the local tule-agent, else through the API."""
     cfg = load()
@@ -543,6 +568,11 @@ def main(argv=None):
     sp.add_argument("--machine", help="cloud, gpu-<type>, a computer's name, or joined")
     sp = add("forget", cmd_forget, "drop a stopped machine's copy and its unsaved work")
     sp.add_argument("--machine", required=True)
+    sp = add("build", cmd_build, "run the scripts in src/ whose inputs changed; each makes outputs/<name>/")
+    sp.add_argument("names", nargs="*", help="only these (and what they read)")
+    sp.add_argument("--check", action="store_true", help="say what is stale, run nothing")
+    sp.add_argument("--force", action="store_true", help="run them even if nothing changed")
+    sp.add_argument("--machine", help="which machine (when several run)")
     sp = add("save", cmd_save, "commit, merge the latest save, and push it (on the machine: this copy)")
     sp.add_argument("-m", "--message", help="what changed")
     sp.add_argument("--machine", help="which machine's copy (when several run)")

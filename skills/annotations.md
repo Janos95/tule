@@ -38,4 +38,4 @@ Then `tule screenshot -o bc.png --output bracket-bc` to check it yourself, and t
 
 ## Make it last
 
-Face ids change when the model changes. Once the user confirms, move the tags into `main.py` with queries that survive edits (`part.faces.top()`, `boss.faces["top"]`, `part.faces.planar().normal(-Z)`) rather than ids, rerun, and check the labeled screenshot shows the same faces. Note the decision in your commit message.
+Face ids change when the model changes. Once the user confirms, move the tags into the part's script in `src/` with queries that survive edits (`part.faces.top()`, `boss.faces["top"]`, `part.faces.planar().normal(-Z)`) rather than ids, `tule build`, and check the labeled screenshot shows the same faces. Note the decision in your commit message.

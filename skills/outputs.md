@@ -1,6 +1,6 @@
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/`: one folder per output, holding geometry files and an optional `output.json`. Write there and the user sees it within a second.
+The viewer renders `/workspace/outputs/`: one folder per output, holding geometry files and an optional `output.json`. `tule build` makes them: `src/<name>.py` writes `outputs/<name>/`, and the user sees it within a second. Other files (a CSV) go into `outputs.folder()`.
 
 ```
 outputs/

@@ -1,4 +1,4 @@
-"""Start here: model a part and write it to outputs/ (the viewer shows it)."""
+"""Start here: src/part.py makes outputs/part/ (the viewer shows it). Run it with `tule build`."""
 from tule import *
 
 plate = rect(80, 40, center=True).round(5).extrude(6)

@@ -9,10 +9,12 @@ from __future__ import annotations
 import json
 import os
 import struct
+import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterable, Union
 
 import numpy as np
+from OCP.APIHeaderSection import APIHeaderSection_MakeHeader
 from OCP.BRep import BRep_Tool
 from OCP.BRepLib import BRepLib_ToolTriangulatedShape
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
@@ -20,7 +22,7 @@ from OCP.IFSelect import IFSelect_RetDone
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer
 from OCP.STEPControl import STEPControl_AsIs
-from OCP.TCollection import TCollection_ExtendedString
+from OCP.TCollection import TCollection_ExtendedString, TCollection_HAsciiString
 from OCP.TDataStd import TDataStd_Name
 from OCP.TDF import TDF_Label
 from OCP.TDocStd import TDocStd_Document
@@ -200,6 +202,8 @@ def export_step(item: Union["Shape", "Assembly"], path: str) -> str:
     w.SetNameMode(True)
     w.SetColorMode(True)
     w.Transfer(doc, STEPControl_AsIs)
+    # no time of writing in the header: the same shape gives the same file (tule build, git)
+    APIHeaderSection_MakeHeader(w.ChangeWriter().Model()).SetTimeStamp(TCollection_HAsciiString("1970-01-01T00:00:00"))
     tmp = _atomic_path(path)
     if w.Write(tmp) != IFSelect_RetDone:
         raise TuleError("could not write the STEP file", op="export_step", hint=path)
@@ -212,6 +216,7 @@ def import_step(path: str):
     from .assembly import Assembly
     from .shape import Shape
 
+    sys.audit("tule.read", os.path.abspath(path))  # read by native code: tule build records it this way
     r = STEPCAFControl_Reader()
     _enable_subshape_names()
     r.SetNameMode(True)

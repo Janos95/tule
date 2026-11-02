@@ -32,7 +32,7 @@ The project name comes from `-p`, else `$TULE_PROJECT`, else the last one used.
 
 ```sh
 tule ssh -p bracket                     # a shell (starts the machine if needed)
-tule ssh -p bracket -- python main.py   # one command
+tule ssh -p bracket -- tule build      # one command (or just: tule build -p bracket)
 tule ssh -p bracket --machine gpu-rtx4090   # one of several machines
 tule ssh -p bracket --config            # then plain `ssh tule-bracket.cloud`, `scp`, `rsync`, editors' remote SSH
 ```

@@ -91,9 +91,26 @@ def _slug(name: str) -> str:
 
 
 def _folder(name: str) -> str:
-    d = os.path.join(root(), _slug(name))
+    slug = _slug(name)
+    target = os.environ.get("TULE_BUILD_TARGET")
+    if target and slug != target:
+        raise TuleError(f"src/{target}.py writes only outputs/{target}/, not outputs/{slug}/", op="outputs",
+                        hint=f"name the output {target!r}, or make {slug!r} in its own script, src/{slug}.py")
+    d = os.path.join(root(), slug)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def folder(name: str | None = None) -> str:
+    """The folder to write an output's files into (a CSV table, a chart): ``outputs/<name>/``.
+
+    Under ``tule build`` the name defaults to the script's own (``src/bom.py`` → ``bom``)
+    and the folder is a staging one that replaces ``outputs/bom/`` when the script succeeds.
+    """
+    name = name or os.environ.get("TULE_BUILD_TARGET")
+    if not name:
+        raise TuleError("which output?", op="outputs.folder", hint="outputs.folder(\"bom\"); under tule build it defaults to the script's name")
+    return _folder(name)
 
 
 def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
