@@ -22,7 +22,7 @@
 // only its faces stay colored); hovering a face or arrow shows its label.
 // A field is a value per node of a grid (a .npy file in the output, float32,
 // (nx, ny, nz) or a vector (nx, ny, nz, 3); node (i, j, k) at origin + step·(i, j, k)):
-// it colors every vertex on the scale instead (trilinear; a vector by its
+// it colors the surface on the scale instead (trilinear, per pixel; a vector by its
 // length), with "deform" the shape moves that many times the vector. Buttons
 // in the strip switch fields; hover shows the value under the pointer.
 // Extra fields are ignored.
@@ -49,14 +49,8 @@ function ramp(t) {
   return "#" + a.map((v, k) => Math.round(v + (b[k] - v) * (x - i)).toString(16).padStart(2, "0")).join("");
 }
 
+/** The ramp as sRGB numbers in 0..1, for the field shader. */
 const RAMP_RGB = RAMP.map((h) => h.match(/\w\w/g).map((x) => parseInt(x, 16) / 255));
-
-/** ramp() as sRGB numbers in 0..1, for vertex colors. */
-function rampRGB(t) {
-  const x = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0.5)) * (RAMP_RGB.length - 1);
-  const i = Math.min(RAMP_RGB.length - 2, Math.floor(x));
-  return RAMP_RGB[i].map((v, k) => v + (RAMP_RGB[i + 1][k] - v) * (x - i));
-}
 
 const fmt = (v) => (typeof v === "number" ? +v.toPrecision(4) : String(v));
 
@@ -105,6 +99,14 @@ function sampleGrid({ shape, data }, origin, step, points) {
   return { values, vectors };
 }
 
+/** A grid's value per node (a vector's length). */
+function sampleNodes({ shape, data }) {
+  if (shape.length === 3) return data;
+  const out = new Float32Array(data.length / 3);
+  for (let i = 0; i < out.length; i++) out[i] = Math.hypot(data[3 * i], data[3 * i + 1], data[3 * i + 2]);
+  return out;
+}
+
 export function initOverlay({ viewer, legend, marks }) {
   let rows = []; // [{kind, label, faces: [ids], color, hatch, severity}]
   let values = []; // [{face, value, label, color}]
@@ -114,7 +116,7 @@ export function initOverlay({ viewer, legend, marks }) {
   let chips = [];
   let fields = []; // [{label, unit, file, origin, step, min, max, note, deform}]
   let active = 0; // the field shown
-  let atVertex = null; // part index -> the shown field's value per vertex
+  let at = null; // the shown field's value at a point [x, y, z]
   let fieldError = "";
   let read = null; // file name in the output -> Promise<ArrayBuffer>
   let grids = new Map(); // file -> Promise<{shape, data}>
@@ -175,7 +177,7 @@ export function initOverlay({ viewer, legend, marks }) {
   async function showField() {
     const run = ++token;
     const f = fields[active];
-    atVertex = null;
+    at = null;
     fieldError = "";
     if (!f || !read) {
       if (fielded) viewer.setField(null);
@@ -189,20 +191,18 @@ export function initOverlay({ viewer, legend, marks }) {
       const { shape } = grid;
       if (!(shape.length === 3 || (shape.length === 4 && shape[3] === 3)) || Math.min(...shape.slice(0, 3)) < 2)
         throw new Error(`a field is an (nx, ny, nz) or (nx, ny, nz, 3) grid, not (${shape.join(", ")})`);
-      const lo = Number.isFinite(f.min) ? f.min : 0;
-      const hi = Number.isFinite(f.max) ? f.max : 1;
       const deform = shape.length === 4 && Number.isFinite(f.deform) ? f.deform : 0;
       const moved = (pts, s) => Float32Array.from(pts, (x, i) => x + deform * s.vectors[i]);
-      atVertex = new Map();
-      viewer.setField((mesh, index) => {
-        const s = sampleGrid(grid, f.origin, f.step, mesh.positions);
-        atVertex.set(index, s.values);
-        const colors = new Float32Array(s.values.length * 3);
-        s.values.forEach((v, i) => colors.set(rampRGB(hi > lo ? (v - lo) / (hi - lo) : 0.5), 3 * i));
-        if (!deform) return { colors };
+      const lo = Number.isFinite(f.min) ? f.min : 0;
+      const hi = Number.isFinite(f.max) ? f.max : 1;
+      const node = sampleNodes(grid); // the value at each node (a vector's length)
+      const values = Float32Array.from(node, (v) => (hi > lo ? (v - lo) / (hi - lo) : 0.5));
+      at = (p) => sampleGrid(grid, f.origin, f.step, p).values[0];
+      viewer.setField((mesh) => {
+        if (!deform) return {};
         const edges = mesh.edges?.length ? moved(mesh.edges, sampleGrid(grid, f.origin, f.step, mesh.edges)) : null;
-        return { colors, positions: moved(mesh.positions, s), edges };
-      });
+        return { positions: moved(mesh.positions, sampleGrid(grid, f.origin, f.step, mesh.positions)), edges };
+      }, { values, shape: shape.slice(0, 3), origin: f.origin, step: f.step, ramp: RAMP_RGB });
       fielded = true;
     } catch (e) {
       if (run !== token) return;
@@ -329,7 +329,7 @@ export function initOverlay({ viewer, legend, marks }) {
       if (hit.arrow !== undefined) return [`load arrow${arrows[hit.arrow]?.label ? ": " + arrows[hit.arrow].label : ""}`];
       const r = byFace.get(hit.face);
       const cond = r ? [`${r.kind}${r.label ? ": " + r.label : ""}`] : [];
-      const fv = atVertex?.get(hit.index)?.[hit.vertex];
+      const fv = at && hit.rest ? at(hit.rest) : undefined;
       if (fv !== undefined) {
         const f = fields[active];
         return [`${f.label}: ${fmt(fv)}${f.unit ? " " + f.unit : ""}`, ...cond];

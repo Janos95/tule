@@ -12,7 +12,7 @@
 // later layer wins): each part's triangles are sorted by face id once, so a
 // face is one range of the index and a style is a geometry group with its own
 // material; nothing is copied. setDim greys every face no layer colors.
-// setField colors vertices instead (a stress field), optionally on a moved shape.
+// setField colors by a field instead (a stress field, per pixel), optionally on a moved shape.
 // Arrows (setArrows) are 3D glyphs whose tip touches the point they act on.
 // A part may carry a placement (mesh.matrix, 16 numbers, row-major).
 import * as THREE from "three";
@@ -76,7 +76,19 @@ export class Viewer {
     // the CAD edges: the palette's navy (--navy in palette.css), a constant since the 3D view stays light
     this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x23344a, transparent: true, opacity: 0.75 });
     this.depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, ...BEHIND });
-    this.fieldMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, side: THREE.DoubleSide, ...BEHIND });
+    // a field is colored per pixel: its grid is a 3D texture sampled at the undeformed point ("rest"),
+    // so a coarse mesh (a flat face is two triangles) still shows the field as it is
+    this.fieldUniforms = { fieldTex: { value: null }, fieldRamp: { value: null }, fieldOrigin: { value: new THREE.Vector3() }, fieldStep: { value: 1 }, fieldSize: { value: new THREE.Vector3(1, 1, 1) } };
+    this.fieldMaterial = new THREE.MeshStandardMaterial({ roughness: 0.62, side: THREE.DoubleSide, ...BEHIND });
+    this.fieldMaterial.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.fieldUniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nattribute vec3 rest;\nvarying vec3 vRest;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvRest = rest;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nprecision highp sampler3D;\nuniform sampler3D fieldTex;\nuniform sampler2D fieldRamp;\nuniform vec3 fieldOrigin;\nuniform float fieldStep;\nuniform vec3 fieldSize;\nvarying vec3 vRest;")
+        .replace("#include <color_fragment>", "vec3 fq = (vRest - fieldOrigin) / fieldStep;\nfloat fv = texture(fieldTex, (fq.zyx + 0.5) / fieldSize).r;\ndiffuseColor.rgb = texture2D(fieldRamp, vec2(clamp(fv, 0.0, 1.0) * 255.0 / 256.0 + 0.5 / 256.0, 0.5)).rgb;");
+    };
     this.style = { hidden: null, lit: null };
     this.layers = new Map(); // layer -> [{part: index | null (all), faces: [ids], color, hatch}]
     this.dim = false;
@@ -310,18 +322,45 @@ export class Viewer {
     this.paintFaces();
   }
 
-  /** A value on every vertex instead of a color per face (a stress field): fn(mesh, part index)
-   * returns {colors: Float32Array (sRGB 0..1, rgb per vertex), positions?: Float32Array (a deformed
-   * shape), edges?: Float32Array} or null; setField(null) restores the parts. Face layers still win. */
-  setField(fn) {
+  /** A field instead of a color per face (a stress field). volume: {values: Float32Array, one per grid
+   * node (nx, ny, nz, z fastest) on the scale (0 low, 1 high), shape, origin, step, ramp: [[r, g, b] sRGB
+   * 0..1, low to high]}; fn(mesh, part index) returns {positions?: Float32Array (a deformed shape),
+   * edges?: Float32Array} or null (the part as it is). setField(null) restores the parts. Face layers still win. */
+  setField(fn, volume) {
+    const u = this.fieldUniforms;
+    if (volume) {
+      const [nx, ny, nz] = volume.shape;
+      u.fieldTex.value?.dispose();
+      const tex = new THREE.Data3DTexture(Uint16Array.from(volume.values, (v) => THREE.DataUtils.toHalfFloat(v)), nz, ny, nx);
+      tex.format = THREE.RedFormat;
+      tex.type = THREE.HalfFloatType;
+      tex.minFilter = tex.magFilter = THREE.LinearFilter;
+      tex.unpackAlignment = 1;
+      tex.needsUpdate = true;
+      u.fieldTex.value = tex;
+      const rgba = new Uint8Array(256 * 4);
+      for (let i = 0; i < 256; i++) {
+        const x = (i / 255) * (volume.ramp.length - 1);
+        const j = Math.min(volume.ramp.length - 2, Math.floor(x));
+        for (let k = 0; k < 3; k++) rgba[4 * i + k] = Math.round(255 * (volume.ramp[j][k] + (volume.ramp[j + 1][k] - volume.ramp[j][k]) * (x - j)));
+        rgba[4 * i + 3] = 255;
+      }
+      u.fieldRamp.value?.dispose();
+      const ramp = new THREE.DataTexture(rgba, 256, 1);
+      ramp.colorSpace = THREE.SRGBColorSpace;
+      ramp.minFilter = ramp.magFilter = THREE.LinearFilter;
+      ramp.needsUpdate = true;
+      u.fieldRamp.value = ramp;
+      u.fieldOrigin.value.set(...volume.origin);
+      u.fieldStep.value = volume.step;
+      u.fieldSize.value.set(nz, ny, nx);
+    }
     for (const part of this.group.children) {
       const { index, mesh, geometry, lines } = part.userData;
-      const f = fn ? fn(mesh, index) : null;
+      const f = fn && volume ? fn(mesh, index) ?? {} : null;
       part.userData.field = !!f;
-      if (f) {
-        const c = Float32Array.from(f.colors, (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); // to linear, as THREE.Color does
-        geometry.setAttribute("color", new THREE.BufferAttribute(c, 3));
-      } else geometry.deleteAttribute("color");
+      if (f) geometry.setAttribute("rest", new THREE.BufferAttribute(mesh.positions, 3));
+      else geometry.deleteAttribute("rest");
       geometry.setAttribute("position", new THREE.BufferAttribute(f?.positions ?? mesh.positions, 3));
       if (lines && mesh.edges) lines.setAttribute("position", new THREE.BufferAttribute(f?.edges ?? mesh.edges, 3));
       geometry.computeBoundingBox();
@@ -565,7 +604,14 @@ export class Viewer {
     const local = hit.object.worldToLocal(hit.point.clone());
     const vertex = [hit.face.a, hit.face.b, hit.face.c].reduce((best, v) =>
       new THREE.Vector3().fromBufferAttribute(pos, v).distanceToSquared(local) < new THREE.Vector3().fromBufferAttribute(pos, best).distanceToSquared(local) ? v : best);
-    return { index, mesh, face: mesh.faceIds[hit.faceIndex], vertex, point: [hit.point.x, hit.point.y, hit.point.z] };
+    // the same point on the undeformed shape (where a field is sampled)
+    const rest = hit.object.geometry.attributes.rest;
+    let at = null;
+    if (rest && hit.barycoord) {
+      const b = hit.barycoord;
+      at = [0, 1, 2].map((d) => b.x * rest.getComponent(hit.face.a, d) + b.y * rest.getComponent(hit.face.b, d) + b.z * rest.getComponent(hit.face.c, d));
+    }
+    return { index, mesh, face: mesh.faceIds[hit.faceIndex], vertex, rest: at, point: [hit.point.x, hit.point.y, hit.point.z] };
   }
 
   /** The view as drawn, on a plain background: a canvas at the device's resolution. */
