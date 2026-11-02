@@ -14,3 +14,46 @@ def test_text():
     assert 6 < t.extrude(1).size[1] < 9 and text("MK4", 10, align="center").extrude(1).bounds[0][0] < 0
     with pytest.raises(TuleError):
         text("x", font="no-such-font")
+
+
+def test_spline_circle():
+    import math
+
+    import pytest
+
+    from tule import TuleError, spline
+
+    pts = [(10 * math.cos(2 * math.pi * k / 64), 10 * math.sin(2 * math.pi * k / 64)) for k in range(64)]
+    p = spline(pts)
+    assert p.area == pytest.approx(math.pi * 100, rel=1e-4)
+    solid = p.extrude(3)
+    assert solid.is_valid and solid.volume == pytest.approx(3 * math.pi * 100, rel=1e-4)
+    assert spline(pts[::-1]).area == pytest.approx(p.area, rel=1e-9)        # either direction
+    assert spline(pts + pts[:1], closed=False).area == pytest.approx(p.area, rel=1e-4)  # a corner at the start
+    with pytest.raises(TuleError, match="at least 3"):
+        spline([(0, 0), (1, 0), (0, 0)])
+    with pytest.raises(TuleError, match="open curve") as e:
+        spline(pts, closed=False)
+    assert "closed=True" in e.value.hint
+    with pytest.raises(TuleError, match="crosses itself"):
+        spline([(10 * math.sin(t), 5 * math.sin(2 * t)) for t in (0.3 + 2 * math.pi * k / 40 for k in range(40))])
+    with pytest.raises(TuleError, match="on a line"):
+        spline([(0, 0), (1, 1), (2, 2)])
+
+
+def test_spline_dense_and_tol():
+    import math
+
+    import pytest
+
+    from tule import spline
+
+    # 1,250 samples of a wavy outline: one smooth curve that measures right, also when fitted within tol
+    r = lambda a: 20 + 1.5 * math.cos(25 * a)
+    pts = [(r(a) * math.cos(a), r(a) * math.sin(a)) for a in (2 * math.pi * k / 1250 for k in range(1250))]
+    exact = math.pi * (400 + 1.5 ** 2 / 2)
+    p = spline(pts)
+    assert p.area == pytest.approx(exact, rel=1e-5)
+    assert p.extrude(1).volume == pytest.approx(exact, rel=1e-5)
+    light = spline(pts, tol=1e-3)
+    assert light.area == pytest.approx(exact, rel=1e-5) and light.extrude(1).is_valid

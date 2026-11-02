@@ -1,4 +1,4 @@
-"""Involute spur gears: external, internal (ring) and the pair that meshes them.
+"""Involute spur gears: external, internal (ring) and the pair that meshes them; cycloidal drives.
 
 ```python
 from tule import *
@@ -24,23 +24,29 @@ planet and a ring with the same x mesh at the standard center distance.
 ``backlash`` thins each tooth (an external gear's tooth, a ring gear's tooth)
 by that much along the pitch circle; a pair's backlash is the sum.
 
+A cycloidal drive (``cycloidal_drive(26, 80, 5, 1.2, 8)``: 26 pins on an 80
+circle, a 25-lobe disc on a 1.2 crank) has ``disc``, ``pins``, ``ratio`` and
+``place(disc, angle)``; ``cycloidal_disc`` is the disc alone.
+
 Straight bevel gears are in ``tule.bevel`` (``bevel_gear``, ``bevel_pair``).
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeVertex, BRepBuilderAPI_MakeWire
-from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCP.BRep import BRep_Builder
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.Approx import Approx_ParametrizationType
 from OCP.GeomAbs import GeomAbs_Shape
 from OCP.GeomAPI import GeomAPI_PointsToBSpline
 from OCP.Geom import Geom_BSplineCurve
 from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+from OCP.TopoDS import TopoDS_Compound
 
 try:  # OCP 8
     from OCP.collections import Array1_gp_Pnt as TColgp_Array1OfPnt  # type: ignore
@@ -49,9 +55,10 @@ except ImportError:  # OCP 7.x
 
 from ._occ import cast, from_list, kind_of, subshapes
 from .errors import TuleError
+from .profile import _quarter_turns
 from .shape import Shape
 
-__all__ = ["GearPair", "gear_pair", "internal_gear", "spur_gear"]
+__all__ = ["CycloidalDrive", "GearPair", "cycloidal_disc", "cycloidal_drive", "gear_pair", "internal_gear", "spur_gear"]
 
 _FLANK_POINTS = 40   # exact samples per involute flank, fitted by a B-spline within _TOL
 _ROOT_POINTS = 30    # per fillet (the root curve runs fillet, root circle, fillet)
@@ -286,9 +293,12 @@ def _fit(points, tol, degree=5):
     return fit.Curve()
 
 
-def _turned(curve, angle, v0, v1):
-    """An edge on a copy of ``curve`` turned by ``angle`` about z, between two vertices."""
+def _turned(curve, angle, v0, v1, u0=None, u1=None):
+    """An edge on a copy of ``curve`` (or of its piece from ``u0`` to ``u1``) turned by ``angle`` about z,
+    between two vertices."""
     c = Geom_BSplineCurve(curve.Poles(), curve.Knots(), curve.Multiplicities(), curve.Degree())
+    if u0 is not None:
+        c.Segment(u0, u1)
     c.Rotate(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), angle)
     return BRepBuilderAPI_MakeEdge(c, v0, v1).Edge()
 
@@ -566,3 +576,212 @@ def _interference(g1, g2, dist, internal):
         if depth.max() > _SLACK * g1.m:
             return dst, float(rho.flat[int(np.argmax(depth))])
     return None
+
+
+# ---------------------------------------------------------------- cycloidal drives
+# The disc of a cycloidal drive with N pins (radius rr, on a circle of radius R) and an
+# eccentric crank e, in the disc's frame: a pin's center rolls along the shortened
+# epicycloid p(t) = R e^(it) - e e^(iNt) (N - 1 lobes), and the disc's outline is that
+# curve offset inward by rr. With the crank at angle θ the disc's center is at e e^(iθ)
+# and the disc is turned by -θ / (N - 1); every pin then touches the outline.
+
+
+class _Cycloid:
+    def __init__(self, pins, pin_circle_d, pin_d, e, op):
+        if int(pins) != pins or pins < 4:
+            raise TuleError(f"a cycloidal drive needs a whole number of pins ≥ 4, not {pins}", op=op)
+        if pin_circle_d <= 0 or pin_d <= 0 or e <= 0:
+            raise TuleError("pin_circle_d, pin_d and eccentricity must be positive", op=op)
+        n, R, rr = self.n, self.R, self.rr = int(pins), pin_circle_d / 2, pin_d / 2
+        self.e = e
+        if rr >= R * math.sin(math.pi / n):
+            raise TuleError(f"{n} pins of diameter {pin_d:g} overlap on a {pin_circle_d:g} circle", op=op,
+                            hint=f"use pins under {2 * R * math.sin(math.pi / n):.4g} in diameter")
+        self.max_e = self._max_eccentricity()
+        if e >= self.max_e:
+            raise TuleError(f"eccentricity {e:g} undercuts the lobes (their tips would loop): the limit for "
+                            f"{pin_d:g} pins on a {pin_circle_d:g} circle is {self.max_e:.4g}", op=op,
+                            hint="use a smaller eccentricity, smaller pins or a larger pin circle",
+                            max_eccentricity=self.max_e)
+        self.r_root = R - e - rr                                  # the valleys' circle
+
+    def _max_curvature(self, e):
+        """The largest curvature of the pins' path (convex side): the offset by rr loops where rr exceeds 1/κ."""
+        n, R = self.n, self.R
+        t = np.linspace(0, math.pi / (n - 1), 2001)               # half a lobe: the rest is symmetric
+        a = R * np.exp(1j * t) - n * e * np.exp(1j * n * t)       # p' / i
+        b = R * np.exp(1j * t) - n * n * e * np.exp(1j * n * t)   # -p''
+        return float(np.max(np.real(np.conj(a) * b) / np.abs(a) ** 3))
+
+    def _max_eccentricity(self):
+        lo, hi = 0.0, self.R / self.n                            # past R / N the path itself loops
+        for _ in range(50):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if self.rr * self._max_curvature(mid) < 1 else (lo, mid)
+        return lo
+
+    def points(self, t, inset=0.0):
+        """Outline points (complex) at curve parameters ``t``, moved ``inset`` inward; t = 0 is the valley on +x."""
+        n, R, rr, e = self.n, self.R, self.rr, self.e
+        t = np.asarray(t, float)
+        a = R * np.exp(1j * t) - n * e * np.exp(1j * n * t)       # outward normal × |p'|
+        return R * np.exp(1j * t) - e * np.exp(1j * n * t) - (rr + inset) * a / np.abs(a)
+
+    def lobe(self, tol):
+        """One lobe, valley (on +x) to valley: a B-spline 0 to 2 ``tol`` inside the exact outline.
+
+        Fitted within ``tol`` of the outline moved ``tol`` inward, so the disc touches the pins but
+        never cuts into them.
+        """
+        from OCP.GeomAPI import GeomAPI_Interpolate, GeomAPI_ProjectPointOnCurve
+
+        try:
+            from OCP.collections import HArray1_gp_Pnt  # OCP 8
+        except ImportError:  # pragma: no cover
+            from OCP.TColgp import TColgp_HArray1OfPnt as HArray1_gp_Pnt
+
+        span = 2 * math.pi / (self.n - 1)
+        dense = np.linspace(0, span, 20001)
+        s = np.concatenate([[0], np.cumsum(np.abs(np.diff(self.points(dense))))])
+        tangents = [gp_Vec(0, 1, 0), gp_Vec(-math.sin(span), math.cos(span), 0)]  # valleys: across the radius
+        k = 48
+        while True:
+            t = np.interp(np.linspace(0, s[-1], 2 * k + 1), s, dense)  # even along the curve
+            pts, mids = self.points(t[::2], tol), self.points(t[1::2], tol)
+            arr = HArray1_gp_Pnt(1, len(pts))
+            for i, p in enumerate(pts):
+                arr.SetValue(i + 1, gp_Pnt(p.real, p.imag, 0))
+            it = GeomAPI_Interpolate(arr, False, 1e-9)
+            it.Load(*tangents, False)
+            it.Perform()
+            curve = it.Curve()
+            err = max(GeomAPI_ProjectPointOnCurve(gp_Pnt(p.real, p.imag, 0), curve).LowerDistance() for p in mids)
+            if err <= tol:
+                return curve
+            if k >= 1536:
+                raise TuleError("could not fit the disc's lobes", op="cycloidal_disc",
+                                hint="the eccentricity is very close to its limit; use a smaller one")
+            k *= 2
+
+
+def _hole_wire(radius, x=0.0, y=0.0):
+    e = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(x, y, 0), gp_Dir(0, 0, -1)), float(radius))).Edge()
+    return BRepBuilderAPI_MakeWire(e).Wire(), e
+
+
+def cycloidal_disc(pins: int, pin_circle_d: float, pin_d: float, eccentricity: float, width: float | None = None, *,
+                   bore: float | None = None, holes: tuple | None = None):
+    """The disc of a cycloidal drive: ``pins - 1`` lobes rolling inside ``pins`` pins, from z = 0 up to ``width``.
+
+    ``pins`` pins of diameter ``pin_d`` stand on a circle of diameter
+    ``pin_circle_d``; the input crank's ``eccentricity`` moves the disc's
+    center. The outline is the exact profile (the shortened epicycloid offset
+    by the pin radius) in B-splines lying 0 to 0.0002 · pin_circle_d / pins
+    inside it, so the disc touches every pin without cutting in; a valley is
+    centered on +x. ``bore`` is the center hole's
+    diameter (the crank's bearing); ``holes=(count, circle_d, d)`` are the
+    output pins' holes, the first on +x: d = output pin + 2 · eccentricity.
+    Without ``width`` it is a Profile. Faces: ``lobes``, ``top``, ``bottom``,
+    ``bore``, ``holes``. Raises when the eccentricity undercuts the lobes
+    (``e.data["max_eccentricity"]``); ``cycloidal_drive`` builds the pins and
+    places the disc.
+    """
+    op = "cycloidal_disc"
+    c = _Cycloid(pins, pin_circle_d, pin_d, eccentricity, op)
+    curve = c.lobe(_TOL * pin_circle_d / pins)
+    lobes = c.n - 1
+    pitch = 2 * math.pi / lobes
+    cuts = _quarter_turns(curve)  # a few edges per lobe, so area and volume measure right
+    corners = [[BRepBuilderAPI_MakeVertex(curve.Value(u).Rotated(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), k * pitch))
+                .Vertex() for u in cuts[:-1]] for k in range(lobes)]
+    wire = BRepBuilderAPI_MakeWire()
+    roles = {"lobes": []}
+    for k in range(lobes):
+        vs = corners[k] + [corners[(k + 1) % lobes][0]]
+        for j in range(len(cuts) - 1):
+            e = _turned(curve, k * pitch, vs[j], vs[j + 1], cuts[j], cuts[j + 1])
+            wire.Add(e)
+            roles["lobes"].append(e)
+    if not wire.IsDone():
+        raise TuleError("could not close the disc's outline", op=op)
+    mk = BRepBuilderAPI_MakeFace(wire.Wire(), True)
+    inner = 0.0
+    if bore:
+        if not 0 < bore / 2 < c.r_root:
+            raise TuleError(f"bore {bore:g} does not fit inside the valleys (diameter {2 * c.r_root:.4g})", op=op)
+        hole, e = _hole_wire(bore / 2)
+        mk.Add(hole)
+        roles["bore"] = [e]
+        inner = bore / 2
+    if holes:
+        try:
+            count, circle_d, d = holes
+        except (TypeError, ValueError):
+            raise TuleError("holes is (count, circle_d, d)", op=op) from None
+        rc, rh = circle_d / 2, d / 2
+        if int(count) != count or count < 1 or rh <= 0:
+            raise TuleError("holes needs a whole count ≥ 1 and a positive diameter", op=op)
+        if rc + rh >= c.r_root or rc - rh <= inner or (count > 1 and rh >= rc * math.sin(math.pi / count)):
+            raise TuleError(f"{count} holes of diameter {d:g} on a {circle_d:g} circle do not fit between the bore "
+                            f"and the valleys (diameter {2 * c.r_root:.4g}), or overlap", op=op)
+        roles["holes"] = []
+        for k in range(int(count)):
+            a = 2 * math.pi * k / count
+            hole, e = _hole_wire(rh, rc * math.cos(a), rc * math.sin(a))
+            mk.Add(hole)
+            roles["holes"].append(e)
+    face = mk.Face()
+    if width is None:
+        from .profile import Profile
+
+        return Profile(face)
+    if width <= 0:
+        raise TuleError("width must be positive", op=op)
+    return _prism(face, width, roles).named(f"cycloidal disc {lobes} lobes")
+
+
+@dataclass(frozen=True)
+class CycloidalDrive:
+    """A cycloidal disc and its pins: ``disc`` as made (centered on the origin), ``pins`` in place.
+
+    ``ratio`` is pins - 1: the disc turns once, backwards, per ``ratio``
+    turns of the input crank. ``eccentricity`` and ``max_eccentricity`` (the
+    undercut limit). ``place`` and ``rotation`` put the disc where the crank
+    at an angle holds it, touching every pin.
+    """
+
+    ratio: int
+    eccentricity: float
+    max_eccentricity: float
+    disc: Shape = field(repr=False, compare=False)
+    pins: Shape = field(repr=False, compare=False)
+
+    def rotation(self, angle: float = 0) -> float:
+        """Degrees the disc has turned about its own center with the crank at ``angle`` degrees."""
+        return -angle / self.ratio
+
+    def place(self, shape: Shape, angle: float = 0) -> Shape:
+        """``shape`` (the disc as made, or anything fixed to it) with the crank at ``angle`` degrees (0: toward +x)."""
+        a = math.radians(angle)
+        return shape.rotate(z=self.rotation(angle)).at(self.eccentricity * math.cos(a), self.eccentricity * math.sin(a), 0)
+
+
+def cycloidal_drive(pins: int, pin_circle_d: float, pin_d: float, eccentricity: float, width: float, *,
+                    bore: float | None = None, holes: tuple | None = None) -> CycloidalDrive:
+    """A cycloidal disc and its ``pins`` pins (from z = 0 up to ``width``, the first on +x).
+
+    Arguments as for ``cycloidal_disc``. ``drive.place(drive.disc, angle)``
+    is the disc with the crank at ``angle`` degrees; ``drive.ratio`` is
+    pins - 1.
+    """
+    disc = cycloidal_disc(pins, pin_circle_d, pin_d, eccentricity, width, bore=bore, holes=holes)
+    c = _Cycloid(pins, pin_circle_d, pin_d, eccentricity, "cycloidal_drive")
+    comp = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(comp)
+    for k in range(c.n):
+        a = 2 * math.pi * k / c.n
+        ax = gp_Ax2(gp_Pnt(c.R * math.cos(a), c.R * math.sin(a), 0), gp_Dir(0, 0, 1))
+        b.Add(comp, BRepPrimAPI_MakeCylinder(ax, c.rr, float(width)).Shape())
+    return CycloidalDrive(ratio=c.n - 1, eccentricity=eccentricity, max_eccentricity=c.max_e, disc=disc,
+                          pins=Shape(comp).named(f"pins {c.n}"))

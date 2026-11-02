@@ -2,9 +2,11 @@ import math
 import os
 import time
 
+import numpy as np
 import pytest
 
 from tule import *
+from tule._occ import subshapes
 
 
 def ring_band(r, dr, h):
@@ -229,3 +231,76 @@ def test_bevel_errors():
         bevel_gear(2, 20, 30, mating_teeth=40)
     with pytest.raises(TuleError, match="outside 0°–90°"):
         bevel_pair(2, 20, 40, 10, shaft_angle=150)
+
+
+# ---------------------------------------------------------------- cycloidal drives
+
+
+def cycloid(n, pin_circle_d, pin_d, e, t):
+    """The exact disc outline: the pin centers' path (a shortened epicycloid) offset inward by the pin radius."""
+    R, rr = pin_circle_d / 2, pin_d / 2
+    a = R * np.exp(1j * t) - n * e * np.exp(1j * n * t)
+    return R * np.exp(1j * t) - e * np.exp(1j * n * t) - rr * a / np.abs(a)
+
+
+@pytest.mark.parametrize("n, pin_circle_d, pin_d, e", [(26, 80, 5, 1.2), (12, 40, 4, 1.5)])
+def test_cycloidal_disc_is_exact_and_light(n, pin_circle_d, pin_d, e, tmp_path):
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+    from OCP.gp import gp_Pnt
+
+    outline = cycloidal_disc(n, pin_circle_d, pin_d, e)
+    assert isinstance(outline, Profile)
+    curves = [BRep_Tool.Curve_s(x, 0, 1) for x in subshapes(outline.wrapped, "edge")]
+    worst = 0.0
+    for z in cycloid(n, pin_circle_d, pin_d, e, np.linspace(0, 2 * np.pi, 3000, endpoint=False)):
+        p = gp_Pnt(z.real, z.imag, 0)
+        worst = max(worst, min(pr.LowerDistance() for c in curves
+                               for pr in [GeomAPI_ProjectPointOnCurve(p, c)] if pr.NbPoints()))
+    assert worst < 1e-3                                       # under 1 µm from the analytic profile
+    disc = cycloidal_disc(n, pin_circle_d, pin_d, e, 6, bore=10)
+    assert disc.is_valid and disc.name == f"cycloidal disc {n - 1} lobes"
+    assert len(disc.faces) < 6 * n and len(disc.faces["bore"]) == 1
+    R, rr = pin_circle_d / 2, pin_d / 2
+    assert disc.bounds[0].x == pytest.approx(-(R + e - rr), abs=1e-3)   # a valley on +x, so (odd lobes) a tip on -x
+    assert len((disc - cylinder(R - rr, 6)).solids) == n - 1     # the lobes, cut off at the pin circle
+    p = str(tmp_path / "disc.step")
+    export_step(disc, p)
+    assert os.path.getsize(p) < 1_500_000
+
+
+def test_cycloidal_drive_meshes_and_turns():
+    n, pin_circle_d, pin_d, e, w = 26, 80, 5, 1.2, 6
+    drive = cycloidal_drive(n, pin_circle_d, pin_d, e, w, bore=22, holes=(6, 50, 10 + 2 * e))
+    assert drive.ratio == 25 and 1.2 < drive.max_eccentricity < 80 / 2 / 26
+    disc = drive.disc
+    assert disc.is_valid and len(disc.faces["holes"]) == 6 and len(drive.pins.solids) == n
+    R = pin_circle_d / 2
+    pins = [cylinder(pin_d / 2, w).at(R * math.cos(2 * math.pi * k / n), R * math.sin(2 * math.pi * k / n), 0)
+            for k in range(n)]
+    placed = drive.place(disc, 37)
+    gaps = [placed.distance(p) for p in pins]
+    assert 0 < min(gaps) and max(gaps) < 1e-3                 # every pin touches, none is cut into
+    assert (placed & drive.pins).volume < 1e-9
+    assert (placed.at(0.01, 0, 0) & drive.pins).volume > 1e-3
+    # one turn of the crank turns the disc back by one lobe
+    assert drive.rotation(360) == pytest.approx(-360 / 25)
+    marker = box(2, 2, 2, center=True).at(20, 0, 3)
+    a = math.radians(-360 / 25)
+    assert drive.place(marker, 360).center_of_mass.x == pytest.approx(20 * math.cos(a) + e, abs=1e-9)
+    assert drive.place(marker, 360).center_of_mass.y == pytest.approx(20 * math.sin(a), abs=1e-9)
+    assert (drive.place(disc, 360) & drive.pins).volume < 1e-9
+
+
+def test_cycloidal_errors():
+    with pytest.raises(TuleError, match="undercuts") as e:
+        cycloidal_disc(26, 80, 5, 1.5)
+    assert e.value.data["max_eccentricity"] == pytest.approx(1.448, abs=1e-3)
+    assert "1.448" in str(e.value)
+    cycloidal_disc(26, 80, 5, 0.99 * e.value.data["max_eccentricity"], 2)   # just under the limit works
+    with pytest.raises(TuleError, match="overlap"):
+        cycloidal_disc(26, 80, 10, 1)
+    with pytest.raises(TuleError, match="bore"):
+        cycloidal_disc(26, 80, 5, 1.2, 4, bore=80)
+    with pytest.raises(TuleError, match="holes"):
+        cycloidal_disc(26, 80, 5, 1.2, 4, holes=(8, 66, 12))
