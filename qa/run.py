@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -44,6 +45,10 @@ ROOT = QA.parent
 PORT = int(os.environ.get("TULE_QA_PORT", "8788"))
 URL = f"http://127.0.0.1:{PORT}"
 MACHINE_URL = f"http://host.docker.internal:{PORT}"
+# Machines on another computer (start with TULE_QA_DOCKER=ssh://rechenknecht): its Docker runs them, and
+# `run.py tunnel rechenknecht` carries their connection to this control plane (docker0's address there).
+REMOTE_PORT = PORT + 10000
+REMOTE_URL = f"http://172.17.0.1:{REMOTE_PORT}"
 IMAGE = os.environ.get("TULE_QA_IMAGE", "tule-runtime:dev")
 TURN_MINUTES = 40
 # the Codex CLI of the ChatGPT app is newer than Homebrew's and knows the newest models
@@ -135,10 +140,21 @@ def sh(*cmd, timeout=600, check=True, **kw) -> str:
     return r.stdout
 
 
+def cores(name: str) -> str:
+    """Four cores of the other computer for this machine (so nproc says 4, and pools are sized to it)."""
+    n = int(sh("docker", "info", "--format", "{{.NCPU}}").strip() or 4)
+    k = int.from_bytes(name.encode(), "little") % max(1, n // 4)
+    return f"{4 * k}-{4 * k + 3}"
+
+
 def start_machine(g: Guest, project: str, name: str):
     env = g.api("POST", f"/api/projects/{project}/join", {})["env"]
+    if os.environ.get("DOCKER_HOST"):
+        env["TULE_URL"] = REMOTE_URL
     sh("docker", "rm", "-f", name, check=False)
-    sh("docker", "run", "-d", "--name", name, "--add-host", "host.docker.internal:host-gateway",
+    # each its own share, as a cloud machine has (cpu-4: 4 vCPUs, 12 GiB), not the whole Docker VM
+    sh("docker", "run", "-d", "--name", name, "--add-host", "host.docker.internal:host-gateway", "--memory", "12g",
+       *(["--cpuset-cpus", cores(name)] if os.environ.get("DOCKER_HOST") else ["--cpus", "4"]),
        *[x for k, v in env.items() for x in ("-e", f"{k}={v}")], IMAGE)
     for _ in range(180):
         logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
@@ -454,7 +470,10 @@ def report(night: Path):
 
 
 def state(run: Path) -> dict:
-    return json.loads((run / "state.json").read_text())
+    st = json.loads((run / "state.json").read_text())
+    if st.get("docker"):  # its machine runs on another computer: every docker command goes there
+        os.environ["DOCKER_HOST"] = st["docker"]
+    return st
 
 
 def save_state(run: Path, st: dict):
@@ -512,6 +531,8 @@ def cmd_start(a):
     project = re.sub(r"[^a-z0-9-]+", "-", a.name.lower()).strip("-")[:40]
     machine = f"tule-qa-{night.name}-{project}"[:60]
     log_from = (night / "control.log").stat().st_size if (night / "control.log").exists() else 0
+    if os.environ.get("TULE_QA_DOCKER"):
+        os.environ["DOCKER_HOST"] = os.environ["TULE_QA_DOCKER"]
     g = Guest()
     g.api("POST", "/api/projects", {"name": project})
     start_machine(g, project, machine)
@@ -519,7 +540,7 @@ def cmd_start(a):
     key = g.api("POST", "/api/keys/api", {"name": "qa codex"})["key"]
     save_state(run, {"project": project, "machine": machine, "key": key, "ip": g.ip, "session": g.session,
                      "model": a.model, "codex_session": None, "turn": 0, "busy": False, "log_from": log_from,
-                     "started": time.time(), "night": str(night)})
+                     "started": time.time(), "night": str(night), "docker": os.environ.get("TULE_QA_DOCKER")})
     print(f"run {run}\nproject {project} on machine {machine} (model {a.model or 'default'})\nviewer {URL}/p/{project}")
     setup_log = (run / "setup.log").read_text()
     if setup_log.strip():
@@ -660,8 +681,42 @@ def cmd_finish(a):
     print(clip((run / "machine.md").read_text(), 6000))
 
 
+FORWARD = """
+import asyncio
+async def pipe(r, w):
+    try:
+        while data := await r.read(65536):
+            w.write(data)
+            await w.drain()
+    finally:
+        w.close()
+async def client(r, w):
+    try:
+        r2, w2 = await asyncio.open_connection("127.0.0.1", PORT)
+    except OSError:
+        return w.close()
+    await asyncio.gather(pipe(r, w2), pipe(r2, w), return_exceptions=True)
+async def main():
+    s = await asyncio.start_server(client, "172.17.0.1", PORT)
+    print("forwarding", flush=True)
+    await s.serve_forever()
+asyncio.run(main())
+"""
+
+
+def cmd_tunnel(a):
+    """Runs until stopped: the control plane at <host>'s 127.0.0.1:REMOTE_PORT (ssh -R), and from there on
+    docker0, where that computer's machines reach it."""
+    code = FORWARD.replace("PORT", str(REMOTE_PORT))
+    while True:
+        subprocess.run(["ssh", "-o", "ServerAliveInterval=20", "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes",
+                        "-R", f"127.0.0.1:{REMOTE_PORT}:127.0.0.1:{PORT}", a.host, "python3", "-u", "-c", shlex.quote(code)])
+        print("tunnel dropped; again in 5 s", flush=True)
+        time.sleep(5)
+
+
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in ("serve", "stop", "start", "say", "_turn", "wait", "shell", "shot", "finish"):
+    if len(sys.argv) > 1 and sys.argv[1] in ("serve", "stop", "start", "say", "_turn", "wait", "shell", "shot", "finish", "tunnel"):
         ap = argparse.ArgumentParser()
         sub = ap.add_subparsers(dest="cmd")
         p = sub.add_parser("serve"); p.add_argument("--night"); p.add_argument("--no-image", action="store_true"); p.add_argument("--restart", action="store_true")
@@ -674,9 +729,10 @@ def main():
         p = sub.add_parser("shell"); p.add_argument("run"); p.add_argument("command"); p.add_argument("--timeout", type=int, default=600)
         p = sub.add_parser("shot"); p.add_argument("run"); p.add_argument("path", nargs="?")
         p = sub.add_parser("finish"); p.add_argument("run")
+        p = sub.add_parser("tunnel"); p.add_argument("host")
         a = ap.parse_args()
         {"serve": cmd_serve, "stop": cmd_stop, "start": cmd_start, "say": cmd_say, "_turn": cmd_turn, "wait": cmd_wait,
-         "shell": cmd_shell, "shot": cmd_shot, "finish": cmd_finish}[a.cmd](a)
+         "shell": cmd_shell, "shot": cmd_shot, "finish": cmd_finish, "tunnel": cmd_tunnel}[a.cmd](a)
         return
     auto()
 

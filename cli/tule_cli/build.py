@@ -33,6 +33,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 
@@ -331,16 +332,23 @@ class Build:
         log(f"{name}: building again, now that {', '.join(f'outputs/{n}' for n in after)} is built" if after else f"{name}: building ({why})")
         t0 = time.time()
         env = dict(os.environ, TULE_OUTPUTS=stage, TULE_BUILD_TARGET=name, TULE_BUILD_ROOT=self.root,
-                   TULE_BUILD_RESULT=result, TULE_BUILD_PENDING=json.dumps(pending), PYTHONDONTWRITEBYTECODE="1")
+                   TULE_BUILD_RESULT=result, TULE_BUILD_PENDING=json.dumps(pending), PYTHONDONTWRITEBYTECODE="1",
+                   TULE_BUILD_RUN=f"{os.getpid()}-{time.time_ns()}")
         tail: deque[str] = deque(maxlen=LOG_LINES)
         try:
             # stderr goes to the terminal as it comes and its end is kept for the record
             p = subprocess.Popen([sys.executable, "-m", "tule_cli.build", "--run", f"src/{name}.py"],
                                  cwd=self.root, env=env, stderr=subprocess.PIPE, text=True, errors="replace")
-            for line in p.stderr:
-                sys.stderr.write(line)
-                tail.append(line.rstrip("\n"))
+            def relay():
+                for line in p.stderr:
+                    sys.stderr.write(line)
+                    tail.append(line.rstrip("\n"))
+
+            reader = threading.Thread(target=relay, daemon=True)
+            reader.start()
             code = p.wait()
+            reap(env["TULE_BUILD_RUN"])  # what it left running would keep its stderr open
+            reader.join(5)
             try:
                 with open(result) as f:
                     res = json.load(f)
@@ -608,6 +616,25 @@ def _clean(root: str, rel: str) -> str:
     if r != "." and not _inside(root, r):
         raise BuildError(f"{rel}: not in the project ({root})")
     return r
+
+
+def reap(run: str):
+    """Kills what a script left running (a multiprocessing pool's workers): every process whose
+    environment carries its TULE_BUILD_RUN. Linux only; elsewhere they are left alone."""
+    import signal
+
+    mark = f"TULE_BUILD_RUN={run}".encode()
+    try:
+        pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        return
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                if mark in f.read().split(b"\0"):
+                    os.kill(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            continue
 
 
 HEAVY_MB = 60  # models the viewer meshes at once (a sequence shows one frame: not counted)

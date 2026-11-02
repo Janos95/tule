@@ -57,6 +57,7 @@ export function initPlot(el, onPick) {
       return e;
     };
     add("line", { x1: PAD.l, x2: w - PAD.r, y1: H - PAD.b, y2: H - PAD.b, class: "plot-base" });
+    const drawn = new Set(); // a line on top of one drawn before (servos turning together) is dashed, so both show
     shown().forEach((k) => {
       const j = keys.indexOf(k);
       const { lo, span } = range(k);
@@ -69,7 +70,8 @@ export function initPlot(el, onPick) {
         d += `${pen ? "L" : "M"}${x(i, w).toFixed(1)},${y(v).toFixed(1)}`;
         pen = true;
       });
-      add("path", { d, class: "plot-line", stroke: SERIES[j % SERIES.length] });
+      add("path", { d, class: "plot-line", stroke: SERIES[j % SERIES.length], ...(drawn.has(d) ? { "stroke-dasharray": "5 4" } : {}) });
+      drawn.add(d);
       const v = frames[current]?.values?.[k];
       if (Number.isFinite(v)) add("circle", { cx: x(current, w), cy: y(v), r: 3.5, fill: SERIES[j % SERIES.length], class: "plot-dot" });
     });

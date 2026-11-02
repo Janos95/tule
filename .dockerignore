@@ -12,3 +12,4 @@ cli/tests
 scratch
 python/build
 python/dist
+qa

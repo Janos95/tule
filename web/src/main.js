@@ -725,7 +725,7 @@ async function show() {
     const following = o.meta?.status === "running" && state.frame >= +$("scrub").max;
     $("scrub").max = String(Math.max(0, fr.length - 1));
     if (following) state.frame = fr.length - 1;
-    state.frame = Math.max(0, Math.min(state.frame, fr.length - 1));
+    if (fr.length) state.frame = Math.max(0, Math.min(state.frame, fr.length - 1)); // none yet: a long study's frames are still loading, keep the link's
     $("scrub").value = String(state.frame);
     const cur = fr[state.frame];
     plot.set(fr, state.frame);

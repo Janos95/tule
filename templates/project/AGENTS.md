@@ -20,6 +20,7 @@ Typical session: find or create the project with the connector (or `tule up -p <
 - Dimensions of a purchased part (servo, bearing, motor, a drill to hold) come from its datasheet or the vendor's CAD (search for it; a community model, or a printed fit gauge, if there is none): note the source next to the number, in `lib/` when several scripts use it, read what the number measures (screw shank or head), and check the interface (hole pattern, edge distance) in a screenshot before you say it fits.
 - Write for the user you have: to someone new to it, print and assembly steps in plain words (what to pick in their slicer, which screw to buy), each term explained or left out.
 - Say only what the user can see: before you reply, `tule build --check` and the viewer link for each result you mention; a job still running is "running", not a result.
+- Never copy the user's Tule login (`~/.config/tule`, its token) onto a machine or into a script. To see what the viewer shows, `tule screenshot` (`--frame N` for a sequence).
 - You are root: `pip install`, background jobs and any tool are fine. Extra packages for every boot go in `tule.toml`.
 
 ## Topics
