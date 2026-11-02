@@ -395,8 +395,11 @@ function fact(o) {
     const n = (s) => faces.filter((f) => f?.severity === s).length;
     if (n("error")) return [plural(n("error"), "error"), "error"];
     if (n("warning")) return [plural(n("warning"), "warning"), "warning"];
-    const conds = faces.filter((f) => f?.role).length + (o.meta?.arrows?.length ?? 0);
-    if (conds) return [plural(conds, "condition"), ""];
+    // the conditions by role: "4 fixed · 4 load", not "10 conditions"
+    const roles = new Map();
+    for (const f of faces) if (f?.role) roles.set(String(f.role), (roles.get(String(f.role)) ?? 0) + 1);
+    if (roles.size) return [[...roles].map(([r, n]) => `${n} ${r}`).join(" · "), ""];
+    if (o.meta?.arrows?.length) return [plural(o.meta.arrows.length, "load"), ""];
     if (faces.some((f) => Number.isFinite(f?.value))) return [o.meta?.scale?.label ?? "values", ""];
     return ["ok", "ok"];
   }

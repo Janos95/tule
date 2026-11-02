@@ -8,13 +8,16 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-server git git-lfs ca-certificates libgl1 libx11-6 ripgrep patch jq curl wget fonts-dejavu-core poppler-utils tini \
  && for p in mesa-libgallium libllvm19 libgl1-mesa-dri libglx-mesa0; do dpkg -L $p 2>/dev/null | while read -r f; do if [ -f "$f" ]; then rm -f "$f"; fi; done; done \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
+# datasheet sites often refuse curl's and wget's own names (403): they ask as a browser would
+RUN printf 'user-agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"\nlocation\n' > /root/.curlrc \
+ && printf 'user_agent = Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36\n' >> /etc/wgetrc
 # (OCP only needs libGL.so.1 to load; the Mesa drivers, 200 MB, are for rendering. Their files go but the
 # packages stay installed, so apt keeps working: `apt-get install --reinstall` brings them back; libz3 stays,
 # PrusaSlicer needs it)
 
 # OCP links against VTK libraries at import (vtk is its only heavy dependency)
 COPY runtime/prune_vtk.sh /tmp/prune_vtk.sh
-RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh \
+RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh pymupdf \
  && sh /tmp/prune_vtk.sh && rm /tmp/prune_vtk.sh
 
 COPY python /opt/tule/python

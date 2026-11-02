@@ -478,6 +478,34 @@ def remote(args, argv: list[str], out: str | None = None):
     print(f"tule: wrote {out} (from {args.project}'s machine)", file=sys.stderr)
 
 
+def _pdf_page(args):
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not os.path.isfile(args.file):
+        raise CliError(f"no such file: {args.file}")
+    if not shutil.which("pdftoppm"):
+        raise CliError("rendering a PDF needs pdftoppm (apt-get install poppler-utils)")
+    page = args.frame or 1
+    with tempfile.TemporaryDirectory() as d:
+        r = subprocess.run(["pdftoppm", "-png", "-f", str(page), "-l", str(page), "-scale-to", str(args.size), "-singlefile",
+                            args.file, os.path.join(d, "p")], capture_output=True, text=True)
+        if r.returncode:
+            raise CliError(f"cannot render page {page} of {args.file}: {r.stderr.strip()[-300:]}")
+        data = open(os.path.join(d, "p.png"), "rb").read()
+    if args.o == "-":
+        sys.stdout.buffer.write(data)
+        sys.stdout.flush()
+        out = "the PNG to stdout"
+    else:
+        out = os.path.abspath(args.o)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(data)
+    print(f"tule: wrote {out}: page {page} of {args.file} (--frame N for another page)", file=sys.stderr)
+
+
 def cmd_screenshot(args):
     if args.project:  # from your own computer: render on the machine, write the PNG here
         argv = ["tule", "screenshot", *([args.file] if args.file else []), "-o", "-", "--view", args.view, "--size", str(args.size)]
@@ -485,6 +513,8 @@ def cmd_screenshot(args):
         argv += ["--frame", str(args.frame)] if args.frame is not None else []
         argv += ["--field", args.field] if args.field else []
         return remote(args, argv, None if args.o == "-" else args.o)
+    if args.file and args.file.lower().endswith(".pdf"):  # a drawing: its page as the sheet looks
+        return _pdf_page(args)
     try:
         from .render import VIEWS, render
     except ImportError as e:
@@ -693,13 +723,13 @@ def snapshot_here(reason: str = "manual"):
 def add_commands(add):
     """Registers the machine commands with the CLI's `add(name, fn, help, project)`."""
     sp = add("screenshot", cmd_screenshot, "render an output or a STEP/STL file to PNG (the agent's eyes)", project=False)
-    sp.add_argument("file", nargs="?", help="a STEP/STL file or an output folder (default: the newest output)")
+    sp.add_argument("file", nargs="?", help="a STEP/STL file, an output folder (default: the newest output), or a PDF drawing")
     sp.add_argument("-o", default="view.png", help="the PNG to write, or - for stdout (default: view.png)")
     sp.add_argument("--output", help="an output's name in the outputs folder")
     sp.add_argument("--view", default="iso", help="iso (default), front, back, left, right, top, bottom")
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
     sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
-    sp.add_argument("--frame", type=int, help="a sequence's frame, from 1 as in the viewer (default: the last; -2 the one before)")
+    sp.add_argument("--frame", type=int, help="a sequence's frame, from 1 as in the viewer (default: the last; -2 the one before); a PDF's page")
     sp.add_argument("-p", "--project", help="from your own computer: render on this project's machine, write the PNG here")
     sp.add_argument("--field", help="an overlay field to color by, by label (default: the first; e.g. displacement)")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)
