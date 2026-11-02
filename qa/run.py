@@ -563,13 +563,15 @@ def cmd_say(a):
 
 def summarize(raw: Path) -> dict:
     """What the agent did in a turn, counted (codex)."""
-    cmds, failed, tools = 0, [], []
+    cmds, failed, tools, error = 0, [], [], None
     for line in raw.read_text().splitlines() if raw.exists() else []:
         try:
             ev = json.loads(line)
         except ValueError:
             continue
         it = ev.get("item", {})
+        if ev.get("type") == "turn.failed":  # e.g. a model the account cannot use
+            error = (ev.get("error") or {}).get("message") or "turn failed"
         if ev.get("type") != "item.completed":
             continue
         if it.get("type") == "command_execution":
@@ -582,7 +584,7 @@ def summarize(raw: Path) -> dict:
             tools.append(it.get("tool", "?") + (" (error)" if err else ""))
         elif it.get("type") == "web_search":
             tools.append("web_search")
-    return {"commands": cmds, "failed_commands": failed, "tools": tools}
+    return {"commands": cmds, "failed_commands": failed, "tools": tools, "turn_failed": error}
 
 
 def cmd_turn(a):
@@ -599,7 +601,7 @@ def cmd_turn(a):
         reply, session = codex_turn(run / "home", env, msg, st.get("codex_session"), raw)
         (run / f"turn-{n}.md").write_text(readable("codex", raw))
         with open(run / "conversation.md", "a") as f:
-            f.write(f"**User:** {msg}\n\n**Agent:** {reply or '(no reply)'}\n\n")
+            f.write(f"**User:** {msg}\n\n**Agent:** {reply or summarize(raw)['turn_failed'] or '(no reply)'}\n\n")
         screenshot(run / "shots" / f"viewer-{n}.png", st["key"], f"/p/{st['project']}")
         screenshot(run / "shots" / f"projects-{n}.png", st["key"], "/")
         g = Guest(st["ip"], st["session"])
@@ -660,6 +662,9 @@ def cmd_wait(a):
     if s.get("blocked"):
         print(f"BLOCKED: Codex hit its {s['blocked']}. Not a Tule finding: stop the run here (finish), "
               "write findings for the turns before, and mark the outcome \"blocked by model quota\".\n")
+    if s.get("turn_failed"):
+        print(f"TURN FAILED in Codex: {s['turn_failed']}\nIf this is the model or the account, it is not a Tule finding: stop the run (finish) "
+              "and mark the outcome \"blocked\".\n")
     print(f"# turn {n}: {s['minutes']} min{', TIMED OUT' if s['timed_out'] else ''}\n\n## agent's reply\n{s['reply'] or '(no reply)'}\n\n"
           f"## what it did\n{s['commands']} shell commands, {len(s['failed_commands'])} failed\n"
           f"Tule tools: {', '.join(s['tools']) or 'none'}\n"
