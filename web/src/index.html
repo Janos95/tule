@@ -18,13 +18,16 @@
         <div id="tab-outputs" class="side-pane">
           <div id="output-list" role="listbox" aria-label="Outputs"></div>
           <div id="parts" role="tree" aria-label="Parts" hidden></div>
-          <p id="outputs-empty" class="outputs-empty" hidden>Nothing in <code>outputs/</code> yet. Write a STEP or STL file to <code>/workspace/outputs/&lt;name&gt;/</code> on the machine.</p>
+          <p id="outputs-empty" class="outputs-empty" hidden>Nothing in <code>outputs/</code> yet: <code>tule build</code> makes it from <code>src/</code>.</p>
+          <div id="inputs-head" class="outputs-head inputs-head" hidden>Inputs</div>
+          <div id="input-list" role="listbox" aria-label="Inputs"></div>
         </div>
         <div class="side-foot"><span id="machine" class="machine" data-state="unknown" title="The project's machine"><span class="dot"></span><span id="machine-text">connecting…</span><svg id="machine-more" class="chev" viewBox="0 0 24 24" hidden><path d="M6 9l6 6l6 -6"/></svg><select id="machine-pick" aria-label="Which machine's copy to show" hidden></select></span></div>
       </aside>
       <section id="right">
         <div id="stage">
           <div id="viewer"></div>
+          <div id="page" class="page"></div>
           <div id="hud" class="hud">
             <button id="annotate-toggle" class="toggle" title="Annotate: draw and pick faces for your agent" aria-controls="annotate" aria-expanded="false">
               <svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8H2.5v-3zM9 4l3 3" /></svg><span class="label">Annotate</span>

@@ -31,7 +31,7 @@ Wire protocol on the one WebSocket (text frames are JSON, binary frames are
                 binary kind 1: SSH bytes for stream id; kind 2: a mesh for request id
   DO -> agent   {"t": "config", "keys": [...], "hostKey": {...} | null}
                 {"t": "ssh-open", "sid": n} / {"t": "ssh-close", "sid": n}
-                {"t": "mesh", "rid": n, "path": "bracket/bracket.step", "hash": "..."}
+                {"t": "mesh", "rid": n, "path": "outputs/bracket/bracket.step", "hash": "..."}
                 {"t": "stop" | "snapshot", "rid": n}  save now (stop: the machine is going away)
                 {"t": "restore", "rid": n, "id": "..."}  make /workspace match a snapshot
                 {"t": "save", "rid": n, "message": "..."}  commit, merge main, push (saves.py)
@@ -83,45 +83,55 @@ def frame(kind: int, ident: int, payload: bytes) -> bytes:
 
 
 class Outputs:
-    """The index of /workspace/outputs and tessellations cached by content hash."""
+    """The index of the project's outputs/ and inputs/ (every file, by folder), whether each
+    output is up to date (tule build's records) and whether agent work in inputs/ may be out
+    of date (tule based-on); and tessellations cached by content hash."""
+
+    ROOTS = ("outputs", "inputs")
+    WATCHED = ("src", "lib")  # only for freshness: an edited script makes its output stale
 
     def __init__(self, root: str):
-        self.root = root
+        self.root = root  # /workspace
         self.stamp = None
         self.hashes: dict[str, tuple[tuple, str]] = {}  # path -> ((size, mtime), sha256)
         self.meshes: dict[str, bytes] = {}
+        self.build_hashes = None  # tule_cli.build.Hashes, kept so files are hashed once
 
-    def _stamp(self):
-        out = []
-        for d, dirs, files in os.walk(self.root):
-            dirs[:] = sorted(x for x in dirs if not x.startswith("."))
+    def _walk(self, top: str, out: list, keep=lambda rel: False):
+        """(path, size, mtime) of the files under top, without hidden ones unless keep(rel)."""
+        for d, dirs, files in os.walk(os.path.join(self.root, top)):
+            rd = os.path.relpath(d, self.root)
+            dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "__pycache__" or keep(os.path.join(rd, x)))
             for f in sorted(files):
-                if f.startswith(".") or ".tmp" in f:
+                rel = os.path.join(rd, f)
+                if (f.startswith(".") and not keep(rel)) or ".tmp" in f:
                     continue
-                p = os.path.join(d, f)
                 try:
-                    st = os.stat(p)
+                    st = os.stat(os.path.join(self.root, rel))
                 except FileNotFoundError:
                     continue
-                out.append((os.path.relpath(p, self.root), st.st_size, st.st_mtime_ns))
-        # an output tule build is making right now (a sequence grows there until the script ends)
-        stages = os.path.join(self.root, ".build")
-        try:
-            names = sorted(n for n in os.listdir(stages) if n.startswith("stage-"))
-        except OSError:
-            names = []
-        for n in names:
-            for d, dirs, files in os.walk(os.path.join(stages, n)):
-                dirs[:] = sorted(dirs)
-                for f in sorted(files):
-                    if f.startswith(".") or ".tmp" in f:
-                        continue
-                    p = os.path.join(d, f)
-                    try:
-                        st = os.stat(p)
-                    except FileNotFoundError:
-                        continue
-                    out.append((os.path.relpath(p, self.root), st.st_size, st.st_mtime_ns))
+                out.append((rel, st.st_size, st.st_mtime_ns))
+
+    def _stamp(self):
+        out: list = []
+        build = os.path.join("outputs", ".build")
+
+        def keep(rel: str) -> bool:
+            """In outputs/.build: the records (freshness) and what tule build is making right now
+            (a sequence grows there until the script ends); not the hash cache, lock or results."""
+            if rel == build:
+                return True
+            if not rel.startswith(build + os.sep):
+                return False
+            sub = rel[len(build) + 1:]
+            if sub.startswith("stage-"):
+                return True
+            return os.sep not in sub and sub.endswith(".json") and not sub.startswith(("hashes", "result-"))
+
+        self._walk("outputs", out, keep)
+        self._walk("inputs", out, lambda rel: rel == os.path.join("inputs", ".based-on.json"))
+        for top in self.WATCHED:
+            self._walk(top, out)
         return tuple(out)
 
     def changed(self) -> bool:
@@ -144,43 +154,92 @@ class Outputs:
         return digest
 
     def index(self) -> list[dict]:
-        """One entry per output folder (or loose file directly in outputs/)."""
-        groups: dict[str, dict] = {}
+        """One entry per folder (or loose file) in outputs/ and inputs/:
+        {name, root, files: [{path, file, hash, size, basedOn?}], meta, error?, building?, build?}.
+        path is relative to /workspace; file to the entry's folder."""
+        groups: dict[tuple, dict] = {}
         staged: dict[str, dict] = {}
         for rel, size, mtime in self.stamp or ():
-            top, _, rest = rel.partition(os.sep)
-            into = groups
-            if top == ".build":  # .build/stage-<name>-<pid>/<name>/<file>
-                _, _, rest = rest.partition(os.sep)
+            root, _, rest = rel.partition(os.sep)
+            if root not in self.ROOTS:
+                continue
+            top, _, rest = rest.partition(os.sep)
+            into, key = groups, root
+            if root == "outputs" and top == ".build":  # .build/stage-<name>-<pid>/<name>/<file>
+                stage, _, rest = rest.partition(os.sep)
                 top, _, rest = rest.partition(os.sep)
-                if not rest:
+                if not stage.startswith("stage-") or not rest:
                     continue
                 into = staged
+            elif top.startswith("."):
+                continue
             name = top if rest else os.path.splitext(top)[0]
-            g = into.setdefault(name, {"name": name, "files": [], "meta": None})
-            if rest == "output.json":
+            g = into.setdefault((key, name), {"name": name, "root": root, "files": [], "meta": None})
+            if root == "outputs" and rest == "output.json":
                 try:
                     with open(os.path.join(self.root, rel)) as f:
                         g["meta"] = json.load(f)
                 except (OSError, ValueError) as e:
                     g["error"] = f"output.json: {e}"
                 continue
-            if not rel.lower().endswith(GEOMETRY):
-                continue
             try:
                 digest = self._hash(rel, size, mtime)
             except FileNotFoundError:
                 continue
-            g["files"].append({"path": rel.replace(os.sep, "/"), "file": rest or top, "hash": digest, "size": size})
-        for name, g in staged.items():  # shown instead of the last built one once it has something to show
-            if g["files"]:
-                groups[name] = {**g, "building": True}
-        return [g for g in groups.values() if g["files"] or g.get("error")]
+            g["files"].append({"path": rel.replace(os.sep, "/"), "file": (rest or top).replace(os.sep, "/"), "hash": digest, "size": size})
+        for (_, name), g in staged.items():  # shown instead of the last built one once it has something to show
+            if any(f["file"].lower().endswith(GEOMETRY) for f in g["files"]):
+                groups[("outputs", name)] = {**g, "building": True}
+        self._freshness(groups)
+        return [g for g in groups.values() if g["files"] or g.get("error") or g.get("build")]
+
+    def _freshness(self, groups: dict):
+        """Adds tule build's view of each output (build: {state, why?, error?, log?}) and marks
+        agent work in inputs/ whose sources changed (file basedOn: {sources, changed})."""
+        try:
+            from tule_cli import build
+        except ImportError:  # an image without the CLI: no freshness
+            return
+        if not os.path.isdir(os.path.join(self.root, "src")):
+            return
+        try:
+            if self.build_hashes is None:
+                self.build_hashes = build.Hashes(self.root)
+            rows = build.status(self.root, self.build_hashes)
+            notes = build.based_on_status(self.root, self.build_hashes)
+        except Exception as e:
+            log("freshness:", repr(e))
+            return
+        stage = os.path.join(self.root, "outputs", ".build")
+        try:
+            running = {n[6:].rsplit("-", 1)[0] for n in os.listdir(stage) if n.startswith("stage-")}  # stage-<name>-<pid>
+        except OSError:
+            running = set()
+        for r in rows:
+            g = groups.get(("outputs", r["name"]))
+            state = "building" if r["name"] in running else "failed" if r.get("failed") else "stale" if r.get("why") else "ok"
+            if g is None:
+                if state == "ok":
+                    continue
+                g = groups[("outputs", r["name"])] = {"name": r["name"], "root": "outputs", "files": [], "meta": None}
+            g["build"] = {"state": state, "script": f"src/{r['name']}.py",
+                          **{k: r[k] for k in ("why", "log") if r.get(k)}, **({"error": r["failed"]} if r.get("failed") else {})}
+        for n in notes:
+            parts = n["path"].split("/")
+            name = parts[1] if len(parts) > 2 else os.path.splitext(parts[1])[0]
+            g = groups.get(("inputs", name))
+            if not g:
+                continue
+            for f in g["files"]:
+                if f["path"] == n["path"] or f["path"].startswith(n["path"] + "/"):
+                    f["basedOn"] = {"sources": n["sources"], "changed": n["changed"]}
 
     def mesh(self, rel: str, digest: str) -> bytes:
+        if not rel.startswith(tuple(r + "/" for r in self.ROOTS)):
+            rel = "outputs/" + rel  # a page from before paths were relative to /workspace
         path = os.path.normpath(os.path.join(self.root, rel))
-        if not path.startswith(self.root + os.sep):
-            raise ValueError(f"{rel}: outside outputs/")
+        if not any(path.startswith(os.path.join(self.root, r) + os.sep) for r in self.ROOTS):
+            raise ValueError(f"{rel}: not in outputs/ or inputs/")
         return self.cached(digest, lambda: encode_mesh(path))
 
     def cached(self, key: str, make) -> bytes:
@@ -363,7 +422,7 @@ class Agent:
         self.url = f"{base}/api/projects/{project}/agent"
         self.token = token
         self.sshd = Sshd()
-        self.outputs = Outputs(OUTPUTS)
+        self.outputs = Outputs(WORKSPACE)
         self.streams: dict[int, Stream] = {}
         self.ws = None
         self.workspace = Workspace(WORKSPACE, Api(url, project, token), log=lambda *a: log(*a))
@@ -612,10 +671,38 @@ def _ping(agent: "Agent", args: dict) -> dict:
     return {"pong": True, "workspace": WORKSPACE}
 
 
+def _build(agent: "Agent", args: dict) -> dict:
+    """The viewer's Rebuild: `tule build <names>` in the background (its records and staging
+    folder tell the viewer how it goes; its output is in outputs/.build/viewer.log)."""
+    names = [str(n) for n in args.get("names") or []]
+    for n in names:
+        if not n or n.startswith(("-", ".")) or "/" in n:
+            raise ValueError(f"{n!r} is not an output name")
+    os.makedirs(os.path.join(OUTPUTS, ".build"), exist_ok=True)
+    with open(os.path.join(OUTPUTS, ".build", "viewer.log"), "ab") as out:
+        subprocess.Popen(["tule", "build", *names], cwd=WORKSPACE, stdin=subprocess.DEVNULL, stdout=out,
+                         stderr=subprocess.STDOUT, start_new_session=True)
+    return {"started": names}
+
+
+def _confirm(agent: "Agent", args: dict) -> dict:
+    """The viewer's "Still valid" on agent work in inputs/: records its sources as they are now."""
+    from tule_cli import build
+
+    path = str(args.get("path") or "")
+    try:
+        sources = build.based_on(WORKSPACE, path, None, agent.outputs.build_hashes)
+    except build.BuildError as e:
+        raise ValueError(str(e)) from None
+    agent.outputs.stamp = None  # send the index again
+    return {"sources": sorted(sources)}
+
+
 # viewer requests by op (see Agent.request): a handler returns a dict or bytes;
 # a dict's "broadcast" entry is an event for every viewer. files.py: read
-# (the viewer's Download); annotations.py: annotate, annotations.
-REQUESTS = {"ping": _ping, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
+# (the viewer's Download and file views); annotations.py: annotate, annotations;
+# build (Rebuild) and confirm (agent work still holds).
+REQUESTS = {"ping": _ping, "build": _build, "confirm": _confirm, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
 
 
 def new_project(root: str):

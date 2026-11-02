@@ -11,7 +11,13 @@
 // [rid u32][bytes] (an ArrayBuffer). {t: "event"} messages are the agent's
 // broadcasts. Credentials: auth.js, the only place that knows them.
 //
-// Output kinds (output.json "kind"): part, assembly, sequence, overlay
+// The index has one entry per folder of outputs/ and inputs/. An entry's geometry is
+// drawn in 3D; each other file is its own view (files.js: tables, charts, documents,
+// images). Under the selected entry the sidebar lists its views and says when it is out
+// of date (tule build's records) with a Rebuild, or for agent work in inputs/, that what
+// it was based on changed, with a Still valid (runtime/tule_agent.py, _build, _confirm).
+//
+// Geometry kinds (output.json "kind"): part, assembly, sequence, overlay
 // (overlay.js has its format).
 //
 // Assembly placement: a part entry of an assembly's output.json may carry
@@ -27,6 +33,7 @@
 // puts it.
 import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
+import { render as renderFile, size, typeOf, TYPE_ICONS } from "./files.js";
 import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
 import { initPlot } from "./plot.js";
@@ -53,6 +60,7 @@ const state = {
   outputs: [], // the index from the machine
   wanted: new URLSearchParams(location.search).get("o"), // the output asked for (the link, a click)
   selected: null, // the output shown: the wanted one once it exists, else the first
+  view: new URLSearchParams(location.search).get("f"), // which of its views: "3d", a file name, "log" (null: the first)
   shown: null, // the key of what is drawn (output name and file hashes)
   frame: 0,
   meshes: [], // what is drawn
@@ -114,7 +122,7 @@ async function connect(delay = 500) {
 function onText(m) {
   if (m.t === "outputs") {
     if (m.status) machine(m.status);
-    state.outputs = m.outputs ?? [];
+    state.outputs = prepare(m.outputs ?? []);
     renderList();
     show();
   } else if (m.t === "mesh-error" || m.t === "res") {
@@ -184,7 +192,7 @@ function request(file) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected"));
       const id = ++rid;
       pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ t: "mesh", rid: id, path: file.path, hash: file.hash }));
+      ws.send(JSON.stringify({ t: "mesh", rid: id, path: file.wire, hash: file.hash }));
     });
     promise.catch(() => meshes.delete(file.hash)); // retry later
     meshes.set(file.hash, promise);
@@ -246,6 +254,35 @@ $("machine-pick").addEventListener("change", (e) => {
 
 // ------------------------------------------------------------ outputs
 
+/** The index as the page uses it: id (an output's name, or inputs/<name>), files (geometry,
+ * drawn in 3D) and docs (the other files, a view each); paths relative to /workspace. */
+function prepare(list) {
+  return list.map((o) => {
+    const root = o.root ?? "outputs"; // an agent from before inputs/ were shown sends no root
+    const all = (o.files ?? []).map((f) => ({
+      ...f,
+      wire: f.path, // as the agent named it, for mesh requests
+      path: o.root ? f.path : `outputs/${f.path}`,
+      type: typeOf(f.file),
+    }));
+    return { ...o, root, id: root === "outputs" ? o.name : `inputs/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry") };
+  });
+}
+
+/** What an entry can show: its geometry in 3D, each other file, and a failed build's log. */
+function views(o) {
+  const v = [];
+  if (o.files.length) v.push({ id: "3d", label: "3D", type: "geometry" });
+  for (const f of o.docs) v.push({ id: f.file, label: f.file, type: f.type, f });
+  if (o.build?.state === "failed" && o.build.log) v.push({ id: "log", label: "build log", type: "log" });
+  return v;
+}
+
+const viewOf = (o) => {
+  const v = views(o);
+  return v.find((x) => x.id === state.view) ?? v[0] ?? null;
+};
+
 /** part, assembly, sequence or overlay: output.json's kind, else inferred from the files. */
 function kindOf(o) {
   if (o.meta?.kind) return o.meta.kind;
@@ -265,11 +302,27 @@ const ICONS = {
   assembly: '<path d="M8 2 14 5 8 8 2 5zM2 8l6 3 6-3M2 11l6 3 6-3"/>',
   sequence: '<rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M5 3.5v9M11 3.5v9"/>',
   overlay: '<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2.2"/>',
+  folder: '<path d="M2 4.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/>',
 };
 
-/** One short fact for a row, and how to color it: "11 errors", "31 frames", "3 parts". */
-function fact(o, kind) {
-  if (o.error) return ["error", "error"];
+/** An entry's icon: its geometry's kind, else its file's type (a folder of several). */
+function iconOf(o) {
+  if (o.files.length) return ICONS[kindOf(o)] ?? ICONS.part;
+  if (o.docs.length === 1) return TYPE_ICONS[o.docs[0].type] ?? TYPE_ICONS.file;
+  const types = new Set(o.docs.map((f) => f.type));
+  return types.size === 1 ? TYPE_ICONS[[...types][0]] : o.docs.length ? ICONS.folder : TYPE_ICONS.file;
+}
+
+const changed = (o) => o.docs.filter((f) => f.basedOn?.changed?.length);
+const building = (o) => o.building || o.build?.state === "building";
+
+/** One short fact for a row, and how to color it: "out of date", "11 errors", "31 frames". */
+function fact(o) {
+  if (o.error || o.build?.state === "failed") return ["failed", "error"];
+  if (building(o)) return ["building", "live"];
+  if (o.build?.state === "stale" || changed(o).length) return ["out of date", "warning"];
+  if (!o.files.length) return ["", ""];
+  const kind = kindOf(o);
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   if (kind === "sequence") return o.meta?.status === "running" ? ["running", "live"] : [plural(frames(o).length, "frame"), ""];
   if (kind === "assembly") return [plural(Array.isArray(o.meta?.parts) ? o.meta.parts.length : o.files.length, "part"), ""];
@@ -286,48 +339,135 @@ function fact(o, kind) {
   return ["", ""];
 }
 
+const lastLine = (log) => (log ?? "").trim().split("\n").pop()?.trim() || null;
+
+/** Under the selected entry: why it is out of date or failed, with what to do about it. */
+function freshness(o) {
+  const lines = [];
+  const can = state.machine === "running";
+  const line = (tone, text, label, act) => {
+    const d = document.createElement("div");
+    d.className = `fresh ${tone}`;
+    d.innerHTML = "<span></span>";
+    d.firstChild.textContent = text;
+    if (label) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.disabled = !can;
+      b.title = can ? "" : "The machine is not running";
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        b.disabled = true;
+        try {
+          await act();
+        } catch (err) {
+          b.disabled = false;
+          flash(`${label}: ${err.message}`);
+        }
+      });
+      d.append(b);
+    }
+    lines.push(d);
+  };
+  const rebuild = async () => {
+    await req("build", { names: [o.name] });
+    o.build = { ...o.build, state: "building" }; // until the index says how it went
+    renderList();
+  };
+  const b = o.build;
+  if (o.error) line("error", o.error);
+  if (b?.state === "failed") line("error", lastLine(b.log) ?? b.error ?? "failed", "Rebuild", rebuild);
+  else if (b?.state === "stale") line("warn", b.why === "never built" ? `${b.script} has not run yet` : b.why ?? "out of date", b.why === "never built" ? "Build" : "Rebuild", rebuild);
+  for (const f of changed(o)) {
+    const what = `${f.basedOn.changed.join(", ")} changed`;
+    line("warn", o.docs.length > 1 ? `${f.file}: ${what}` : what, "Still valid", async () => {
+      await req("confirm", { path: f.path });
+      f.basedOn.changed = [];
+      renderList();
+    });
+  }
+  return lines;
+}
+
 // the parts tree moves into the list under the selected output; the list is rebuilt often,
 // which detaches it, so keep the element itself (a lookup by id would find nothing then)
 const partsTree = $("parts");
-const folded = new Set(); // assemblies whose parts tree the user folded away (for this visit)
+const folded = new Set(); // entries whose views and parts the user folded away (for this visit)
+let scrolledTo = null; // the selected entry the list last scrolled to (phones show a short list)
 
 function renderList() {
-  const list = $("output-list");
-  list.textContent = "";
-  $("outputs-empty").hidden = state.outputs.length > 0;
   // a link's output may not be in the list yet (the machine is starting): show the first meanwhile, keep wanting it
-  state.selected = state.outputs.some((o) => o.name === state.wanted) ? state.wanted : (state.outputs[0]?.name ?? null);
-  for (const o of state.outputs) {
+  const all = state.outputs;
+  state.selected = all.some((o) => o.id === state.wanted) ? state.wanted : (all.find((o) => o.root === "outputs")?.id ?? all[0]?.id ?? null);
+  const outs = all.filter((o) => o.root === "outputs");
+  const ins = all.filter((o) => o.root === "inputs");
+  $("outputs-empty").hidden = outs.length > 0;
+  fill($("output-list"), outs);
+  $("inputs-head").hidden = !ins.length;
+  fill($("input-list"), ins);
+}
+
+function fill(list, entries) {
+  list.textContent = "";
+  for (const o of entries) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "output";
     b.role = "option";
-    b.setAttribute("aria-selected", String(o.name === state.selected));
-    const kind = kindOf(o);
-    const [text, tone] = fact(o, kind);
-    const tree = kind === "assembly";
-    const open = tree && o.name === state.selected && !folded.has(o.name);
-    b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${ICONS[kind] ?? ICONS.part}</svg><span class="output-name"></span><small></small>${tree ? '<svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>' : ""}`;
+    const selected = o.id === state.selected;
+    b.setAttribute("aria-selected", String(selected));
+    const [text, tone] = fact(o);
+    const vs = views(o);
+    const v = selected ? viewOf(o) : null;
+    const tree = o.files.length && kindOf(o) === "assembly";
+    const foldable = vs.length > 1 || tree;
+    const open = foldable && selected && !folded.has(o.id);
+    b.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${iconOf(o)}</svg><span class="output-name"></span><small></small>${foldable ? '<svg class="output-fold" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>' : ""}`;
     b.children[1].textContent = o.name;
     b.children[2].textContent = text;
     if (tone) b.children[2].dataset.tone = tone;
-    if (tree) {
+    if (foldable) {
       b.setAttribute("aria-expanded", String(open));
       b.classList.toggle("open", open);
     }
-    b.title = [o.meta?.title, `${kind}${o.files.length ? ` · ${o.files.map((f) => f.file).join(", ")}` : ""}`, o.error].filter(Boolean).join("\n");
+    const kinds = [o.files.length ? kindOf(o) : null, ...o.docs.map((f) => f.file)].filter(Boolean);
+    b.title = [o.meta?.title, `${o.root}/${o.name}${kinds.length ? ` · ${kinds.join(", ")}` : ""}`, o.error].filter(Boolean).join("\n");
     b.addEventListener("click", () => {
-      // an assembly shown already: a click folds or unfolds its parts (it stays so when you come back)
-      if (tree && o.name === state.selected) {
-        if (folded.has(o.name)) folded.delete(o.name);
-        else folded.add(o.name);
+      // shown already: a click folds or unfolds its views and parts (it stays so when you come back)
+      if (foldable && selected) {
+        if (folded.has(o.id)) folded.delete(o.id);
+        else folded.add(o.id);
         return renderList();
       }
-      select(o.name);
+      select(o.id);
     });
     list.append(b);
-    // an assembly's parts open under its row (the tree hides itself for a single part)
-    if (o.name === state.selected && !folded.has(o.name)) list.append(partsTree);
+    if (!selected) continue;
+    const under = document.createElement("div");
+    under.className = "under";
+    under.append(...freshness(o));
+    if (open) {
+      for (const x of vs.length > 1 ? vs : []) {
+        const r = document.createElement("button");
+        r.type = "button";
+        r.className = "view";
+        r.setAttribute("aria-current", String(x.id === v?.id));
+        const dot = x.f?.basedOn?.changed?.length ? '<span class="view-dot" title="May be out of date"></span>' : "";
+        r.innerHTML = `<svg class="output-icon" viewBox="0 0 16 16" aria-hidden="true">${x.type === "geometry" ? iconOf({ ...o, docs: [] }) : TYPE_ICONS[x.type] ?? TYPE_ICONS.file}</svg><span></span>${dot}`;
+        r.children[1].textContent = x.label;
+        r.addEventListener("click", () => selectView(x.id));
+        under.append(r);
+        // an assembly's parts open under its 3D view (the tree hides itself for a single part)
+        if (x.type === "geometry" && v?.id === "3d" && tree) under.append(partsTree);
+      }
+      if (vs.length === 1 && tree) under.append(partsTree);
+    }
+    if (under.childElementCount) list.append(under);
+    if (scrolledTo !== o.id) {
+      scrolledTo = o.id;
+      requestAnimationFrame(() => (under.isConnected ? under : b).scrollIntoView({ block: "nearest" }));
+    }
   }
 }
 
@@ -339,33 +479,123 @@ function placement(t, file) {
   return flat;
 }
 
-/** Shows an output by name; resolves once it is drawn. */
-function select(name) {
-  if (state.selected === name && state.shown) return Promise.resolve();
-  state.wanted = name;
+/** Shows an output (or input) by id; resolves once it is drawn. */
+function select(id) {
+  if (state.selected === id && state.shown) return Promise.resolve();
+  state.wanted = id;
+  state.view = null;
   state.frame = 0;
-  const u = new URL(location.href);
-  u.searchParams.set("o", name);
-  history.replaceState(null, "", u);
+  remember();
   renderList();
   return show();
 }
 
+/** Shows one of the selected entry's views: "3d", one of its files, or "log". */
+function selectView(id) {
+  state.view = id;
+  remember();
+  renderList();
+  return show();
+}
+
+function remember() {
+  const u = new URL(location.href);
+  u.searchParams.set("o", state.wanted);
+  if (state.view) u.searchParams.set("f", state.view);
+  else u.searchParams.delete("f");
+  history.replaceState(null, "", u);
+}
+
+/** Something a table cell, chart point or document link names: a file of this entry, or another entry. */
+function linkable(value) {
+  if (typeof value !== "string" || !value || value.length > 200) return false;
+  const v = value.replace(/^outputs\//, "").replace(/\/$/, "");
+  return state.outputs.some((o) => o.id === v && o.id !== state.selected);
+}
+function open(value) {
+  const o = state.outputs.find((x) => x.id === state.selected);
+  if (o && views(o).some((x) => x.id === value)) return selectView(value);
+  return select(String(value).replace(/^outputs\//, "").replace(/\/$/, ""));
+}
+
+function clearStage() {
+  $("caption").hidden = true;
+  overlay?.apply(null);
+  $("strip").hidden = true;
+  state.meshes = [];
+  state.record = null;
+  viewer?.clear();
+  $("sequence").hidden = true;
+  $("counts").textContent = "";
+}
+
+let pageKey = null;
+let pageCleanup = null;
+const reads = new Map(); // hash -> Promise<ArrayBuffer>: a file is read from the machine once
+function readFile(f) {
+  if (!reads.has(f.hash)) {
+    const p = req("read", { path: f.path, max: 30 << 20 }, 300_000);
+    p.catch(() => reads.delete(f.hash));
+    if (reads.size > 64) reads.delete(reads.keys().next().value);
+    reads.set(f.hash, p);
+  }
+  return reads.get(f.hash);
+}
+/** A view that is not 3D: the page over the stage. */
+async function showPage(o, v) {
+  const key = `${o.id}|${v?.id}|${v?.f?.hash ?? ""}|${v?.type === "log" ? o.build?.log : ""}`;
+  $("stage").classList.add("paged");
+  if (state.shown !== "page") {
+    state.shown = "page";
+    annotate?.reset();
+    clearStage();
+  }
+  offerDownload(v?.f ? [v.f] : []);
+  if (key === pageKey) return;
+  pageKey = key;
+  pageCleanup?.();
+  pageCleanup = null;
+  const page = $("page");
+  page.textContent = ""; // not the last view's content while this one loads
+  page.scrollTop = 0;
+  const body = document.createElement("div");
+  body.className = "page-body";
+  if (!v) {
+    body.append(Object.assign(document.createElement("p"), { className: "page-empty", textContent: o.build ? "Nothing to show yet." : "Empty." }));
+  } else if (v.type === "log") {
+    body.append(Object.assign(document.createElement("pre"), { className: "page-text", textContent: o.build.log }));
+  } else {
+    setStatus("Loading…");
+    const cleanup = await renderFile(body, v.f, {
+      read: readFile,
+      files: o.docs,
+      link: linkable,
+      open,
+      download,
+    });
+    setStatus("");
+    if (pageKey !== key) return cleanup();
+    pageCleanup = cleanup;
+  }
+  page.replaceChildren(body);
+}
+
 async function show() {
-  const o = state.outputs.find((x) => x.name === state.selected);
+  const o = state.outputs.find((x) => x.id === state.selected);
   if (!o) {
-    $("caption").hidden = true;
-    overlay?.apply(null);
-    $("strip").hidden = true;
+    $("stage").classList.remove("paged");
+    pageKey = null;
+    $("page").textContent = "";
+    clearStage();
     state.shown = null;
-    state.meshes = [];
-    state.record = null;
-    viewer?.clear();
     offerDownload([]);
-    $("sequence").hidden = true;
-    $("counts").textContent = "";
     return;
   }
+  const v = viewOf(o);
+  if (v?.type !== "geometry") return showPage(o, v);
+  if (state.shown === "page") state.shown = null;
+  $("stage").classList.remove("paged");
+  pageKey = null;
   const kind = kindOf(o);
   $("caption").hidden = kind === "overlay" || !o.meta?.title;
   $("caption").textContent = o.meta?.title ?? "";
@@ -395,9 +625,9 @@ async function show() {
   const entries = kind === "assembly" && Array.isArray(o.meta?.parts) ? o.meta.parts.filter((p) => o.files.some((f) => f.file === p?.file)) : null;
   if (entries?.length) shownFiles = entries.map((p) => o.files.find((f) => f.file === p.file));
   // what is drawn: the files and, but for a growing sequence, output.json (overlay faces, placements)
-  const key = o.name + "|" + shownFiles.map((f) => f.hash).join(",") + (kind === "sequence" ? "" : "|" + JSON.stringify(o.meta ?? null));
+  const key = o.id + "|" + shownFiles.map((f) => f.hash).join(",") + (kind === "sequence" ? "" : "|" + JSON.stringify(o.meta ?? null));
   if (key === state.shown) return;
-  const first = !state.shown || !state.shown.startsWith(o.name + "|");
+  const first = !state.shown || !state.shown.startsWith(o.id + "|");
   state.shown = key;
   if (first) annotate?.reset();
   setStatus(meshes.size === 0 || !shownFiles.every((f) => meshes.has(f.hash)) ? "Loading…" : "");
@@ -491,8 +721,6 @@ new ResizeObserver(updateInsets).observe($("stage"));
 
 // ------------------------------------------------------------ downloads
 
-const size = (n) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 2 ** 20).toFixed(1)} MiB`);
-
 /** Saves bytes as a file in the browser's downloads. */
 function save(bytes, name) {
   const url = URL.createObjectURL(new Blob([bytes]));
@@ -504,7 +732,7 @@ function save(bytes, name) {
 }
 
 let downloads = [];
-/** The Download button offers the shown output's geometry files. */
+/** The Download button offers the shown output's geometry files, or the file shown. */
 function offerDownload(list) {
   downloads = list;
   $("download").hidden = !list.length;
@@ -513,7 +741,7 @@ function offerDownload(list) {
 async function download(f) {
   $("download-menu").hidden = true;
   try {
-    save(await req("read", { path: `outputs/${f.path}`, max: 30 << 20 }, 300_000), f.file.split("/").pop());
+    save(await req("read", { path: f.path, max: 30 << 20 }, 300_000), f.file.split("/").pop());
   } catch (e) {
     flash(`Cannot download ${f.file}: ${e.message}`);
   }

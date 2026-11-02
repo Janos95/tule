@@ -427,29 +427,60 @@ def cmd_forget(args):
     print(f"tule: {p}: forgot the copy on {r['forgot']} (its unsaved work is gone)", file=sys.stderr)
 
 
+def _over_ssh(args, cmd: list[str]):
+    """Runs a tule command in the machine's /workspace (this is not a project folder, or -p was given)."""
+    return cmd_ssh(argparse.Namespace(project=args.project, machine=args.machine, config=False,
+                                      command=[f"cd /workspace && {shlex.join(cmd)}"]))
+
+
+def _maybe_stale(root: str):
+    """Agent work whose sources changed, said once after a build or check."""
+    from . import build
+
+    for r in build.based_on_status(root):
+        if r["changed"]:
+            print(f"tule: {r['path']} may be out of date ({', '.join(r['changed'])} changed): "
+                  f"redo it, or if it still holds: tule based-on {r['path']}", file=sys.stderr)
+
+
 def cmd_build(args):
     """Runs the scripts in src/ whose inputs changed: here when this is a project (a machine's /workspace), else on the machine over SSH."""
     from . import build
 
     root = None if args.project else build.find_root()
     if root is None:
-        cmd = ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else [])
-        return cmd_ssh(argparse.Namespace(project=args.project, machine=args.machine, config=False,
-                                          command=[f"cd /workspace && {shlex.join(cmd)}"]))
+        return _over_ssh(args, ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else []))
     try:
         if args.check:
             rows = build.status(root)
             for r in rows:
                 note = f"failed: {r['failed']}" if r.get("failed") else r.get("why", "")
                 print(f"{r['name']:<24} {r['state']:<11} {note}".rstrip())
+            _maybe_stale(root)
             return
         done = build.build(root, args.names or None, force=args.force)
     except build.BuildError as e:
         raise CliError(str(e)) from None
     counts = {k: sum(1 for v in done.values() if v == k) for k in ("built", "up to date", "failed")}
     print("tule: " + ", ".join(f"{n} {k}" for k, n in counts.items() if n), file=sys.stderr)
+    _maybe_stale(root)
     if counts["failed"]:
         sys.exit(1)
+
+
+def cmd_based_on(args):
+    """Records what a piece of agent work in inputs/ was based on; without sources, that it still holds."""
+    from . import build
+
+    root = None if args.project else build.find_root()
+    if root is None:
+        return _over_ssh(args, ["tule", "based-on", args.result, *args.sources])
+    try:
+        srcs = build.based_on(root, args.result, args.sources or None)
+    except build.BuildError as e:
+        raise CliError(str(e)) from None
+    what = "still holds; recorded" if not args.sources else "recorded"
+    print(f"tule: {build._clean(root, args.result)} is based on {', '.join(srcs)} ({what})", file=sys.stderr)
 
 
 def cmd_save(args):
@@ -572,6 +603,10 @@ def main(argv=None):
     sp.add_argument("names", nargs="*", help="only these (and what they read)")
     sp.add_argument("--check", action="store_true", help="say what is stale, run nothing")
     sp.add_argument("--force", action="store_true", help="run them even if nothing changed")
+    sp.add_argument("--machine", help="which machine (when several run)")
+    sp = add("based-on", cmd_based_on, "record what agent work in inputs/ was made from, so it is flagged when that changes")
+    sp.add_argument("result", help="the work, e.g. inputs/suppliers/bracket.json")
+    sp.add_argument("sources", nargs="*", help="what it was made from, e.g. outputs/bracket (none: it was checked and still holds)")
     sp.add_argument("--machine", help="which machine (when several run)")
     sp = add("save", cmd_save, "commit, merge the latest save, and push it (on the machine: this copy)")
     sp.add_argument("-m", "--message", help="what changed")

@@ -73,6 +73,8 @@ const ctx = await context({
   outdir: out,
   bundle: true,
   format: "esm",
+  splitting: true, // charts and documents load their libraries only when shown
+  chunkNames: "chunk-[hash]",
   minify: !dev,
   sourcemap: true,
   target: "es2022",

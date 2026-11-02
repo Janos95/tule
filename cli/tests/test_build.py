@@ -89,3 +89,49 @@ def test_a_failed_dependency_fails_what_reads_it(project):
     code, err = build(project)
     assert code == 1
     assert "needs outputs/plate, which failed" in err
+
+
+def test_a_failure_keeps_the_end_of_its_output(project):
+    (project / "src" / "plate.py").write_text("print('step 1')\nraise ValueError('boom')\n")
+    build(project, "plate")
+    rec = json.loads((project / "outputs" / ".build" / "plate.json").read_text())
+    assert "ValueError: boom" in rec["failed"]["log"]
+
+
+def test_an_output_that_reads_a_stale_one_is_stale_too(project):
+    from tule_cli import build as b
+
+    build(project)
+    (project / "lib" / "params.py").write_text("WALL = 7\n")
+    rows = {r["name"]: r for r in b.status(str(project))}
+    assert rows["plate"]["why"] == "lib/params.py changed"
+    assert rows["bom"] == {**rows["bom"], "state": "stale", "why": "outputs/plate is out of date"}
+
+
+def test_agent_work_is_flagged_when_what_it_was_based_on_changes(project):
+    from tule_cli import build as b
+
+    build(project)
+    (project / "inputs" / "suppliers").mkdir()
+    (project / "inputs" / "suppliers" / "plate.json").write_text('[{"supplier": "Acme", "price": 12.5}]')
+    r = subprocess.run([sys.executable, "-m", "tule_cli", "based-on", "inputs/suppliers/plate.json", "outputs/plate"],
+                       cwd=project, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert b.based_on_status(str(project))[0]["changed"] == []
+
+    (project / "lib" / "params.py").write_text("WALL = 8\n")
+    err = build(project)[1]
+    assert "inputs/suppliers/plate.json may be out of date (outputs/plate changed)" in err
+    assert b.based_on_status(str(project))[0]["changed"] == ["outputs/plate"]
+
+    b.based_on(str(project), "inputs/suppliers/plate.json")  # checked: still holds
+    assert b.based_on_status(str(project))[0]["changed"] == []
+    assert "may be out of date" not in build(project)[1]
+
+
+def test_agent_work_lives_in_inputs(project):
+    from tule_cli import build as b
+
+    build(project)
+    with pytest.raises(b.BuildError, match="kept in inputs/"):
+        b.based_on(str(project), "src/plate.py", ["outputs/plate"])

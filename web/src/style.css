@@ -1635,3 +1635,77 @@ main {
 
 .output-fold { flex: none; width: 13px; height: 13px; margin-left: -2px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
 .output.open .output-fold { transform: rotate(90deg); }
+
+/* ---------------------------------------------------------------- under the selected entry: freshness, views */
+
+.under { margin: 2px 0 8px 15px; padding-left: 6px; border-left: 2px solid var(--line); }
+.under #parts { margin: 0 0 2px 14px; padding: 0; border-left: 0; }
+.fresh { padding: 3px 4px 5px 6px; font-size: 12px; line-height: 1.4; overflow-wrap: break-word; }
+.fresh.warn { color: var(--warn); }
+.fresh.error { color: var(--danger); }
+/* what to do about it: a link after the text */
+.fresh button { all: unset; margin-left: 6px; color: var(--link); font-weight: 500; cursor: pointer; white-space: nowrap; }
+.fresh button:hover { text-decoration: underline; }
+.fresh button:disabled { color: var(--faint); cursor: default; text-decoration: none; }
+.view { display: flex; align-items: center; gap: 7px; width: 100%; height: 26px; padding: 0 6px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 12.5px; text-align: left; }
+.view span:not(.view-dot) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.view .output-icon { width: 13px; height: 13px; }
+.view:hover { background: var(--hover); color: var(--text); }
+.view[aria-current="true"] { color: var(--text); background: var(--hover); }
+.view[aria-current="true"] .output-icon { stroke: var(--accent); }
+.view-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn-fill); }
+.inputs-head { padding: 16px 6px 6px; }
+
+/* ---------------------------------------------------------------- the page: a view that is not 3D (files.js) */
+
+.page { position: absolute; inset: 0; display: none; overflow: auto; background: var(--bg); }
+#stage.paged .page { display: block; }
+#stage.paged #annotate-toggle, #stage.paged #fit, #stage.paged #counts, #stage.paged #caption, #stage.paged #marks, #stage.paged #pick { display: none; }
+.page-body { max-width: 920px; margin: 0 auto; padding: 52px 28px 40px; }
+.page-empty { color: var(--muted); font-size: 13px; text-align: center; margin-top: 18vh; }
+.page-error { color: var(--danger); font-size: 13px; }
+.page-note { color: var(--muted); font-size: 12px; margin: 8px 2px 0; }
+.page-text { margin: 0; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.page-image { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 4px; }
+.page-pdf { display: block; width: 100%; height: calc(100vh - 120px); border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.page-file { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.page-file span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.page-file small { color: var(--muted); }
+.page-missing { color: var(--muted); }
+
+.table-wrap { overflow: auto; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+table.data { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+table.data th, table.data td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.data tbody tr:last-child td { border-bottom: 0; }
+table.data th { position: sticky; top: 0; background: var(--panel); font-weight: 500; }
+table.data .num { text-align: right; }
+table.data th button { all: unset; cursor: pointer; color: var(--muted); font-size: 12px; }
+table.data th button:hover { color: var(--text); }
+table.data th[data-sort="up"] button::after { content: " ↑"; }
+table.data th[data-sort="down"] button::after { content: " ↓"; }
+table.data tbody tr:hover { background: var(--hover); }
+button.link { all: unset; cursor: pointer; color: var(--link); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--link) 35%, transparent); text-underline-offset: 2px; }
+button.link:hover { text-decoration-color: var(--link); }
+
+.chart { width: 100%; }
+.chart svg { display: block; max-width: 100%; }
+
+.page-doc { font-size: 14.5px; line-height: 1.6; color: var(--text); max-width: 720px; }
+.page-doc > :first-child { margin-top: 0; }
+.page-doc h1 { font-size: 22px; margin: 0 0 14px; }
+.page-doc h2 { font-size: 17px; margin: 26px 0 10px; }
+.page-doc h3 { font-size: 15px; margin: 20px 0 8px; }
+.page-doc a { color: var(--link); }
+.page-doc code { font: 12.5px var(--mono); background: var(--panel); padding: 1px 4px; border-radius: 4px; }
+.page-doc pre { background: var(--panel); padding: 10px 12px; border-radius: 6px; overflow: auto; }
+.page-doc pre code { background: none; padding: 0; }
+.page-doc img { max-width: 100%; height: auto; border-radius: 4px; }
+.page-doc table { border-collapse: collapse; font-size: 13px; }
+.page-doc th, .page-doc td { border-bottom: 1px solid var(--line); padding: 5px 10px; text-align: left; }
+.page-doc blockquote { margin: 0; padding-left: 14px; border-left: 3px solid var(--line); color: var(--muted); }
+.page-embed { margin: 14px 0; }
+
+@media (max-width: 640px) {
+  .page-body { padding: 48px 14px 28px; }
+  .page-doc { font-size: 14px; }
+}

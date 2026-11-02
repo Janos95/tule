@@ -7,7 +7,11 @@
     "build": "node build.mjs"
   },
   "dependencies": {
-    "three": "0.186.1"
+    "markdown-it": "15.0.3",
+    "three": "0.186.1",
+    "vega": "6.4.0",
+    "vega-interpreter": "2.3.2",
+    "vega-lite": "6.5.0"
   },
   "devDependencies": {
     "esbuild": "0.28.2"

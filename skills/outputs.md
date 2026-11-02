@@ -1,6 +1,6 @@
 # Outputs: what the viewer shows
 
-The viewer renders `/workspace/outputs/`: one folder per output, holding geometry files and an optional `output.json`. `tule build` makes them: `src/<name>.py` writes `outputs/<name>/`, and the user sees it within a second. Other files (a CSV) go into `outputs.folder()`.
+The viewer renders `/workspace/outputs/` (and `inputs/`): one folder per output, holding geometry files, an optional `output.json`, and any other files (tables, charts, documents, images: see below). `tule build` makes them: `src/<name>.py` writes `outputs/<name>/`, and the user sees it within a second. Other files go into `outputs.folder()`.
 
 ```
 outputs/
@@ -10,7 +10,7 @@ outputs/
   bracket-loads/   output.json bracket.step           an overlay: colored faces, labels, arrows
 ```
 
-Formats: STEP (B-rep: faces, edges, names, colors and tags travel inside) and STL (meshes). Prefer STEP for anything you model: the viewer and `tule screenshot --labels` then show face ids and tags.
+Geometry: STEP (faces, names, colors and tags travel inside; prefer it: the viewer and `tule screenshot --labels` show face ids and tags) or STL (meshes).
 
 ## Writing them
 
@@ -33,10 +33,10 @@ outputs.overlay("plate-loads", part, title="Load case 1",
 outputs.overlay("plate-walls", part, title="Wall thickness",    # numbers on faces: a color scale
                 faces={i: 1.0 + 0.5 * i for i in part.faces.ids},
                 scale={"label": "wall thickness", "unit": "mm"})
-outputs.part("plate-info", part, info={"material": "aluminium 6061", "mass": "10.8 g"})  # facts, any kind
+outputs.part("plate-info", part, info={"mass": "10.8 g"})       # facts, any kind
 ```
 
-Any tool may write the files directly instead (a solver writing STL frames, say): write to a temporary name in the same folder and `os.replace` it, and write `output.json` last.
+Any tool may write the files directly instead (a solver's STL frames): temporary name, then `os.replace`; `output.json` last.
 
 ## `output.json`
 
@@ -57,8 +57,26 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid` or your own word) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. Unmentioned faces are drawn gray. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Use it for anything per face: wall thickness, draft angle, a score.
-- **Info** (any kind): `"info"` is a flat object of facts about the output (text, numbers, booleans; put units in text: `"20.8 g"`), shown as rows under the view.
+- **Info** (any kind): a flat object of facts (units in text: `"20.8 g"`), shown under the view.
 - **Sequences**: set `"status": "running"` while frames are coming and `"done"` (or `"failed"`) at the end; `values` are plotted.
+
+## Tables, charts, documents, images
+
+Other files get their own view: `.csv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place); PDF, text, images; anything else: a download.
+
+```python
+import json
+from tule import outputs
+d = outputs.folder("study")              # under tule build: outputs.folder()
+with open(f"{d}/results.csv", "w") as f:
+    f.write("t_mm,mass_g\n3,25.9\n5,43.2\n")
+with open(f"{d}/mass.vl.json", "w") as f:
+    json.dump({"data": {"url": "results.csv"}, "mark": "line",
+               "encoding": {"x": {"field": "t_mm", "type": "quantitative"},
+                            "y": {"field": "mass_g", "type": "quantitative"}}}, f)
+```
+
+No HTML or network: chart data is a file beside it or inline `values`; no styling. A value naming an output (a BOM's `part` column) links to it.
 
 ## Looking at outputs yourself
 
@@ -69,6 +87,6 @@ tule screenshot -o top.png --output bracket --view top   # iso front back left r
 tule inspect outputs/bracket/bracket.step                # faces, ids, types, areas, tags
 ```
 
-Read the PNG. The command also prints which faces are labeled, too small to label, or hidden from that view. A sequence renders its last frame; an overlay its colors, labels and arrows.
+Read the PNG. It also prints which faces are labeled, too small to label, or hidden. A sequence renders its last frame.
 
-Keep `outputs/` for results the user should see; delete stale outputs (`rm -r outputs/old`) so the list stays meaningful. Outputs are not committed to git (see `.gitignore`), but snapshots keep their history.
+Outputs are not in git (`tule build` remakes them).

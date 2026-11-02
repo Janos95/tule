@@ -11,6 +11,11 @@ output is stale without running it.
 
 A script that reads another output (``outputs/bracket/…``) gets that one built first: if it
 is not up to date yet, the run stops, the other is built, and the script runs again.
+
+Agent work is never re-run: its result lives in ``inputs/`` and ``tule based-on`` records
+what it was based on (``inputs/.based-on.json``: each source's fingerprint). When a source
+changes, the result is reported as possibly out of date until someone redoes it or confirms
+it still holds (``tule based-on <result>`` again records the sources as they are now).
 """
 
 from __future__ import annotations
@@ -23,10 +28,13 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import deque
 
 FORMAT = 1
 STATE = ".build"  # outputs/.build: records, staging folders, the hash cache
 NEEDS = 75  # the exit status of a run that needs another output first
+BASED_ON = "inputs/.based-on.json"
+LOG_LINES = 40  # of a failed script's output, kept in its record for the viewer
 
 
 class BuildError(Exception):
@@ -221,9 +229,15 @@ class Build:
         t0 = time.time()
         env = dict(os.environ, TULE_OUTPUTS=stage, TULE_BUILD_TARGET=name, TULE_BUILD_ROOT=self.root,
                    TULE_BUILD_RESULT=result, TULE_BUILD_PENDING=json.dumps(pending), PYTHONDONTWRITEBYTECODE="1")
+        tail: deque[str] = deque(maxlen=LOG_LINES)
         try:
-            code = subprocess.run([sys.executable, "-m", "tule_cli.build", "--run", f"src/{name}.py"],
-                                  cwd=self.root, env=env).returncode
+            # stderr goes to the terminal as it comes and its end is kept for the record
+            p = subprocess.Popen([sys.executable, "-m", "tule_cli.build", "--run", f"src/{name}.py"],
+                                 cwd=self.root, env=env, stderr=subprocess.PIPE, text=True, errors="replace")
+            for line in p.stderr:
+                sys.stderr.write(line)
+                tail.append(line.rstrip("\n"))
+            code = p.wait()
             try:
                 with open(result) as f:
                     res = json.load(f)
@@ -241,7 +255,7 @@ class Build:
             if code != 0 or problems:
                 for p in problems[:5]:
                     log(f"{name}: {p}")
-                self.fail(name, f"exit status {code}" if code else problems[0])
+                self.fail(name, f"exit status {code}" if code else problems[0], "\n".join(tail))
                 return []
             self.publish(name, os.path.join(stage, name))
             reads = {rel: self.hashes.of(rel) for rel in sorted(set(res.get("reads", [])))}
@@ -267,9 +281,9 @@ class Build:
         os.replace(new, dest)
         shutil.rmtree(old, ignore_errors=True)
 
-    def fail(self, name: str, error: str):
+    def fail(self, name: str, error: str, output: str = ""):
         rec = read_record(self.root, name) or {"target": name, "script": f"src/{name}.py"}
-        rec["failed"] = {"at": int(time.time() * 1000), "error": error}
+        rec["failed"] = {"at": int(time.time() * 1000), "error": error, **({"log": output} if output else {})}
         write_record(self.root, name, rec)
         self.done[name] = "failed"
         kept = os.path.isdir(os.path.join(self.root, "outputs", name))
@@ -299,18 +313,116 @@ def build(root: str, names: list[str] | None = None, force: bool = False) -> dic
         lock.close()
 
 
-def status(root: str) -> list[dict]:
-    """Every script's output: up to date, stale (and why), never built, or failed."""
-    h = Hashes(root)
+def status(root: str, hashes: Hashes | None = None) -> list[dict]:
+    """Every script's output: up to date, stale (and why: something it read changed, or an
+    output it reads is itself out of date), never built, or failed (with the end of its log)."""
+    h = hashes or Hashes(root)
     env = env_stamp()
+    names = targets(root)
+    recs = {n: read_record(root, n) or {} for n in names}
+    why = {n: why_stale(root, n, h, env) for n in names}
+
+    def upstream(n: str, seen: tuple = ()) -> str | None:
+        if why[n] is not None:
+            return why[n]
+        for rel in recs[n].get("reads", {}):
+            o = output_of(rel)
+            if o in why and o != n and o not in seen and upstream(o, seen + (n,)) is not None:
+                return f"outputs/{o} is out of date"
+        return None
+
     out = []
-    for n in targets(root):
-        rec = read_record(root, n) or {}
-        why = why_stale(root, n, h, env)
-        row = {"name": n, "state": "up to date" if why is None else "stale", **({"why": why} if why else {})}
+    for n in names:
+        w = upstream(n)
+        row = {"name": n, "state": "up to date" if w is None else "stale", **({"why": w} if w else {})}
+        rec = recs[n]
         if rec.get("failed") and (rec.get("built") or 0) < rec["failed"]["at"]:
             row["failed"] = rec["failed"]["error"]
+            if rec["failed"].get("log"):
+                row["log"] = rec["failed"]["log"]
+        if rec.get("built"):
+            row["built"] = rec["built"]
         out.append(row)
+    return out
+
+
+# ---------------------------------------------------------------- what agent work was based on
+
+
+def fingerprint(root: str, rel: str, hashes: Hashes) -> str:
+    """A file's hash, or for a folder a hash over its files' names and hashes."""
+    p = os.path.join(root, rel)
+    if os.path.isfile(p):
+        return hashes.of(rel)
+    if not os.path.isdir(p):
+        return "missing"
+    lines = []
+    for d, dirs, files in os.walk(p):
+        dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "__pycache__")
+        for f in sorted(files):
+            if not f.startswith("."):
+                r = os.path.relpath(os.path.join(d, f), root).replace(os.sep, "/")
+                lines.append(f"{r[len(rel) + 1:]}:{hashes.of(r)}")
+    return "tree:" + hashlib.sha256("\n".join(lines).encode()).hexdigest()[:32]
+
+
+def _clean(root: str, rel: str) -> str:
+    """A path the user typed (absolute, ./x, x/) as a path relative to the project."""
+    p = os.path.abspath(os.path.join(root, rel))
+    if not (p == root or p.startswith(root + os.sep)):
+        raise BuildError(f"{rel}: not in the project ({root})")
+    return os.path.relpath(p, root).replace(os.sep, "/")
+
+
+def read_based_on(root: str) -> dict[str, dict[str, str]]:
+    try:
+        with open(os.path.join(root, BASED_ON)) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def based_on(root: str, result: str, sources: list[str] | None = None, hashes: Hashes | None = None) -> dict[str, str]:
+    """Records that inputs/<result> was made from `sources` as they are now (no sources: the
+    ones recorded before, i.e. it was checked and still holds). Returns {source: fingerprint}."""
+    h = hashes or Hashes(root)
+    result = _clean(root, result)
+    if not result.startswith("inputs/") or result == BASED_ON:
+        raise BuildError(f"{result}: agent work is kept in inputs/ (e.g. inputs/suppliers/bracket.json)")
+    if not os.path.exists(os.path.join(root, result)):
+        raise BuildError(f"no {result}; write the result first, then record what it is based on")
+    notes = read_based_on(root)
+    if sources:
+        srcs = [_clean(root, x) for x in sources]
+    else:
+        srcs = list(notes.get(result, {}))
+        if not srcs:
+            raise BuildError(f"{result} has no sources recorded yet: tule based-on {result} outputs/<name> …")
+    for x in srcs:
+        if x == result or x == BASED_ON or x.startswith("outputs/.build"):
+            raise BuildError(f"{x}: not something work can be based on")
+        if not os.path.exists(os.path.join(root, x)):
+            raise BuildError(f"no {x}")
+    notes[result] = {x: fingerprint(root, x, h) for x in srcs}
+    os.makedirs(os.path.join(root, "inputs"), exist_ok=True)
+    tmp = os.path.join(root, BASED_ON + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(notes, f, indent=1, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, os.path.join(root, BASED_ON))
+    return notes[result]
+
+
+def based_on_status(root: str, hashes: Hashes | None = None) -> list[dict]:
+    """Each recorded result: its sources and which of them changed since."""
+    h = hashes or Hashes(root)
+    out = []
+    for result, srcs in sorted(read_based_on(root).items()):
+        if not isinstance(srcs, dict) or not os.path.exists(os.path.join(root, result)):
+            continue
+        changed = [x for x, fp in srcs.items() if fingerprint(root, x, h) != fp]
+        out.append({"path": result, "sources": sorted(srcs), "changed": changed})
     return out
 
 
@@ -421,11 +533,15 @@ def _run_script(script: str):
         runpy.run_path(script, run_name="__main__")
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
-    except BaseException:
+    except BaseException as e:
         if not needs:
             import traceback
 
-            traceback.print_exc()
+            # from the script's first frame on: tule build's own frames (runpy) say nothing
+            tb = e.__traceback__
+            while tb and (tb.tb_frame.f_code.co_filename == __file__ or tb.tb_frame.f_code.co_filename.startswith("<frozen")):
+                tb = tb.tb_next
+            traceback.print_exception(type(e), e, tb or e.__traceback__)
         code = 1
     report(code)
 
