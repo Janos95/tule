@@ -61,7 +61,7 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `outputs.drawing`, see `tule docs modeling`), text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `outputs.drawing`, see `tule docs drawings`), text, images; anything else: a download.
 
 ```python
 import json

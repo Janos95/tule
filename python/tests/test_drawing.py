@@ -275,3 +275,96 @@ def test_grouped_name_and_drawn_symbols(outdir):
     t = svg_texts(path)
     assert "4× ⌀6.6 THRU" in t and "⌀11" in t  # "⌴" and "↧" are strokes: Helvetica has no such glyphs
     assert not any("⌴" in s or "↧" in s for s in t)
+
+
+@functools.cache
+def split_clamp():
+    """A block split by a slit from the top: a clearance hole in the left ear ends in the slit, a blind tapped
+    hole in the right ear, and two vertical through holes of the clearance hole's size."""
+    p = box(40, 20, 30) - box(1, 22, 21).at(19.5, -1, 10)
+    p -= cylinder(2.25, 21).rotate(y=90).at(-1, 10, 24)    # x -1 .. 20: into the slit
+    p -= cylinder(1.6, 12).rotate(y=90).at(20.5, 10, 24)   # x 20.5 .. 32.5: blind
+    for x in (8, 32):
+        p -= cylinder(2.25, 32).at(x, 4, -1)
+    return p.named("clamp")
+
+
+CLAMP_VIEWS = ("front", "top", "left", "right")
+
+
+def test_thru_only_when_both_ends_are_open():
+    t = texts(item=split_clamp(), views=CLAMP_VIEWS)
+    assert "2× ⌀4.5 THRU" in t
+    assert any(s.startswith("⌀4.5 ↧") for s in t)    # the clearance hole ends in the slit: its depth, not THRU
+    assert any(s.startswith("⌀3.2 ↧") for s in t)    # the tapped hole is blind
+
+
+def test_a_picked_feature_gets_its_own_callout_and_tolerance():
+    c = split_clamp()
+    # by printed text the tolerance would land on two different features: an error, not a guess
+    with pytest.raises(TuleError, match="different callouts") as e:
+        texts(item=c, views=CLAMP_VIEWS, tol={"⌀4.5": "+0.1/0"})
+    assert "dims" in e.value.hint
+    clear = c.faces.cylindrical(r=2.25)  # the mounting holes match too: the ones on the view's axis are taken
+    t = texts(item=c, views=CLAMP_VIEWS, dims=[("left", clear, {"tol": "+0.1/0"})])
+    assert any(s.startswith("⌀4.5 +0.1/0 ↧") for s in t)
+    assert "2× ⌀4.5 THRU" in t                        # the mounting holes keep theirs, untoleranced
+    t = texts(item=c, views=CLAMP_VIEWS, dims=[("right", c.faces.cylindrical(r=1.6), {"text": "M4×0.7-6H ↧12"})])
+    assert "M4×0.7-6H ↧12" in t and not any(s.startswith("⌀3.2") for s in t)
+    with pytest.raises(TuleError, match="feature options"):
+        texts(item=c, views=CLAMP_VIEWS, dims=[("left", clear, {"along": "h"})])
+    with pytest.raises(TuleError, match="side is one of"):
+        texts(item=c, views=CLAMP_VIEWS, dims=[("left", clear, {"side": "up"})])
+
+
+def test_callout_side_can_be_chosen():
+    c = split_clamp()
+    ys = {}
+    for side in ("top", "bottom"):
+        page, _, _ = drawing.render(c, views=CLAMP_VIEWS, dims=[("left", c.faces.cylindrical(r=2.25), {"side": side})])
+        ys[side] = next(b for t, b in page.labels if t.startswith("⌀4.5 ↧"))[1]
+        assert drawing.collisions(page) == []
+    assert abs(ys["top"] - ys["bottom"]) > 30  # the whole view between them
+    page, _, _ = drawing.render(c, views=CLAMP_VIEWS, callouts={"top": "bottom"})
+    assert drawing.collisions(page) == []
+    for bad in ("middle", {"iso": "top"}, {"top": "up"}, 3):
+        with pytest.raises(TuleError, match="callouts is a side"):
+            texts(item=c, views=CLAMP_VIEWS, callouts=bad)
+
+
+def test_leaders_never_cross():
+    p = box(120, 80, 6)
+    for x, y, r in [(10, 10, 2), (30, 15, 3), (50, 40, 4), (70, 20, 2.5), (90, 60, 3.5),
+                    (110, 70, 2), (20, 60, 1.5), (60, 70, 2.2), (100, 30, 4.5)]:
+        p -= cylinder(r, 20, center=True).at(x, y, 0)
+    page, _, _ = drawing.render(p.named("perforated"), views=("top", "front"))
+    assert len(page.leaders) == 8  # the two ⌀4 share a callout
+    assert drawing.collisions(page) == []
+    c = drawing._Canvas()  # and the check sees two that cross
+    c.leaders += [(0, 0, 10, 10), (0, 10, 10, 0)]
+    assert any("crosses" in s for s in drawing.collisions(c))
+
+
+def test_section_view():
+    c = split_clamp()
+    page, size, facts = drawing.render(c, views=(("front", (20, 10, 0)), "top", "right"))
+    t = facts["texts"]
+    assert "A-A" in t and t.count("A") == 2      # the title, and the letters at the ends of the cut line
+    assert drawing.collisions(page) == []
+    def thin(page):
+        return sum(op[0] == "path" and op[1] == "thin" for op in page.ops)
+    assert thin(page) > thin(drawing.render(c, views=("front", "top", "right"))[0]) + 50  # the hatching
+    t = texts(item=c, views=(("front", c.faces.cylindrical(r=1.6)), ("right", (30, 10, 0)), "top"))
+    assert "A-A" in t and "B-B" in t
+    with pytest.raises(TuleError, match="cuts no material"):
+        texts(item=c, views=(("front", (20, -50, 0)), "top"))
+    with pytest.raises(TuleError, match="a section is a view and a point"):
+        texts(item=c, views=(("iso", (0, 0, 0)), "top"))
+
+
+def test_scale_hint_names_scales_that_fit():
+    with pytest.raises(TuleError, match="do not fit A4 at 2:1") as e:
+        drawing.render(box(140, 60, 6), views=("top",), scale="2:1")
+    assert 'scale="1.5:1" fits' in e.value.hint and '"1:1" is the largest ISO 5455' in e.value.hint
+    assert 'sheet="A3"' in e.value.hint
+    assert drawing.render(box(140, 60, 6), views=("top",), scale="1.5:1")[2]["scale"] == "1.5:1"

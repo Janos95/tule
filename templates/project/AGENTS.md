@@ -31,6 +31,7 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 | `loop` | the working loop: edit, build, look, iterate; project layout; saving and merging; long jobs |
 | `modeling` | writing geometry with `tule` (values, operators, selections, tags) |
 | `outputs` | what the viewer shows and how to write it |
+| `drawings` | shop drawings: dimensions, tolerances, callouts, sections |
 | `occt` | an operation failed: fillets, Booleans, shells, tolerances |
 | `annotations` | the user drew on the model in the viewer |
 | `fea` | stress, deflection and safety factor of a part under loads |
@@ -173,17 +174,7 @@ Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`,
 
 ## Drawings
 
-One call gives a shop drawing: hidden lines, overall sizes, hole, counterbore and slot callouts, title block. Don't hand-draw one; add what only you know:
-
-```python
-from tule import *
-
-plate = box(80, 40, 6) - cylinder(2.75, 20, center=True).at(10, 10, 0)
-outputs.drawing("plate", plate.named("plate"), dims=[("top", (0, 0, 6), (10, 10, 6), {"along": "h"})],
-                tol={"⌀5.5": "+0.1/0"}, info={"material": "6061-T6", "rev": "A"}, notes=["Break edges 0.3"])
-```
-
-It writes `.pdf` and `.svg`; `dxf="top"` adds a 1:1 DXF. Finish, revisions: `help(outputs.drawing)`.
+`outputs.drawing("plate", part)` writes a shop drawing (PDF and SVG, `dxf=` for cutting) with views, overall sizes and hole, counterbore and slot callouts found from the model. Don't hand-draw one; read `tule docs drawings` for your own dimensions, per-feature tolerances, callout sides, sections and scale.
 
 ## Errors
 
@@ -267,7 +258,7 @@ Optional; without it, one file is a part, numbered files are a sequence, several
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `outputs.drawing`, see `tule docs modeling`), text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `outputs.drawing`, see `tule docs drawings`), text, images; anything else: a download.
 
 ```python
 import json

@@ -510,25 +510,37 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
 
 def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front", "top", "right", "iso"), dims=(),
             title: str | None = None, info: dict | None = None, notes=None, tol: dict | None = None,
-            revisions=None, sheet: str = "A4", scale=None, hidden: bool = True, projection: str = "first",
-            dxf: str | None = None) -> str:
+            revisions=None, callouts=None, sheet: str = "A4", scale=None, hidden: bool = True,
+            projection: str = "first", dxf: str | None = None) -> str:
     """Write a dimensioned shop drawing: ``outputs/<name>/<name>.pdf`` and ``.svg``. Returns the folder.
 
     Views (``front top right left bottom back iso``) are projected with hidden lines
     (dashed; ``hidden=False`` drops them) and placed by ``projection`` (``"first"``
-    angle, ISO, or ``"third"``). Automatic: overall sizes, and callouts for holes and
-    slots, counted, in standard form (``4× ⌀6.6 THRU`` / ``⌴ ⌀11 ↧6.5`` for a counterbore,
-    ``⌵ ⌀12 × 90°`` countersink, ``4× slot 5.5 × 11.5 THRU``: width × overall length).
-    No text touches a line or another text.
+    angle, ISO, or ``"third"``). ``("front", point)`` in ``views`` draws that view as a
+    section A-A through ``point`` (a 3D point or a one-item selection): material between the
+    plane and the viewer removed, cut faces hatched, the plane marked on a view that sees it
+    edge-on. Further sections get B, C, ... More: ``tule docs drawings``.
+
+    Automatic: overall sizes, and callouts for holes and slots, counted, in standard form,
+    in the view that looks into them: ``4× ⌀6.6 THRU`` (only when nothing is beyond either
+    end; a hole into a slit or pocket gets its depth ``↧``) / ``⌴ ⌀11 ↧6.5`` counterbore,
+    ``⌵ ⌀12 × 90°`` countersink, ``4× slot 5.5 × 11.5 THRU`` (width × overall length). Each
+    callout goes on the side where its leader crosses the fewest lines; leaders never cross
+    each other and no text touches a line or another text. ``callouts="top"`` or
+    ``{"right": "top"}`` puts a view's callouts on that side.
 
     ``dims`` adds yours: ``("top", p1, p2)`` measures two 3D points (or one-item
     selections) in that view; a fourth item ``{"along": "h" | "v" | "aligned",
-    "tol": "±0.05", "text": "40", "offset": mm}``. ``("top", part.edges.circles(r=11),
-    {"tol": "H7"})`` calls out those circles.
+    "tol": "±0.05", "text": "40", "offset": mm}``. A feature picked by its faces or
+    circular edges gets its own callout in that view: ``("right",
+    part.faces.cylindrical(r=3.25), {"tol": "+0.1/0", "side": "top", "text": "M6×1-6H ↧12"})``
+    (``text`` replaces the callout, ``"\\n"`` between lines); circles that are no hole or slot
+    (a boss, an arc) get ``⌀``/``R``.
 
-    ``tol`` tolerances any size by its printed text: ``{"⌀22": "+0.05/0", "88": "±0.1",
+    ``tol`` tolerances a size by its printed text: ``{"⌀22": "+0.05/0", "88": "±0.1",
     "slot 5.5": "+0.1/0", "↧6.5": "±0.1"}``; values ``"±0.1"``, ``"+0.05/0"`` (stacked),
-    ``"H7"``. A key that matches nothing is an error listing the sizes drawn.
+    ``"H7"``. A key that matches nothing, or more than one callout, is an error naming them:
+    then tolerance the one feature in ``dims``.
 
     ``info`` fills the title block: ``number`` (part number), ``rev``, ``material``,
     ``finish``, ``tolerance`` (general tolerances, default ISO 2768-m; ``""`` drops it),
@@ -538,9 +550,10 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front"
     draws a revision table; the last is the current rev. ``notes=["Break all edges
     0.3", "Anodize clear, MIL-A-8625 Type II"]``: a numbered NOTES block.
 
-    ``sheet``: ``"A4"`` to ``"A0"``. ``scale``: ``"1:2"`` (default: the largest standard
-    scale that fits). ``dxf="top"`` also writes that view at 1:1 as ``<name>.dxf`` for
-    laser or waterjet cutting.
+    ``sheet``: ``"A4"`` to ``"A0"``. ``scale``: leave it out for the largest ISO scale that
+    fits (2:1, 1:1, 1:2, ...); ``"1.5:1"`` or any ratio when you need one, and the error
+    for one that does not fit names the largest that does. ``dxf="top"`` also writes that
+    view at 1:1 as ``<name>.dxf`` for laser or waterjet cutting.
     """
     from .drawing import write as write_drawing
 
@@ -548,5 +561,5 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple], views=("front"
     folder = _folder(name)
     write_drawing(folder, _slug(name.rsplit("/", 1)[-1]), item, views=views, dims=dims, title=title, info=info,
                   sheet=sheet, scale=scale, hidden=hidden, projection=projection, dxf_view=dxf, notes=notes,
-                  tol=tol, revisions=revisions)
+                  tol=tol, revisions=revisions, callouts=callouts)
     return folder
