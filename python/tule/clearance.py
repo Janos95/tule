@@ -136,9 +136,9 @@ def _placed(frames, load):
 class _Solid:
     """One distinct solid at the origin: its mesh and FCL model, per-face models for the B-rep step."""
 
-    def __init__(self, shape, fcl):
+    def __init__(self, shape, fcl, tol=TOL):
         self.shape = shape
-        self.points, self.tris, self.face_of, self.defl = _mesh(shape)
+        self.points, self.tris, self.face_of, self.defl = _mesh(shape, tol)
         self.slack = 1.5 * self.defl.max(initial=0.0) + 5e-5  # how far a mesh gap may be off, from this side
         self.empty = not len(self.tris)
         if not self.empty:
@@ -182,14 +182,14 @@ class _Solid:
         return self._classifier.State() == TopAbs_IN
 
 
-def _mesh(shape):
+def _mesh(shape, tol=TOL):
     """Points, triangles, each triangle's face and each face's deflection (how far its mesh strays)."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
 
     copy = BRepBuilderAPI_Copy(shape, False, False).Shape()  # meshed apart: the part's own exports keep their mesh
-    BRepMesh_IncrementalMesh(copy, TOL, False, 0.3, True)
+    BRepMesh_IncrementalMesh(copy, tol, False, 0.3, True)
     points, tris, face_of, defl, n = [], [], [], [], 0
     for i, f in enumerate(subshapes(copy, "face")):
         loc = TopLoc_Location()
@@ -342,16 +342,16 @@ def _held(a, b, threads):
     return d.Value(), p, q
 
 
-def _closest(fcl, a: _Solid, b: _Solid, rel, seed):
+def _closest(fcl, a: _Solid, b: _Solid, rel, seed, faces=False):
     """The B-rep gap with a at the origin and b at ``rel``, and its points: first between the faces the
     meshes put closest (``seed``), then between any other pair of faces whose boxes, then meshes,
-    allow them closer, nearest first."""
+    allow them closer, nearest first. ``faces``: also the pair of faces it is between."""
     loc = TopLoc_Location(_trsf(rel))
     aocc, alo, ahi, _ = a.faces()
     bocc, blo, bhi, _ = b.faces()
-    best = _extrema(aocc[seed[0]], bocc[seed[1]].Moved(loc))
+    best, ij = _extrema(aocc[seed[0]], bocc[seed[1]].Moved(loc)), tuple(seed)
     if best[0] < 1e-7:
-        return (0.0, *best[1:])
+        return (0.0, *best[1:], ij)[:4 if faces else 3]
     ok = np.isfinite(blo[:, 0])
     wlo, whi = np.full_like(blo, np.inf), np.full_like(bhi, -np.inf)
     wlo[ok], whi[ok] = _boxes(_corners(blo[ok], bhi[ok]), rel)
@@ -369,8 +369,8 @@ def _closest(fcl, a: _Solid, b: _Solid, rel, seed):
             break
         found = _extrema(aocc[i], bocc[j].Moved(loc))
         if found[0] < best[0]:
-            best = found
-    return (0.0 if best[0] < 1e-7 else best[0]), best[1], best[2]
+            best, ij = found, (i, j)
+    return ((0.0 if best[0] < 1e-7 else best[0]), best[1], best[2], ij)[:4 if faces else 3]
 
 
 def _common(a, b, min_volume):
