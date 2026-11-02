@@ -13,6 +13,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 
 from . import drawing, fea, outputs, topopt
 from .assembly import Assembly
+from .bevel import BevelPair, bevel_gear, bevel_pair
 from .errors import TuleError
 from .gears import GearPair, gear_pair, internal_gear, spur_gear
 from .geom import ORIGIN, Vec, X, Y, Z
@@ -26,8 +27,8 @@ from .sweeps import extrude, loft, pipe, revolve, sweep
 __version__ = "0.1.0"
 
 __all__ = [
-    "Assembly", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN", "Profile", "Selection", "Shape",
-    "TuleError", "Vec", "Vertices", "X", "Y", "Z", "box", "circle", "cone", "cube", "cylinder",
+    "Assembly", "BevelPair", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN", "Profile", "Selection", "Shape",
+    "TuleError", "Vec", "Vertices", "X", "Y", "Z", "bevel_gear", "bevel_pair", "box", "circle", "cone", "cube", "cylinder",
     "difference", "drawing", "ellipse", "export_gltf", "export_step", "export_stl", "extrude",
     "fea", "gear_pair", "import_step", "internal_gear", "intersection", "loft", "outputs", "pipe", "sweep",
     "polygon", "polyhedron", "rect", "regular_polygon", "revolve", "slot", "sphere", "spur_gear",
