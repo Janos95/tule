@@ -54,7 +54,11 @@ async function installer() {
   await fs.mkdir(dir, { recursive: true });
   if (!wheel) {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tule-wheel-"));
-    execFileSync("uv", ["build", "--wheel", "--quiet", "--out-dir", tmp, path.join(web, "../cli")], { stdio: "inherit" });
+    // from a copy with the guides inside, so tule docs works on the agent's own computer too
+    const src = path.join(tmp, "cli");
+    await fs.cp(path.join(web, "../cli"), src, { recursive: true, filter: (f) => !/(__pycache__|\.egg-info|[/\\]build$)/.test(f) });
+    await fs.cp(path.join(web, "../skills"), path.join(src, "tule_cli", "skills"), { recursive: true });
+    execFileSync("uv", ["build", "--wheel", "--quiet", "--out-dir", tmp, src], { stdio: "inherit" });
     wheel = path.join(tmp, (await fs.readdir(tmp)).find((f) => f.endsWith(".whl")));
   }
   // under its content's hash: the version stays 0.1.0, and uv reuses what it fetched from a URL before

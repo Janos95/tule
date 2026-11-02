@@ -325,7 +325,7 @@ def test_outputs_plate_printer_bed(outdir, tmp_path, monkeypatch):
     with pytest.raises(TuleError, match=r"part 'rail' \(240.0 × 20.0 × 5.0 mm\) does not fit the Creality Ender-3's bed \(220 × 220 × 250 mm\)") as e:
         outputs.plate("print", [long], estimate="ender-3")
     assert "larger bed" in e.value.hint
-    with pytest.raises(TuleError, match=r"5 parts do not fit on the Prusa MK4S's bed \(250 × 210 mm\).*need about"):
+    with pytest.raises(TuleError, match=r"5 parts do not fit on the Prusa MK4 / MK4S's bed \(250 × 210 mm\).*need about"):
         outputs.plate("print", [("tile", box(100, 100, 5), {"copies": 5})], estimate="prusa-mk4")
     outputs.plate("print", [long], bed=(250, 250), estimate="ender-3")  # the user's own bed= wins
 
@@ -360,3 +360,11 @@ def test_outputs_plate_estimate_with_prusa_slicer(outdir):
     t = {p: json.load(open(f"{outputs.plate(p, [box(50, 50, 20)], settings=s, estimate=p)}/output.json"))["plate"]["estimate"]["print_time_s"]
          for p in ("bambu-p1s", "ender-3")}
     assert 15 * 60 < t["bambu-p1s"] < 25 * 60 and 70 * 60 < t["ender-3"] < 100 * 60
+
+
+def test_material_slows_the_flow():
+    from tule.io import PRINTERS, _slicer_config
+
+    pla = _slicer_config({"material": "PLA"}, (250, 210), PRINTERS["prusa-mk4"])
+    petg = _slicer_config({"material": "PETG"}, (250, 210), PRINTERS["prusa-mk4"])
+    assert pla["max_volumetric_speed"] == 15 and 9 <= petg["max_volumetric_speed"] <= 10.5

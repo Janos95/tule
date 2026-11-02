@@ -530,6 +530,9 @@ PRINT_SETTINGS = {
 # g/cm³ and nozzle/bed °C of generic filaments: the print estimate's profile
 MATERIALS = {"PLA": (1.24, 215, 60), "PETG": (1.27, 240, 80), "ABS": (1.04, 255, 100), "ASA": (1.07, 260, 100),
              "TPU": (1.21, 230, 50), "PA": (1.14, 275, 90), "PC": (1.20, 275, 110)}
+# how fast a material melts against PLA on the same hotend (max volumetric speed): the vendors' profiles,
+# e.g. Prusament PLA 15 / PETG 10 / ASA 12 mm³/s @MK4, Bambu PLA Basic 21 / PETG Basic 13 / TPU 95A 3.6
+FLOW = {"PLA": 1.0, "PETG": 0.65, "ABS": 0.8, "ASA": 0.8, "TPU": 0.2, "PA": 0.55, "PC": 0.6}
 
 
 def _print_settings(settings, who: str = "settings") -> dict:
@@ -906,7 +909,7 @@ class Printer:
     speed: tuple  # mm/s: outer wall, inner wall, sparse infill, solid infill, top surface, travel, first layer, its infill
     accel: tuple  # mm/s²: default, outer wall, inner wall, sparse infill, solid infill, top surface, travel, first layer
     limits: tuple  # the machine's: acceleration mm/s², speed mm/s, jerk mm/s
-    flow: float   # mm³/s: the default PLA's max volumetric speed
+    flow: float   # mm³/s: the default PLA's max volumetric speed (other materials: FLOW)
     nozzle: float = 0.4
     infill: str = "grid"  # the profile's sparse pattern
 
@@ -923,8 +926,9 @@ PRINTERS = {
     # Bambu Studio 2.08: "Bambu Lab A1 0.4 nozzle", "0.20mm Standard @BBL A1" (travel 700 mm/s), Bambu PLA Basic
     "bambu-a1": Printer("Bambu Lab A1", (256, 256, 256), (200, 300, 270, 250, 200, 700, 50, 105),
                         (6000, 5000, 6000, 6000, 6000, 2000, 6000, 500), (12000, 500, 9), 21),
-    # PrusaSlicer 2.9: "Original Prusa MK4S 0.4 nozzle", "0.20mm SPEED @MK4S 0.4", Prusament PLA
-    "prusa-mk4": Printer("Prusa MK4S", (250, 210, 220), (170, 170, 200, 200, 100, 300, 40, 100),
+    # PrusaSlicer 2.9: "Original Prusa MK4S 0.4 nozzle", "0.20mm SPEED @MK4S 0.4", Prusament PLA (the MK4 with
+    # input shaping runs the same speed profile)
+    "prusa-mk4": Printer("Prusa MK4 / MK4S", (250, 210, 220), (170, 170, 200, 200, 100, 300, 40, 100),
                          (4000, 4000, 4000, 4000, 4000, 1500, 4000, 500), (4000, 300, 8), 15),
     # PrusaSlicer 2.9: "Prusa CORE One 0.4 nozzle", "0.20mm SPEED @COREONE 0.4", Prusament PLA
     "prusa-core-one": Printer("Prusa CORE One", (250, 220, 270), (170, 170, 200, 200, 100, 350, 45, 100),
@@ -978,7 +982,7 @@ def _slicer_config(settings: dict, bed, printer: Printer | None = None) -> dict:
         "perimeter_speed": inner, "small_perimeter_speed": outer, "external_perimeter_speed": outer, "infill_speed": sparse,
         "solid_infill_speed": solid, "top_solid_infill_speed": top, "gap_fill_speed": outer, "bridge_speed": min(50, outer),
         "support_material_speed": inner, "travel_speed": travel, "first_layer_speed": first,
-        "first_layer_infill_speed": first_infill, "max_volumetric_speed": p.flow,
+        "first_layer_infill_speed": first_infill, "max_volumetric_speed": round(p.flow * FLOW.get(material, 1.0), 2),
         "default_acceleration": a_default, "perimeter_acceleration": a_inner, "external_perimeter_acceleration": a_outer,
         "infill_acceleration": a_sparse, "solid_infill_acceleration": a_solid, "top_solid_infill_acceleration": a_top,
         "bridge_acceleration": a_outer, "first_layer_acceleration": a_first, "travel_acceleration": a_travel,

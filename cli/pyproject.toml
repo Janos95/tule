@@ -23,3 +23,6 @@ git-credential-tule = "tule_cli.gitremote:credential"
 
 [tool.setuptools.packages.find]
 include = ["tule_cli*"]
+
+[tool.setuptools.package-data]
+tule_cli = ["skills/*.md"]  # copied in by web/build.mjs

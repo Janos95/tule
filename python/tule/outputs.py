@@ -402,6 +402,10 @@ class Sequence:
     Each ``add`` writes one frame file; ``output.json`` (``"status": "running"``) follows
     at most once a second, and ``done()`` (the end of a ``with`` block) writes it finished.
     ``info``: facts shown under the view, as for a part.
+
+    A motion: make the parts once and move them per frame (``.at``, ``.rotate``); a driven part
+    from contact with ``touch``; check every frame with ``clearance(output_or_frames)``, not a
+    loop of ``distance`` calls (``tule docs Clearance``).
     """
 
     WARN_TOTAL = 50 << 20  # new geometry per sequence before the warning (and 1/50 of it per frame)
@@ -539,6 +543,9 @@ def _brep_hash(shape) -> str:
 
 def sequence(name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None) -> Sequence:
     return Sequence(name, title, fmt, info)
+
+
+sequence.__doc__ = Sequence.__doc__
 
 
 # ---------------------------------------------------------------- overlay

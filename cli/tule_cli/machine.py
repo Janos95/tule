@@ -708,7 +708,8 @@ def cmd_inspect(args):
 
 def skills_dir() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
-    for d in (os.environ.get("TULE_SKILLS"), "/opt/tule/skills", os.path.join(here, "..", "..", "skills")):
+    for d in (os.environ.get("TULE_SKILLS"), "/opt/tule/skills", os.path.join(here, "..", "..", "skills"),
+              os.path.join(here, "skills")):  # the last: in the installed CLI (web/build.mjs puts them there)
         if d and os.path.isdir(d):
             return os.path.normpath(d)
     raise CliError("cannot find the agent instructions (skills/); set TULE_SKILLS to the folder")
