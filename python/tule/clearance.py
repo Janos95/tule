@@ -597,7 +597,7 @@ class Clearance:
         n = {s: sum(p.status == s for p in self.pairs) for s in ("clash", "touch")}
         gaps = [p.gap for p in self.pairs if p.status == "gap"]
         fact = (f"{n['clash']} clash{'es' if n['clash'] != 1 else ''}" if n["clash"] else
-                f"{n['touch']} touching" if n["touch"] else f"closest {min(gaps):.2g} mm" if gaps else "no clashes")
+                f"{n['touch']} touching" if n["touch"] else f"gap {min(gaps):.2g} mm" if gaps else "no clashes")
         return outputs.overlay(name, Shape(comp, name=name), faces, arrows=arrows, title=title, info=info, fact=fact)
 
     def _near_faces(self, key, at, size) -> list[int]:

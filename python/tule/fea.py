@@ -2575,7 +2575,7 @@ class Buckling:
         info["mesh"] = f"{self.static.elements:,} quadratic tetrahedra, {self.static.dofs:,} DOFs"
         return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
                                title=title or f"Buckling: {self.part.name or name}, {self.material.name}",
-                               fact=f"buckles at {self.factors[0]:.3g}×" if len(self.factors) else None)
+                               fact=f"buckles ×{self.factors[0]:.2g}" if len(self.factors) else None)
 
     def __str__(self) -> str:
         lines = [f"fea.buckling: {self.part.name or 'part'} in {self.material.name}, {self.static.elements:,} quadratic "

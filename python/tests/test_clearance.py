@@ -164,7 +164,7 @@ def test_show_marks_the_worst_frame(outdir):
     assert meta["arrows"][0]["label"] == "lever × wall: 0.3 mm"
     no_post = clearance({k: Assembly(*[c for c in a.children if c.name != "post"]) for k, a in frames.items()})
     meta = json.load(open(os.path.join(no_post.show("near"), "output.json")))
-    assert meta["fact"] == "closest 0.3 mm"
+    assert meta["fact"] == "gap 0.3 mm"
 
 
 def test_closest_points():
