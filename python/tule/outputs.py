@@ -368,7 +368,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
             shown["filament"] = f"{g:.1f} g" if g < 10 else f"{g:.0f} g"
             if m is not None:
                 shown["filament"] += f" ({m:.2f} m)" if m < 10 else f" ({m:.1f} m)"
-        shown["estimate"] = f"{printer[1].label}, PrusaSlicer"
+        shown["estimate"] = f"{printer[1].label}, {printer[1].preset} speeds, PrusaSlicer"
     # the view: each part's file once, its copies placed again ("pin ×4/2")
     entries, files, used = [], {}, set()
     for n, shp, _, k, copies, _ in placed:

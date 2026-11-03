@@ -978,6 +978,7 @@ class Printer:
     flow: float   # mm³/s: the default PLA's max volumetric speed (other materials: FLOW)
     nozzle: float = 0.4
     infill: str = "grid"  # the profile's sparse pattern
+    preset: str = "0.20mm Standard"  # the maker's print profile these speeds are from (a slower one prints longer)
 
 
 # Bambu Studio 2.08: "Bambu Lab P1S 0.4 nozzle" (the X1C's limits too), "0.20mm Standard @BBL X1C", Bambu PLA Basic
@@ -986,19 +987,20 @@ _P1S = dict(bed=(256, 256, 250), speed=(200, 300, 270, 250, 200, 500, 50, 105),
 PRINTERS = {
     # tule's own: an i3-class printer at moderate speeds
     "generic": Printer("generic 0.4 mm printer", (256, 256, 256), (40, 60, 120, 100, 60, 200, 25, 25),
-                       (1500, 800, 1000, 2000, 1500, 800, 2500, 600), (3000, 500, 10), 12, infill="gyroid"),
+                       (1500, 800, 1000, 2000, 1500, 800, 2500, 600), (3000, 500, 10), 12, infill="gyroid",
+                       preset="moderate"),
     "bambu-p1s": Printer("Bambu Lab P1S", **_P1S),
     "bambu-x1c": Printer("Bambu Lab X1C", **_P1S),
     # Bambu Studio 2.08: "Bambu Lab A1 0.4 nozzle", "0.20mm Standard @BBL A1" (travel 700 mm/s), Bambu PLA Basic
     "bambu-a1": Printer("Bambu Lab A1", (256, 256, 256), (200, 300, 270, 250, 200, 700, 50, 105),
                         (6000, 5000, 6000, 6000, 6000, 2000, 6000, 500), (12000, 500, 9), 21),
-    # PrusaSlicer 2.9: "Original Prusa MK4S 0.4 nozzle", "0.20mm SPEED @MK4S 0.4", Prusament PLA (the MK4 with
-    # input shaping runs the same speed profile)
+    # PrusaSlicer 2.9: "Original Prusa MK4S 0.4 nozzle", "0.20mm SPEED @MK4S 0.4", Prusament PLA ("0.20mm SPEED
+    # @MK4IS 0.4", the MK4 with input shaping, has the same speeds; STRUCTURAL and QUALITY print slower)
     "prusa-mk4": Printer("Prusa MK4 / MK4S", (250, 210, 220), (170, 170, 200, 200, 100, 300, 40, 100),
-                         (4000, 4000, 4000, 4000, 4000, 1500, 4000, 500), (4000, 300, 8), 15),
+                         (4000, 4000, 4000, 4000, 4000, 1500, 4000, 500), (4000, 300, 8), 15, preset="0.20mm SPEED"),
     # PrusaSlicer 2.9: "Prusa CORE One 0.4 nozzle", "0.20mm SPEED @COREONE 0.4", Prusament PLA
     "prusa-core-one": Printer("Prusa CORE One", (250, 220, 270), (170, 170, 200, 200, 100, 350, 45, 100),
-                              (3000, 3000, 6000, 7000, 6000, 2000, 7000, 500), (7000, 350, 10), 15),
+                              (3000, 3000, 6000, 7000, 6000, 2000, 7000, 500), (7000, 350, 10), 15, preset="0.20mm SPEED"),
     # Bambu Studio 2.08: "Creality Ender-3 V2 0.4 nozzle", "0.20mm Standard @Creality Ender3V2"; Cura's
     # creality_base (walls 25, infill 50, travel 150 mm/s, 500 mm/s²) and PrusaSlicer's agree
     "ender-3": Printer("Creality Ender-3", (220, 220, 250), (25, 40, 50, 40, 30, 150, 20, 20),
@@ -1134,7 +1136,8 @@ def _slice_estimate(path: str, settings: dict, bed, timeout: float | None = None
             f.seek(max(0, os.path.getsize(gcode) - (1 << 20)))
             text = f.read().decode("utf-8", "replace")
     out = _parse_gcode_estimate(text, cfg["filament_density"])
-    out["profile"] = f"{p.label}, {p.nozzle:g} mm nozzle, {cfg['filament_type']} ({cfg['filament_density']:g} g/cm³), PrusaSlicer"
+    out["profile"] = (f"{p.label}, {p.preset} speeds, {p.nozzle:g} mm nozzle, {cfg['filament_type']} "
+                      f"({cfg['filament_density']:g} g/cm³), PrusaSlicer")
     return out
 
 

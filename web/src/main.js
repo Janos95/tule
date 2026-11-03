@@ -353,8 +353,8 @@ function views(o) {
   const named = o.files.length && !moving && (o.docs.find((f) => (readme(f) && !model) || (["document", "pdf", "dxf"].includes(f.type) && base(f.file) === o.name.split("/").pop())) ?? drawn(o)[0]);
   if (o.files.length && !named) v.push({ id: "3d", label: "3D", type: "geometry" });
   // a README first; beside a model, files with no view of their own (an STL, a .3mf) are only in Download
-  // then by type, a document before a table; the one named after the output first among its type
-  const order = ["document", "pdf", "dxf", "table", "data", "chart", "image", "text"];
+  // then by type, a document, a chart before a table; the one named after the output first among its type
+  const order = ["document", "pdf", "dxf", "chart", "image", "table", "data", "text"]; // a chart says more than its numbers
   const rank = (f) => (readme(f) ? 0 : 2 * ((order.indexOf(f.type) + 1) || 10) + (base(f.file) === o.name.split("/").pop() ? 0 : 1));
   const docs = o.docs.filter((f) => !sheetSvg(o, f)).sort((a, b) => rank(a) - rank(b));
   for (const f of o.files.length ? docs.filter((f) => f.type !== "file") : docs) {

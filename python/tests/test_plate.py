@@ -297,7 +297,7 @@ def test_outputs_plate_estimate(outdir, tmp_path, monkeypatch):
     assert "--export-gcode" in used and "print.3mf" in used
     for line in ("nozzle_diameter = 0.4", "filament_density = 1.27", "fill_density = 20%", "fill_pattern = gyroid", "perimeters = 2"):
         assert line in used
-    assert meta["plate"]["printer"] == "generic" and meta["info"]["estimate"] == "generic 0.4 mm printer, PrusaSlicer"
+    assert meta["plate"]["printer"] == "generic" and meta["info"]["estimate"] == "generic 0.4 mm printer, moderate speeds, PrusaSlicer"
 
 
 def test_outputs_plate_printer(outdir, tmp_path, monkeypatch):
@@ -310,8 +310,8 @@ def test_outputs_plate_printer(outdir, tmp_path, monkeypatch):
         meta = json.load(open(f"{outputs.plate('print', [box(20)], estimate=printer)}/output.json"))
         times[meta["plate"]["printer"]] = meta["plate"]["estimate"]["print_time_s"]
     assert times["bambu-p1s"] < times["voron-2.4"] < times["generic"] < times["ender-3"]
-    assert meta["plate"]["estimate"]["profile"].startswith("Voron 2.4 350, 0.4 mm nozzle, PLA")
-    assert meta["info"]["estimate"] == "Voron 2.4 350, PrusaSlicer" and meta["info"]["bed"] == "350 × 350 mm"
+    assert meta["plate"]["estimate"]["profile"].startswith("Voron 2.4 350, 0.20mm Standard speeds, 0.4 mm nozzle, PLA")
+    assert meta["info"]["estimate"] == "Voron 2.4 350, 0.20mm Standard speeds, PrusaSlicer" and meta["info"]["bed"] == "350 × 350 mm"
     with pytest.raises(TuleError, match="unknown printer 'bambu-p2x'") as e:
         outputs.plate("other", [box(20)], estimate="bambu-p2x")
     assert "bambu-p1s" in e.value.hint and "ender-3" in e.value.hint and not (outdir / "other").exists()
