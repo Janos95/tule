@@ -43,7 +43,7 @@ Read both PNGs. In the viewer, buttons switch fields, hovering shows the value, 
 
 `mesh="auto"` measures the thinnest wall and narrowest slot (`fea.thinnest(part)`) and picks:
 - **voxels** for chunky parts: a grid sized from `dofs` (or `voxel=0.5` mm). Fast; CuPy on a GPU.
-- **quadratic tetrahedra** (gmsh) when a wall is under 3 voxels or a slot under 2: blades, flexures, ribs, sheet. `mesh="tet"` forces it, `size=0.5` sets the element size. 300,000 DOFs: 10–30 s.
+- **quadratic tetrahedra** (gmsh, built in: no install) when a wall is under 3 voxels or a slot under 2: blades, flexures, ribs, sheet. `mesh="tet"` forces it, `size=0.5` sets the element size. 300,000 DOFs: 10–30 s.
 
 Same result either way: `max_stress`, `stress_p995`, `safety_factor`, `max_displacement`, `reaction`, `mass`, `stress_at(points)`, `displacement_at(points)`, `show()`.
 

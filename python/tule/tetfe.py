@@ -57,11 +57,12 @@ TRI_SPLIT = np.array([(0, 3, 5), (3, 1, 4), (5, 4, 2), (3, 4, 5)])
 
 
 def find_gmsh() -> str | None:
-    """The gmsh binary: ``$TULE_GMSH``, else ``gmsh`` on the PATH."""
+    """The gmsh binary: ``$TULE_GMSH``, else the image's (a pip-installed gmsh can shadow it on
+    the PATH), else ``gmsh`` on the PATH."""
     p = os.environ.get("TULE_GMSH")
     if p:
         return p if os.path.exists(p) else shutil.which(p)
-    return shutil.which("gmsh")
+    return "/usr/bin/gmsh" if os.path.exists("/usr/bin/gmsh") else shutil.which("gmsh")
 
 
 # ---------------------------------------------------------------- wall thickness
