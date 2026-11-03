@@ -291,3 +291,162 @@ def test_bearing_patch_and_free_parts_on_tetrahedra():
     with pytest.raises(TuleError, match="one piece"):
         fea.static(two, STEEL, loads=[fea.force("a", (-1, 0, 0)), fea.force("b", (1, 0, 0))], balanced=True, mesh="tet",
                    dofs=5_000, verbose=False)
+
+
+# ---------------------------------------------------------------- large displacements
+
+
+def test_nonlinear_tangent_is_consistent():
+    m = cube_mesh(2, 4.0)
+    model = tetfe.Model(m)
+    E, nu = 1000.0, 0.3
+    f0, K0, (det0, e0) = model.tangent(np.zeros((model.n, 3)), E, nu)
+    assert abs(K0 - model.stiffness(E, nu)).max() < 1e-12 * abs(K0).max() and abs(f0).max() == 0 and (det0, e0) == (1, 0)
+    rng = np.random.default_rng(1)
+    u, v = 0.2 * rng.standard_normal((model.n, 3)), rng.standard_normal((model.n, 3))
+    f, K, _ = model.tangent(u, E, nu)
+    h = 1e-6
+    fd = (model.tangent(u + h * v, E, nu, stiffness=False)[0] - model.tangent(u - h * v, E, nu, stiffness=False)[0]) / (2 * h)
+    assert np.abs(fd.reshape(-1) - K @ v.reshape(-1)).max() < 1e-8 * np.abs(fd).max()  # the tangent is f's derivative
+    assert abs(K - K.T).max() < 1e-12 * abs(K).max()
+    th = 0.7  # a rigid rotation strains nothing
+    R = np.array([[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]])
+    ur = m.nodes @ R.T - m.nodes
+    assert np.abs(model.tangent(ur, E, nu, stiffness=False)[0]).max() < 1e-9 and np.abs(model.cauchy(ur, E, nu)).max() < 1e-9
+    assert model.rotation(0.01 * ur).max() == pytest.approx(0.01 * np.sin(th), rel=1e-9)  # small-rotation angle
+    free = np.ones(3 * model.n, bool)
+    free[::7] = False
+    idx = np.flatnonzero(free)
+    blocks = model.tangent(u, E, nu, blocks=True)[1]
+    assert abs(model.reducer(free)(blocks) - K[idx][:, idx]).max() == 0
+    # the stability check: a negative Rayleigh quotient of A against B proves negative stiffness
+    import scipy.sparse as sp
+
+    n = 400
+    B = sp.identity(n, format="csr")
+    pos, neg = sp.diags(np.linspace(1, 3, n)).tocsr(), sp.diags(np.linspace(-0.5, 3, n)).tocsr()
+    assert fea._softest(pos, B, lambda x: x, n) >= 1 - 1e-9 and fea._softest(neg, B, lambda x: x, n) < -0.3
+
+
+def test_move_and_nonlinear_inputs(monkeypatch):
+    with pytest.raises(TuleError, match="directions"):
+        fea.move("top", (1, 0, 0), "w")
+    with pytest.raises(TuleError, match="zero in the directions"):
+        fea.move("top", (1, 0, 0), "y")
+    mv = fea.move("tip", (2, 0, 0), "x")
+    assert mv.dirs == "x" and mv.label() == "moved (2, 0, 0) mm in x"
+    say = lambda *a: None  # noqa: E731
+    monkeypatch.setattr(tetfe, "find_gmsh", lambda: "/usr/bin/gmsh")
+    assert fea._choose_mesh(beam(), "auto", None, None, 300_000, say, need_tet="nonlinear=True") == "tet"
+    for kw in (dict(mesh="voxel"), dict(voxel=1.0)):
+        with pytest.raises(TuleError, match="nonlinear=True runs on tetrahedra"):
+            fea.static(beam(), STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1))], nonlinear=True, verbose=False, **kw)
+        with pytest.raises(TuleError, match="fea.move runs on tetrahedra"):
+            fea.static(beam(), STEEL, fixed=["root", mv], verbose=False, **kw)
+    with pytest.raises(TuleError, match="steps= is for nonlinear"):
+        fea.static(beam(), STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1))], steps=4, verbose=False)
+    with pytest.raises(TuleError, match="needs the part held"):
+        fea.static(beam(), STEEL, loads=[fea.force("tip", (1, 0, 0)), fea.force("root", (-1, 0, 0))], balanced=True,
+                   nonlinear=True, verbose=False)
+    with pytest.raises(TuleError, match="fea.move is for fea.static"):
+        fea.modes(beam(), STEEL, fixed=["root", mv], verbose=False)
+
+
+def elastica(alpha):
+    """The tip of a cantilever under a dead end load P (PL²/EI = alpha), from the elastica
+    θ'' = -α cos θ, θ(0) = 0, θ'(1) = 0 by shooting (Bisshopp and Drucker's problem): (x, y) / L."""
+    from scipy.integrate import solve_ivp
+    from scipy.optimize import brentq
+
+    def shoot(k):
+        rhs = lambda s, y: [y[1], -alpha * math.cos(y[0]), math.cos(y[0]), math.sin(y[0])]  # noqa: E731
+        return solve_ivp(rhs, (0, 1), [0, k, 0, 0], rtol=1e-11, atol=1e-12).y[:, -1]
+
+    y = shoot(brentq(lambda k: shoot(k)[1], 0, alpha))
+    return y[2], y[3]
+
+
+@needs_gmsh
+def test_large_deflection_of_a_cantilever():
+    # Bisshopp and Drucker: tip deflection at PL²/EI = 1, 2, 5 is 0.3017, 0.4935, 0.7138 L down, 0.0564, 0.1606, 0.3876 L in
+    L, h = 100.0, 2.5  # slender (strains under 6 %, where St. Venant-Kirchhoff bends like a beam)
+    bar = box(L, h, h)
+    bar = bar.tag("root", bar.faces["left"]).tag("tip", bar.faces["right"])
+    EI = NU0.E * h ** 4 / 12
+    for alpha in (1, 2, 5):
+        r = fea.static(bar, NU0, fixed="root", loads=[fea.force("tip", (0, 0, -alpha * EI / L ** 2))], nonlinear=True,
+                       dofs=7_000, verbose=False)
+        x, y = elastica(alpha)
+        d = r.displacement_at([(L, h / 2, h / 2)])[0]
+        assert -d[2] / L == pytest.approx(y, rel=0.01) and -d[0] / L == pytest.approx(1 - x, rel=0.01)
+        assert r.nonlinear and r.steps[-1].fraction == 1 and all("strains reach" in w for w in r.warnings)
+        assert r.linear_max_displacement == pytest.approx(alpha * L / 3, rel=0.01)  # what linear theory says
+    assert len(r.steps) >= 6 and all(a.fraction < b.fraction for a, b in zip(r.steps, r.steps[1:]))
+    assert r.steps[-1].reaction.z == pytest.approx(5 * EI / L ** 2, rel=1e-6)
+    path = [-r.displacement_at([(L, h / 2, h / 2)], step=i)[0, 2] for i in range(len(r.steps))]
+    assert all(a < b for a, b in zip(path, path[1:])) and path[-1] == pytest.approx(-d[2])
+    assert "geometrically nonlinear" in str(r) and "linear theory" in str(r)
+
+
+@needs_gmsh
+def test_small_loads_nonlinear_is_linear():
+    kw = dict(fixed="root", loads=[fea.force("tip", (0, -20, -100))], mesh="tet", dofs=10_000, verbose=False)
+    r = fea.static(beam(), STEEL, nonlinear=True, **kw)
+    lin = fea.static(beam(), STEEL, **kw)
+    assert r.max_displacement == pytest.approx(r.linear_max_displacement, rel=1e-3)  # on the same mesh
+    assert r.max_displacement == pytest.approx(lin.max_displacement, rel=0.01)  # on another
+    assert r.stress_p995 == pytest.approx(lin.stress_p995, rel=0.02) and r.imbalance < 1e-6
+    assert len(r.steps) == 4 and max(s.iterations for s in r.steps) <= 2  # 4 steps (the path), each converged at once
+
+
+@needs_gmsh
+def test_flexure_driven_by_a_displacement(tmp_path, monkeypatch):
+    # a parallel flexure's stage pushed 1.5 mm (10 % of its 15 mm blades): free to drop (y) it shortens by
+    # 3/5 d²/L and the force stays linear; held at its height the blades stretch and it stiffens hard
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path))
+    d, L = 1.5, 15.0
+    kw = dict(dofs=40_000, verbose=False)
+    lin = fea.static(flexure(), "PETG", fixed=["base", fea.move("top", (d, 0, 0), "x")], **kw)
+    free = fea.static(flexure(), "PETG", fixed=["base", fea.move("top", (d, 0, 0), "x")], nonlinear=True, **kw)
+    held = fea.static(flexure(), "PETG", fixed=["base", fea.move("top", (d, 0, 0))], nonlinear=True, steps=5, **kw)
+    assert isinstance(lin, fea.TetResult) and any("nonlinear=True" in w for w in lin.warnings)  # rotations of 0.15 rad
+    k_beam = 2 * 12 * 2100 * (10 * 0.4 ** 3 / 12) / L ** 3  # two guided blades, 1.19 N/mm
+    assert lin.move_forces[0].x / d == pytest.approx(k_beam, rel=0.15) and lin.move_forces[0].y == 0
+    assert np.allclose(np.add(lin.reaction, lin.move_forces[0]), 0, atol=1e-6) and lin.imbalance < 1e-6  # the base holds it
+    shortening = -free.displacement_at([(15, 35, 5)])[0, 1]
+    assert shortening == pytest.approx(0.6 * d ** 2 / L, rel=0.1) and lin.displacement_at([(15, 35, 5)])[0, 1] == pytest.approx(0, abs=1e-3)
+    assert free.move_forces[0].x == pytest.approx(lin.move_forces[0].x, rel=0.04)
+    assert held.move_forces[0].x > 4 * lin.move_forces[0].x and held.move_forces[0].y > 20  # the blades in tension
+    assert [round(s.fraction, 9) for s in held.steps] == [0.2, 0.4, 0.6, 0.8, 1.0]
+    assert all(np.diff([0] + [s.move_forces[0].x for s in held.steps], 2) > 0)  # stiffening: each step takes more
+    assert held.displacement_at([(15, 35, 5)], step=1)[0, 0] == pytest.approx(0.4 * d, rel=1e-6)
+    assert held.warnings == () and "it takes" in str(held) and "force on each fea.move" in str(held)
+    folder = held.show("flexure-nl")
+    meta = json.load(open(os.path.join(folder, "output.json")))
+    assert meta["fields"][1]["deform"] == 1.0  # drawn at its true shape
+    with pytest.raises(TuleError, match="step= is for a nonlinear result"):
+        lin.displacement_at([(15, 35, 5)], step=0)
+
+
+@needs_gmsh
+def test_buckling_under_a_force_is_an_error():
+    col = box(5, 5, 100)
+    col = col.tag("bottom", col.faces["bottom"]).tag("top", col.faces["top"])
+    P = math.pi ** 2 * STEEL.E * (5 ** 4 / 12) / (4 * 100 ** 2)  # Euler, fixed-free: 2570 N
+    with pytest.raises(TuleError, match="did not converge past 5") as e:
+        fea.static(col, STEEL, fixed="bottom", loads=[fea.force("top", (0, 0, -2 * P))], nonlinear=True, dofs=8_000,
+                   verbose=False)
+    assert 0.49 < e.value.data["last_fraction"] <= 0.51 and "buckling" in str(e.value) and "fea.move" in str(e.value)
+    assert e.value.result.steps[-1].fraction == e.value.data["last_fraction"]  # the last converged step
+    assert e.value.result.steps[-1].reaction.z == pytest.approx(2 * P * e.value.data["last_fraction"], rel=1e-6)
+
+
+@needs_gmsh
+def test_a_path_past_a_stability_limit_is_refused(monkeypatch):
+    # the stability check after the last step (LOBPCG on the tangent) and its bisection to the step where it failed
+    calls = iter([-1.0, 1.0, -1.0])  # the end: unstable; step 2 (of 4): stable; step 3: not
+    monkeypatch.setattr(fea, "_softest", lambda *a, **k: next(calls))
+    with pytest.raises(TuleError, match="between 50 % and 75 % of the loads") as e:
+        fea.static(beam(), STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -100))], nonlinear=True, steps=4, mesh="tet",
+                   dofs=5_000, verbose=False)
+    assert e.value.result.steps[-1].fraction == 0.5 and len(e.value.result.steps) == 2

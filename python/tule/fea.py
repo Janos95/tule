@@ -1,5 +1,5 @@
-"""Linear finite-element analysis of a part: stress, deflection and safety factor under loads
-(``static``), natural frequencies and mode shapes (``modes``), and buckling load factors (``buckling``).
+"""Finite-element analysis of a part: stress, deflection and safety factor under loads
+(``static``; linear, or ``nonlinear=True`` for large displacements on tetrahedra), natural frequencies and mode shapes (``modes``), and buckling load factors (``buckling``).
 
 ```python
 from tule import *
@@ -25,7 +25,13 @@ takes up the rest), three nodes hold it against rigid motion only (3-2-1, no rea
 the rigid motion that fits best is taken out of the displacements. ``result.warnings``: an
 unconverged solve, a peak over 2× the 99.5th percentile (and whether it sits at a clamp, a
 load or a corner), a load on under 2 elements across or pressing past yield, a load or clamp
-on slivers of cut voxels. ``converge`` reruns at doubling budgets and reports the spread.
+on slivers of cut voxels, a large deflection. ``converge`` reruns at doubling budgets and
+reports the spread. ``move`` drives faces by a displacement (``result.move_forces``).
+
+**Geometric nonlinearity** (``static(nonlinear=True)``, tetrahedra): total Lagrangian
+St. Venant–Kirchhoff (large rotations, small strains), dead loads applied in adaptive steps,
+Newton–Raphson with the same CG solver and a reused preconditioner; a step that fails is cut
+back, and a negative tangent stiffness (LOBPCG at the end) means buckling or snap-through: an error.
 
 **Two meshes.** ``mesh="auto"`` measures the thinnest wall and narrowest gap
 (``thinnest``: rays along each face's normals) and uses voxels unless a wall
@@ -228,6 +234,34 @@ def fix(faces, dirs: str = "xyz") -> Support:
     if not d or set(d) - set("xyz"):
         raise TuleError(f"directions {dirs!r}", op="fea.fix", hint='any of "x", "y", "z": "xyz" (clamped), "z" (rests on a plane)')
     return Support(faces, d)
+
+
+@dataclass(frozen=True)
+class Move:
+    """Faces moved by ``d`` (mm) in the directions ``dirs``: a prescribed displacement."""
+
+    faces: Any
+    d: Vec
+    dirs: str = "xyz"
+
+    def label(self) -> str:
+        return f"moved {_vec(self.d)} mm" + ("" if self.dirs == "xyz" else f" in {self.dirs}")
+
+
+def move(faces, d, dirs: str = "xyz") -> Move:
+    """Move ``faces`` by ``d`` (mm, a vector) and hold them there: a prescribed displacement, such
+    as an actuator driving a flexure's stage. ``dirs`` are the directions held (default all:
+    the faces ride on a rigid carriage); ``fea.move("top", (2, 0, 0), "x")`` pushes them 2 mm
+    along x and leaves them free in y and z. Give it in ``fixed=`` (or ``loads=``); the force it
+    takes is ``result.move_forces``. On tetrahedra (picked for it)."""
+    v = vec(d)
+    dd = "".join(sorted(set(dirs.lower())))
+    if not dd or set(dd) - set("xyz"):
+        raise TuleError(f"directions {dirs!r}", op="fea.move", hint='any of "x", "y", "z": "xyz" (all), "x" (free in y and z)')
+    if all(abs(v[i]) == 0 for i in range(3) if "xyz"[i] in dd):
+        raise TuleError("the move is zero in the directions it holds", op="fea.move",
+                        hint='a zero move is fea.fix(faces, dirs); e.g. fea.move("top", (2, 0, 0), "x")')
+    return Move(faces, v, dd)
 
 
 def _faces(part: Shape, spec, what: str) -> Faces:
@@ -862,8 +896,8 @@ class Result:
     __repr__ = __str__
 
 
-def _conditions(supports, loads) -> tuple[dict, list]:
-    """The overlay's faces (fixed, loaded) and arrows (forces, moments) for supports and loads."""
+def _conditions(supports, loads, moves=()) -> tuple[dict, list]:
+    """The overlay's faces (fixed, loaded) and arrows (forces, moments, moves) for supports and loads."""
     from .selection import face_area, face_center
 
     faces: dict[int, dict] = {}
@@ -871,6 +905,14 @@ def _conditions(supports, loads) -> tuple[dict, list]:
         for i in sel.ids:
             faces[i] = {"role": "fixed", "label": "fixed" if dirs == "xyz" else f"fixed in {dirs}"}
     arrows = []
+    for sel, dirs, d in moves:
+        label = f"moved {_vec(d)} mm" + ("" if dirs == "xyz" else f" (held in {dirs})")
+        for i in sel.ids:
+            faces[i] = {"role": "load", "label": label}
+        w = [face_area(x) for x in sel.items]
+        c = sum((np.array(face_center(x)) * a for x, a in zip(sel.items, w)), np.zeros(3)) / max(sum(w), 1e-30)
+        if d.length > 0:
+            arrows.append({"at": (np.round(c, 6) + 0.0).tolist(), "dir": list(d.normalized()), "label": label})
     for load, sel in loads:
         label = load.label()
         for i in sel.ids:
@@ -890,6 +932,11 @@ def _balance_line(r) -> str:
     if r.balanced:
         return (f"  free part (balanced=True): the loads balance (net {_vec(r.applied)} N), held only against rigid "
                 "motion; displacements relative to its mean position")
+    mf = getattr(r, "move_forces", ())
+    if mf:
+        moved = np.sum([tuple(v) for v in mf], axis=0)
+        return (f"  loads {_vec(r.applied)} N, fea.move {_vec(Vec(*moved))} N, reactions {_vec(r.reaction)} N: "
+                f"balanced to {100 * r.imbalance:.2g} %")
     return f"  loads {_vec(r.applied)} N, reactions {_vec(r.reaction)} N: balanced to {100 * r.imbalance:.2g} %"
 
 
@@ -1170,26 +1217,35 @@ class _CutLevel(_Level):
         return _Level(xp, self.free, Ke=Ke.reshape(self.shape + (24, 24)))
 
 
-def _inputs(part, material, fixed, loads, accel, op: str, need_fixed: bool = True):
-    """Checks an analysis' inputs: (part, Material, [(Faces, dirs)], [(Load, Faces)], accel Vec or None)."""
+def _inputs(part, material, fixed, loads, accel, op: str, need_fixed: bool = True, moves: list | None = None):
+    """Checks an analysis' inputs: (part, Material, [(Faces, dirs)], [(Load, Faces)], accel Vec or None).
+    ``fea.move`` entries (in ``fixed`` or ``loads``) go to ``moves`` as (Faces, dirs, d) when it is a
+    list, else they are refused."""
     if not isinstance(part, Shape):
         raise TuleError(f"{op} needs a Shape, got {type(part).__name__}", op="fea")
     mat = _material(material)
     sups = [] if fixed is None else fixed if isinstance(fixed, (list, tuple)) else [fixed]
+    if isinstance(loads, (Load, Move)):
+        loads = [loads]
+    loads = list(loads or ())
     supports = []
-    for s in sups:
+    for s in sups + [ld for ld in loads if isinstance(ld, Move)]:
+        if isinstance(s, Move):
+            if moves is None:
+                raise TuleError(f"fea.move is for fea.static, not {op}", op="fea", hint="fea.fix(faces) holds faces in place")
+            moves.append((_faces(part, s.faces, "fea.move"), s.dirs, s.d))
+            continue
         s = s if isinstance(s, Support) else Support(s)
         supports.append((_faces(part, s.faces, "fixed"), s.dirs))
-    if not supports and need_fixed:
+    loads = [ld for ld in loads if not isinstance(ld, Move)]
+    if not supports and not moves and need_fixed:
         raise TuleError("nothing holds the part", op="fea", hint='fixed="mount" (a tag) or fixed=part.faces["mount"]'
                         + ("; a free part whose loads balance (a link pulled at both ends): balanced=True"
                            if op == "fea.static" else ""))
-    if isinstance(loads, Load):
-        loads = [loads]
     resolved = []
-    for ld in loads or ():
+    for ld in loads:
         if not isinstance(ld, Load):
-            raise TuleError(f"loads are fea.force, fea.pressure, fea.moment or fea.bearing, got {type(ld).__name__}", op="fea",
+            raise TuleError(f"loads are fea.force, fea.pressure, fea.moment or fea.bearing (or fea.move), got {type(ld).__name__}", op="fea",
                             hint='loads=[fea.force("load", (0, 0, -30))]')
         resolved.append((ld, _faces(part, ld.faces, f"the {ld.kind}")))
     a = vec(accel) if accel is not None else None
@@ -1206,11 +1262,17 @@ def thinnest(part: Shape) -> "tetfe.Thickness":
     return tetfe.thickness(part)
 
 
-def _choose_mesh(part, mesh: str, voxel, size, dofs: int, say) -> str:
+def _choose_mesh(part, mesh: str, voxel, size, dofs: int, say, need_tet: str | None = None) -> str:
+    """``need_tet``: what needs tetrahedra (nonlinear=True, fea.move), if anything."""
     from . import tetfe
 
     if mesh not in ("auto", "voxel", "tet"):
         raise TuleError(f"mesh={mesh!r}", op="fea", hint='"auto", "voxel" or "tet"')
+    if need_tet:
+        if mesh == "voxel" or voxel:
+            raise TuleError(f"{need_tet} runs on tetrahedra, not voxels", op="fea",
+                            hint='leave out mesh="voxel" and voxel= (mesh="auto" picks tetrahedra; size= sets them)')
+        return "tet"
     if mesh != "auto":
         if mesh == "voxel" and size:
             raise TuleError("size= is for tetrahedra", op="fea", hint="voxel= sets the voxel edge")
@@ -1246,13 +1308,23 @@ def static(
     size: float | None = None,
     device: str = "auto",
     tol: float = 1e-6,
+    nonlinear: bool = False,
+    steps: int | None = None,
     verbose: bool = True,
 ):
-    """Linear static analysis of ``part``: returns a result (print it; ``.show(name)`` for the viewer).
+    """Static analysis of ``part``: returns a result (print it; ``.show(name)`` for the viewer).
 
-    ``fixed``: faces held in place (a tag, a face selection, ``fea.fix(faces, "z")``, or a list).
-    ``loads``: ``fea.force``, ``fea.pressure``, ``fea.moment``, ``fea.bearing``. ``accel``: an
-    acceleration (mm/s²) acting on the part's own mass, e.g. ``(0, 0, -3 * fea.g)``.
+    ``fixed``: faces held in place (a tag, a face selection, ``fea.fix(faces, "z")``, or a list),
+    and faces driven by a displacement (``fea.move(faces, (dx, dy, dz))``; the force each takes
+    is ``result.move_forces``). ``loads``: ``fea.force``, ``fea.pressure``, ``fea.moment``,
+    ``fea.bearing``. ``accel``: an acceleration (mm/s²) on the part's own mass, e.g. ``(0, 0, -3 * fea.g)``.
+
+    ``nonlinear=True``: large displacements and rotations (small strains, St. Venant–Kirchhoff),
+    on tetrahedra: loads and moves applied in steps (``steps=``: equal ones; default adaptive),
+    Newton–Raphson in each. Loads are dead (a pressure keeps its direction and area). The result's
+    ``steps`` hold the path (``fraction``, ``move_forces``, ``reaction``; ``displacement_at(p,
+    step=i)``). A step that fails is retried smaller; if it keeps failing, or the part buckles or snaps
+    through under the loads, a ``TuleError`` says where (its ``.result``: the last converged step).
     ``balanced=True`` (no ``fixed``): a free part whose loads balance, such as a link pulled at
     both ends; checked to 1 % (else an error with the net force and moment), the rest taken up
     by inertia relief; three points hold it against rigid motion only, and displacements are
@@ -1266,23 +1338,36 @@ def static(
     GPU), ``"cpu"``, ``"gpu"`` (voxels only).
     """
     r = _static(part, material, fixed=fixed, loads=loads, accel=accel, balanced=balanced, voxel=voxel, dofs=dofs,
-                mesh=mesh, size=size, device=device, tol=tol, verbose=verbose)
+                mesh=mesh, size=size, device=device, tol=tol, nonlinear=nonlinear, steps=steps, verbose=verbose)
     _say_warnings(r.warnings)
     return r
 
 
-def _static(part, material, *, fixed, loads, accel, balanced, voxel, dofs, mesh, size, device, tol, verbose):
+def _static(part, material, *, fixed, loads, accel, balanced, voxel, dofs, mesh, size, device, tol, verbose,
+            nonlinear=False, steps=None):
     t_start = time.time()
     say = (lambda msg: print(f"{msg} [{time.time() - t_start:.1f} s]", flush=True)) if verbose else (lambda *a, **k: None)
-    part, mat, supports, resolved, a = _inputs(part, material, fixed, loads, accel, "fea.static", need_fixed=not balanced)
-    if balanced and supports:
+    moves: list = []
+    part, mat, supports, resolved, a = _inputs(part, material, fixed, loads, accel, "fea.static", need_fixed=not balanced,
+                                               moves=moves)
+    if balanced and (supports or moves):
         raise TuleError("balanced=True is for a free part: leave out fixed", op="fea",
                         hint="either fixed= (held at faces) or balanced=True (held by the balance of its loads)")
-    if not resolved and (a is None or a.length == 0):
-        raise TuleError("no loads", op="fea", hint='loads=[fea.force("load", (0, 0, -30))] or accel=(0, 0, -fea.g)')
-    kind = _choose_mesh(part, mesh, voxel, size, dofs, say)
+    if balanced and nonlinear:
+        raise TuleError("nonlinear=True needs the part held (fixed= or fea.move), not balanced=True", op="fea",
+                        hint="fix one end and load the other; a free part's large rotations are rigid motion")
+    if not resolved and (a is None or a.length == 0) and not moves:
+        raise TuleError("no loads", op="fea", hint='loads=[fea.force("load", (0, 0, -30))], accel=(0, 0, -fea.g), '
+                                                   'or fixed=[..., fea.move("top", (1, 0, 0))]')
+    if steps is not None and not (isinstance(steps, int) and 1 <= steps <= 1000):
+        raise TuleError(f"steps={steps!r}", op="fea", hint="a number of equal load steps, 1 to 1000 (or None: adaptive)")
+    if steps is not None and not nonlinear:
+        raise TuleError("steps= is for nonlinear=True", op="fea", hint="a linear analysis is one solve")
+    need = "nonlinear=True" if nonlinear else "fea.move" if moves else None
+    kind = _choose_mesh(part, mesh, voxel, size, dofs, say, need_tet=need)
     if kind == "tet":
-        return _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=min(tol, 1e-8), balanced=balanced)
+        return _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=min(tol, 1e-8), balanced=balanced,
+                           moves=tuple(moves), nonlinear=nonlinear, steps=steps)
 
     xp = backend(device)
     dev = "gpu" if xp is not np else "cpu"
@@ -1512,7 +1597,8 @@ def _static(part, material, *, fixed, loads, accel, balanced, voxel, dofs, mesh,
     peak, peak_at = float(s_vm[i_max]), pts[i_max]
     where = _near(peak_at, [_surface(mesh, h / 2, sel.ids)[0] for sel, _ in supports], load_pts, 1.5 * h)
     warnings = (_common_warnings(residual, tol, 0.0 if balanced else imbalance, on_fixed / max(total_abs, 1e-300))
-                + _peak_warning(peak, peak_at, p995, where, mat.yield_strength) + warnings)
+                + _peak_warning(peak, peak_at, p995, where, mat.yield_strength) + warnings
+                + ([] if balanced else _large_warning(float(s_u[j_max]), float(size.max()), None)))
     return Result(
         part=part, material=mat, supports=tuple(supports), loads=tuple(resolved), accel=a,
         origin=Vec(*origin), voxel=h, fraction=frac, stress=vm.astype(np.float32), displacement=disp.astype(np.float32),
@@ -1592,7 +1678,7 @@ def converge(part: Shape, material: str | Material = "aluminium 6061-T6", *, dof
 
 
 _STATIC_DEFAULTS = dict(fixed=None, loads=(), accel=None, balanced=False, voxel=None, mesh="auto", size=None,
-                        device="auto", tol=1e-6)
+                        device="auto", tol=1e-6, nonlinear=False, steps=None)
 
 
 # ---------------------------------------------------------------- tetrahedra (thin walls, modes, buckling)
@@ -1619,8 +1705,13 @@ def _tet_mesh(part: Shape, dofs: int, size: float | None, say, notes: list, patc
     return m
 
 
-def _tet_fixed(m, supports) -> np.ndarray:
-    fixed = np.zeros((len(m.nodes), 3), dtype=bool)
+def _tet_constraints(m, supports, moves=()):
+    """Constrained DOFs (n, 3), their values under the full moves (n, 3, mm), and which move holds
+    each (-1: a fixed face or free)."""
+    n = len(m.nodes)
+    fixed = np.zeros((n, 3), dtype=bool)
+    presc = np.zeros((n, 3))
+    which = np.full((n, 3), -1)
     for sel, dirs in supports:
         tri = np.isin(m.tri_face, sel.ids)
         if not tri.any():
@@ -1629,7 +1720,29 @@ def _tet_fixed(m, supports) -> np.ndarray:
         for d, c in enumerate("xyz"):
             if c in dirs:
                 fixed[nodes, d] = True
-    return fixed
+    held = fixed.copy()
+    for j, (sel, dirs, dv) in enumerate(moves):
+        tri = np.isin(m.tri_face, sel.ids)
+        if not tri.any():
+            raise TuleError("the mesh has no triangles on the moved faces", op="fea.move", faces=sel.ids)
+        nodes = np.unique(m.tris[tri])
+        for d, c in enumerate("xyz"):
+            if c not in dirs:
+                continue
+            clash = held[nodes, d] | ((which[nodes, d] >= 0) & (presc[nodes, d] != dv[d]))
+            if clash.any():
+                raise TuleError(f"the moved faces {list(sel.ids)} share {int(clash.sum())} node(s) with fixed or other "
+                                f"moved faces, e.g. at {_pt(m.nodes[nodes[clash][0]])}: they cannot both hold there",
+                                op="fea.move", faces=sel.ids,
+                                hint="move or fix faces that do not touch (an edge between them is shared), or fewer directions")
+            fixed[nodes, d] = True
+            presc[nodes, d] = dv[d]
+            which[nodes, d] = j
+    return fixed, presc, which
+
+
+def _tet_fixed(m, supports, moves=()) -> np.ndarray:
+    return _tet_constraints(m, supports, moves)[0]
 
 
 def _tet_pieces(m, fixed, need: bool = True, balanced: bool = False):
@@ -1686,13 +1799,14 @@ def _tet_loads(m, model, resolved, mat: Material, a, info: list | None = None) -
     return f
 
 
-def _tet_setup(part, mat, supports, dofs, size, say, notes, need_fixed: bool = True, balanced: bool = False, patches=()):
+def _tet_setup(part, mat, supports, dofs, size, say, notes, need_fixed: bool = True, balanced: bool = False, patches=(),
+               moves=()):
     """Mesh, model, stiffness and the CG solver on the free DOFs (a free part: held at three corner nodes)."""
     from . import tetfe
 
     m = _tet_mesh(part, dofs, size, say, notes, patches)
     model = tetfe.Model(m)
-    fixed = _tet_fixed(m, supports)
+    fixed = _tet_fixed(m, supports, moves)
     _tet_pieces(m, fixed, need_fixed, balanced)
     if balanced:  # at corner nodes (the coarse level needs them), inside the material if it has any
         vtx = np.unique(m.tets[:, :4])
@@ -1724,13 +1838,31 @@ def _p995(values, area) -> float:
     return float(values[order[min(int(np.searchsorted(cum, 0.995 * cum[-1])), len(order) - 1)]])
 
 
+LARGE_ROTATION = 0.15  # rad: past this (or displacements past 10 % of the part's size) linear results drift
+
+
+def _large_warning(max_disp: float, size: float, rot: float | None) -> list[str]:
+    """A linear result whose displacements or rotations are too large for linear theory."""
+    big_u, big_r = max_disp > 0.1 * size, rot is not None and rot > LARGE_ROTATION
+    if not (big_u or big_r):
+        return []
+    what = " and ".join(([f"rotations up to {rot:.2g} rad ({math.degrees(rot):.0f}°)"] if big_r else [])
+                        + ([f"displacements of {max_disp:.3g} mm ({100 * max_disp / size:.0f} % of the part's size)"] if big_u else []))
+    return [f"{what}: past where linear theory holds (it stiffens or softens with the shape; a cantilever at 0.5 rad "
+            f"reads about 10 % too far): run again with nonlinear=True"]
+
+
 def _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=1e-9, keep: dict | None = None,
-                balanced: bool = False):
+                balanced: bool = False, moves=(), nonlinear: bool = False, steps: int | None = None):
     notes: list[str] = []
     patches = [(ld.at, ld.r) for ld, _ in resolved if ld.at is not None]
-    m, model, fixed, K, solver = _tet_setup(part, mat, supports, dofs, size, say, notes, balanced=balanced, patches=patches)
+    m, model, fixed, K, solver = _tet_setup(part, mat, supports, dofs, size, say, notes, balanced=balanced, patches=patches,
+                                            moves=moves)
     if keep is not None:  # buckling goes on with them
         keep.update(model=model, solver=solver)
+    _, presc, which = _tet_constraints(m, supports, moves)
+    if balanced:
+        presc, which = np.zeros_like(presc), np.full_like(which, -1)
     info: list = []
     f = _tet_loads(m, model, resolved, mat, a, info)
     if balanced:  # each node's share of the volume: inertia relief's mass and the mean position's weights
@@ -1744,25 +1876,43 @@ def _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=
     total_abs = float(np.linalg.norm(f, axis=1).sum())
     on_fixed = 0.0 if balanced else float(np.linalg.norm(f * fixed, axis=1).sum())
     free = solver.free
+    fixed_flat = fixed.reshape(-1)
+    uc = presc.reshape(-1)
+    move_dofs = [np.flatnonzero(which.reshape(-1) == j) for j in range(len(moves))]
+    fl = f.reshape(-1)
     t_solve = time.time()
-    say(f"fea: solving for {int(free.sum()):,} unknowns (conjugate gradients; {solver.pre.coarse:,} on the linear tetrahedra) …")
-    b = f.reshape(-1)[free]
-    x, iters, res = solver.solve(b, tol)
-    if not res <= 10 * tol:
-        raise TuleError(f"the solve did not converge (residual {res:.1e} after {iters} iterations)", op="fea",
-                        hint="is every piece held against sliding and turning? fea.fix(faces, \"z\") alone lets a part "
-                             "slide sideways; fix more faces or more directions")
-    say(f"fea: solved in {iters} CG iterations, {time.time() - t_solve:.1f} s")
-    residual = float(np.linalg.norm(solver.K @ x - b)) / max(float(np.linalg.norm(b)), 1e-300)
-    u = np.zeros(3 * len(m.nodes))
-    u[free] = x
-    react = (K @ u - f.reshape(-1)).reshape(-1, 3) * fixed
-    reaction = react.sum(0)
-    imbalance = float(np.linalg.norm(reaction + applied)) / max(total_abs, 1e-300)
+    path, history, failure, lin_max = (), None, None, None
+    if nonlinear:
+        nl = _newton(model, solver, K, fl, uc, fixed_flat, move_dofs, mat, steps, say)
+        u, fint, iters, residual = nl["u"], nl["fint"], nl["cg"], nl["residual"]
+        path, history, failure, lin_max = nl["steps"], nl["history"], nl["failure"], nl["linear"]
+        frac = path[-1].fraction if path else 0.0
+        react = (fint - frac * fl).reshape(-1, 3) * fixed
+        applied = applied * frac
+        f = f * frac
+        total_abs *= frac
+        notes += nl["notes"]
+    else:
+        say(f"fea: solving for {int(free.sum()):,} unknowns (conjugate gradients; {solver.pre.coarse:,} on the linear tetrahedra) …")
+        b = fl[free] - (K @ uc)[free] if moves else fl[free]
+        x, iters, res = solver.solve(b, tol)
+        if not res <= 10 * tol:
+            raise TuleError(f"the solve did not converge (residual {res:.1e} after {iters} iterations)", op="fea",
+                            hint="is every piece held against sliding and turning? fea.fix(faces, \"z\") alone lets a part "
+                                 "slide sideways; fix more faces or more directions")
+        say(f"fea: solved in {iters} CG iterations, {time.time() - t_solve:.1f} s")
+        residual = float(np.linalg.norm(solver.K @ x - b)) / max(float(np.linalg.norm(b)), 1e-300)
+        u = uc.copy()
+        u[free] = x
+        react = (K @ u - fl).reshape(-1, 3) * fixed
+    move_forces = tuple(Vec(*np.bincount(d % 3, weights=react.reshape(-1)[d], minlength=3)) for d in move_dofs)
+    reaction = react.sum(0) - np.sum([tuple(v) for v in move_forces] or [(0, 0, 0)], axis=0)  # at the supports
+    scale = max(total_abs, float(np.linalg.norm(react, axis=1).sum()), 1e-300)
+    imbalance = float(np.linalg.norm(react.sum(0) + applied)) / scale
     u = u.reshape(-1, 3)
     if balanced:  # displacements relative to the part's mean position
         u = u - _rigid(m.nodes, u, wts)
-    gp = model.gauss_stress(u, mat.E, mat.nu)
+    gp = model.cauchy(u, mat.E, mat.nu) if nonlinear else model.gauss_stress(u, mat.E, mat.nu)
     sigma = model.nodal(gp)
     vm = von_mises(sigma.T)
     used, tri, face, area = _surface_stats(m, vm)
@@ -1775,13 +1925,22 @@ def _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=
     p995 = _p995(s_vm, area)
     els = m.tets[(m.tets == node).any(1)][:, :4]
     h = float(np.mean([np.linalg.norm(m.nodes[els[:, i]] - m.nodes[els[:, j]], axis=1).mean() for i, j in ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))]))
-    fixed_pts = [m.nodes[np.unique(m.tris[np.isin(m.tri_face, sel.ids)])] for sel, _ in supports]
+    fixed_pts = [m.nodes[np.unique(m.tris[np.isin(m.tri_face, sel.ids)])] for sel, *_ in list(supports) + list(moves)]
     where = _near(m.nodes[node], fixed_pts, [p for *_, p in info], 2 * h)
-    warnings = _common_warnings(residual, tol, 0.0 if balanced else imbalance, on_fixed / max(total_abs, 1e-300))
+    warnings = _common_warnings(residual, tol if not nonlinear else NL_RTOL, 0.0 if balanced else imbalance,
+                                on_fixed / max(total_abs, 1e-300))
     warnings += _peak_warning(peak, m.nodes[node], p995, where, mat.yield_strength)
     for ld, ar, bear, edge, _ in info:
         warnings += _load_warnings(ld, ar, bear, edge, "elements", mat.yield_strength)
-    return TetResult(
+    if not nonlinear and not balanced:
+        rot = model.rotation(u)
+        warnings += _large_warning(float(dmag[j_max]), float(np.array(part.size).max()), float(np.percentile(rot, 99.9)))
+    if nonlinear and failure is None:
+        strain = nl["strain"]
+        if strain > 0.05:
+            warnings.append(f"strains reach {100 * strain:.0f} %: past small strain (the model is St. Venant–Kirchhoff, "
+                            f"fine to a few %) and past yield for most materials")
+    result = TetResult(
         part=part, material=mat, supports=tuple(supports), loads=tuple(resolved), accel=a, mesh=m,
         stress=vm.astype(np.float32), stress_tensor=sigma.astype(np.float32), displacement=u,
         max_stress=peak, max_stress_at=Vec(*m.nodes[node]), stress_p995=p995,
@@ -1789,8 +1948,292 @@ def _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=
         applied=Vec(*applied), reaction=Vec(*reaction), imbalance=imbalance,
         mass=float(part.volume * mat.density / 1000), elements=len(m.tets), dofs=int(free.sum()),
         cg_iterations=int(iters), seconds=time.time() - t_start, device="cpu", notes=tuple(notes),
-        warnings=tuple(warnings), balanced=balanced, _gauss=gp,
+        warnings=tuple(warnings), balanced=balanced, _gauss=gp, moves=tuple(moves), move_forces=move_forces,
+        nonlinear=nonlinear, steps=tuple(path), linear_max_displacement=lin_max, _history=history,
     )
+    if failure is not None:
+        err = TuleError(failure["message"], op="fea.static", hint=failure["hint"], **failure["data"])
+        err.result = result if path else None  # the last converged step
+        raise err
+    return result
+
+
+# ---------------------------------------------------------------- large displacements
+
+NL_RTOL = 1e-5  # Newton converges when the out-of-balance forces are under this share of the forces in play
+NL_MAXIT = 12  # Newton iterations per step before it is cut
+NL_MIN_STEP = 1e-3  # the smallest load step (a fraction of the loads) before giving up
+
+
+@dataclass(frozen=True, repr=False)
+class Step:
+    """A converged load step of ``fea.static(nonlinear=True)``: ``fraction`` of the loads and
+    moves, ``max_displacement`` (mm), ``reaction`` (at the supports, total N), ``move_forces`` (the force each
+    ``fea.move`` applies to the part, N) and its Newton ``iterations``."""
+
+    fraction: float
+    max_displacement: float
+    reaction: Vec
+    move_forces: tuple
+    iterations: int
+
+    def __str__(self) -> str:
+        mf = "".join(f", move {_vec(v)} N" for v in self.move_forces)
+        return f"Step({self.fraction:.4g} of the loads: max displacement {self.max_displacement:.4g} mm{mf}, " \
+               f"reaction {_vec(self.reaction)} N, {self.iterations} iterations)"
+
+    __repr__ = __str__
+
+
+def _softest(A, B, M, n: int, iterations: int = 15) -> float:
+    """The smallest μ of ``A x = μ B x`` found by LOBPCG in a few iterations (B and M positive
+    definite): each Rayleigh quotient bounds it from above, so a negative one proves that the
+    tangent ``A`` has a direction of negative stiffness."""
+    import warnings as _w
+
+    from scipy.sparse.linalg import LinearOperator, lobpcg
+
+    def op(mv):
+        return LinearOperator((n, n), matvec=lambda x: mv(np.ravel(x)), dtype=np.float64)
+
+    X = np.random.default_rng(0).standard_normal((n, 1))
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        _, _, hist = lobpcg(op(A.__matmul__), X, B=op(B.__matmul__), M=op(M), largest=False, tol=1e-30,
+                            maxiter=iterations, retLambdaHistory=True)
+    return float(min(np.min(h) for h in hist))  # (LOBPCG returns its best-converged iterate, not the lowest)
+
+
+def _newton(model, solver, K, f, uc, fixed, move_dofs, mat, steps, say) -> dict:
+    """Load stepping and Newton–Raphson on the free DOFs (total Lagrangian St. Venant–Kirchhoff).
+
+    The loads ``f`` (3n) and moves ``uc`` (3n, on the constrained DOFs) grow with a load factor
+    from 0 to 1. The first step's predictor is the linear solution (scaled); the next ones
+    extrapolate the last increment. Each Newton correction is a PCG solve with the tangent
+    (inexact: to a tenth of the current residual); the coarse factor of the preconditioner is
+    kept while it still works and refactored when CG slows. A step that fails (diverges, too many
+    iterations, negative stiffness, an inverted element) is halved, and grows again after easy
+    ones. At the end the tangent's softest direction is checked: negative stiffness means the
+    solved path passed a buckling or snap-through point."""
+    import copy
+
+    from . import tetfe
+
+    free = solver.free
+    E, nu = mat.E, mat.nu
+    n3 = len(f)
+    pre0 = copy.copy(solver.pre)  # the linear stiffness and its preconditioner (the stability check's metric)
+    K0f = solver.K
+    notes: list[str] = []
+    driven = bool(fixed[uc != 0].any())
+    what = ("loads and moves" if np.any(f) else "moves") if driven else "loads"
+    reduce = model.reducer(free)
+    b = f[free] - (K @ uc)[free]
+    x, cg, res = solver.solve(b, 1e-8)
+    if solver.negative or not res <= 1e-6:
+        raise TuleError(f"the linear solve did not converge (residual {res:.1e})", op="fea",
+                        hint="is every piece held against sliding and turning? fix more faces or more directions")
+    u_lin = uc.copy()
+    u_lin[free] = x
+    lin_max = float(np.linalg.norm(u_lin.reshape(-1, 3), axis=1).max())
+    theta = float(np.percentile(model.rotation(u_lin.reshape(-1, 3)), 99.9))
+    dmax = 1.0 / steps if steps else 0.25
+    dlam = dmax if steps else float(np.clip(0.25 / max(theta, 1e-12), 0.02, dmax))
+    say(f"fea: nonlinear: linear theory gives {lin_max:.3g} mm and rotations to {theta:.2g} rad; "
+        f"load steps from {100 * dlam:.3g} % …")
+    u = np.zeros(n3)
+    lam = 0.0
+    rec: list = []  # (fraction, u (n, 3) float32, reactions (3n), iterations)
+    newton = 0
+    fails = 0
+    refactor = False
+    base_rate = None
+    failure = None
+    state_last, Kt_last, fint_last, strain = None, None, np.zeros(n3), 0.0
+    tangent_next = False  # the next attempt starts from the tangent, not an extrapolation
+    misses = 0
+    while lam < 1 - 1e-12:
+        dlam = 1 - lam if lam + 1.25 * dlam >= 1 else dlam  # no sliver of a last step
+        target = lam + dlam
+        if tangent_next and rec:  # the tangent at the last converged state, from there (Euler)
+            dc = np.zeros(n3)
+            dc[fixed] = dlam * uc[fixed]
+            Kt_last = model.stiffness_at(state_last) if Kt_last is None else Kt_last
+            rhs = (target * f - fint_last - model._bsr(Kt_last) @ dc)[free]
+            solver.update(reduce(Kt_last), reduced=True)
+            du, its, _ = solver.solve(rhs, 1e-3, maxiter=1000)
+            cg += its
+            u_try = u + dc
+            u_try[free] += du
+        else:
+            u_try = _predict(rec, u_lin, target)
+            u_try[fixed] = target * uc[fixed]
+        ok, reason, r0 = False, "", None
+        for it in range(NL_MAXIT + 1):
+            fint, state, (detmin, emax) = model.internal(u_try.reshape(-1, 3), E, nu)
+            fint = fint.reshape(-1)
+            R = target * f - fint
+            ref = max(float(np.linalg.norm(target * f)), float(np.linalg.norm(fint)), 1e-300)
+            rn = float(np.linalg.norm(R[free])) / ref
+            if not math.isfinite(rn):
+                reason = "it diverged"
+                break
+            if rn <= NL_RTOL:
+                ok = detmin > 0
+                reason = "" if ok else "elements turned inside out"
+                break
+            if it == NL_MAXIT:
+                reason = f"not converged in {NL_MAXIT} iterations"
+                break
+            r0 = rn if r0 is None else r0
+            if rn > 1e3 * r0:
+                reason = "it diverged"
+                break
+            try:
+                solver.update(reduce(model.stiffness_at(state)), refactor=refactor, reduced=True)
+            except RuntimeError:  # the coarse factor of an indefinite tangent
+                reason = "the stiffness turned negative"
+                break
+            if refactor:
+                refactor, base_rate = False, None
+            eta = min(1e-2, max(1e-10, 0.1 * rn))
+            du, its, res = solver.solve(R[free], eta, maxiter=1000)
+            if not solver.negative and not res <= 10 * eta:  # the coarse factor is too old: refactor, once
+                try:
+                    solver.pre.factor()
+                except RuntimeError:
+                    reason = "the stiffness turned negative"
+                    break
+                base_rate = None
+                cg += its
+                du, its, res = solver.solve(R[free], eta, maxiter=1000)
+            cg += its
+            if solver.negative:
+                reason = "the stiffness turned negative"
+                break
+            if not res <= 10 * eta:
+                reason = "the linear solver stalled"
+                break
+            rate = its / max(math.log10(1 / max(res, 1e-300)), 0.5)
+            if base_rate is None:
+                base_rate = rate
+            elif rate > 2 * base_rate + 2:
+                refactor = True
+            u_try[free] += du
+        newton += it
+        if ok:
+            u, lam = u_try, target
+            state_last, Kt_last, fint_last, strain = state, None, fint, emax  # (the tangent there: when needed)
+            react = (fint - lam * f) * fixed
+            rec.append((lam, u.reshape(-1, 3).astype(np.float32), react, it))
+            say(f"fea:   step {len(rec)}: {100 * lam:.4g} % of the {what}, {it} Newton iteration(s), "
+                f"max displacement {float(np.linalg.norm(u.reshape(-1, 3), axis=1).max()):.4g} mm")
+            fails = 0
+            tangent_next = misses >= 2
+            if it <= 3:
+                dlam = min(dmax, 1.5 * dlam)
+            elif it >= 7:
+                dlam *= 0.7
+            continue
+        fails += 1
+        if rec and not tangent_next:  # the extrapolated guess may have been off (it overshoots a turning path):
+            tangent_next = True       # the same step again from the tangent (and always, after two such misses)
+            misses += 1
+            say(f"fea:   a step to {100 * target:.4g} % failed ({reason}): again from the tangent")
+            continue
+        tangent_next = misses >= 2
+        dlam *= 0.25 if reason in ("it diverged", "the stiffness turned negative") else 0.5
+        say(f"fea:   a step to {100 * target:.4g} % failed ({reason}): trying {100 * dlam:.3g} %")
+        if dlam < NL_MIN_STEP or fails > 16:
+            failure = _nl_failure(lam, rec, reason, target - lam, what, driven)
+            break
+    if failure is None and rec:  # did the path pass a buckling or snap-through point?
+        Kt_last = model.stiffness_at(state_last) if Kt_last is None else Kt_last
+        n = len(solver.idx)
+
+        def mu_at(Kt):
+            return _softest(tetfe.ParCSR(reduce(Kt)), pre0.Am, pre0, n)
+
+        if mu_at(Kt_last) < -1e-6:
+            lo, hi = -1, len(rec) - 1  # the last stable step, the first unstable one
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                _, Kt, _ = model.tangent(rec[mid][1].astype(np.float64), E, nu, blocks=True)
+                lo, hi = (mid, hi) if mu_at(Kt) >= -1e-6 else (lo, mid)
+            failure = _nl_unstable(rec, lo, hi, what, driven)
+            rec = rec[:lo + 1]  # the result goes back to the last stable step
+            u = rec[-1][1].reshape(-1).astype(np.float64) if rec else np.zeros(n3)
+            fint_last = model.tangent(u.reshape(-1, 3), E, nu, stiffness=False)[0].reshape(-1) if rec else np.zeros(n3)
+    steps_out = []
+    for lam_i, ui, react, it in rec:
+        mf = tuple(Vec(*np.bincount(d % 3, weights=react[d], minlength=3)) for d in move_dofs)
+        support = react.reshape(-1, 3).sum(0) - np.sum([tuple(v) for v in mf] or [(0, 0, 0)], axis=0)
+        steps_out.append(Step(float(lam_i), float(np.linalg.norm(ui, axis=1).max()), Vec(*support), mf, int(it)))
+    if rec:
+        notes.append(f"geometrically nonlinear: {len(rec)} load step(s), {newton} Newton iterations, {cg} CG iterations")
+    residual = 0.0
+    if rec:
+        R = rec[-1][0] * f - fint_last
+        residual = float(np.linalg.norm(R[free])) / max(float(np.linalg.norm(rec[-1][0] * f)), float(np.linalg.norm(fint_last)), 1e-300)
+    return dict(u=u, fint=fint_last, cg=cg, residual=residual, steps=tuple(steps_out),
+                history=np.stack([r[1] for r in rec]) if rec else None, failure=failure, linear=lin_max,
+                notes=notes, strain=strain)
+
+
+def _predict(rec: list, u_lin: np.ndarray, lam: float) -> np.ndarray:
+    """The displacements at load fraction ``lam`` extrapolated from the path so far: a parabola
+    through the last three points (the origin among them), or through the origin with the
+    linear solution as its slope while only one step has converged (a flexure's shortening
+    grows with the square of its stroke: a straight-line guess stretches its blades)."""
+    if not rec:
+        return u_lin * lam
+    if len(rec) == 1:
+        l1, u1 = rec[0][0], rec[0][1].reshape(-1)
+        c = (u1 - u_lin * l1) / l1 ** 2
+        return u_lin * lam + c * lam ** 2
+    pts = ([(0.0, None)] + [(r[0], r[1]) for r in rec])[-3:]
+    out = np.zeros_like(u_lin)
+    for i, (li, ui) in enumerate(pts):
+        if ui is None:
+            continue
+        w = 1.0
+        for j, (lj, _) in enumerate(pts):
+            if j != i:
+                w *= (lam - lj) / (li - lj)
+        out += w * ui.reshape(-1)
+    return out
+
+
+def _nl_failure(lam: float, rec: list, reason: str, tried: float, what: str, driven: bool) -> dict:
+    last = (f"{len(rec)} step(s) converged, the last at {lam:.4g} of the {what} (max displacement "
+            f"{float(np.linalg.norm(rec[-1][1], axis=1).max()):.3g} mm)") if rec else "no step converged"
+    if reason == "the stiffness turned negative":
+        hint = ("the part gives way here: buckling, or snap-through under a force (a limit point). " +
+                ("Driven by displacement it can still buckle sideways: a small side load (an imperfection) lets it "
+                 "take the buckled path; fea.buckling estimates the load" if driven else
+                 "Drive it by displacement (fea.move) to follow it through, or check fea.buckling"))
+    elif reason == "elements turned inside out":
+        hint = "strains too large for the model here: spread the load over more area, or refine (dofs=, size=)"
+    else:
+        hint = "more steps= (smaller increments) may get through" + (
+            "" if driven else "; if the force–displacement path flattens before here, it is a snap-through: drive it by "
+                              "displacement (fea.move) instead")
+    return dict(message=f"the nonlinear solve did not converge past {100 * lam:.4g} % of the {what} ({last}); a step of "
+                        f"{100 * tried:.2g} % beyond it failed: {reason}",
+                hint=hint + ("; error.result is the last converged step" if rec else ""),
+                data=dict(last_fraction=lam, steps=len(rec), reason=reason))
+
+
+def _nl_unstable(rec: list, lo: int, hi: int, what: str, driven: bool) -> dict:
+    a = rec[lo][0] if lo >= 0 else 0.0
+    b = rec[hi][0]
+    return dict(message=f"the part buckles or snaps through between {100 * a:.4g} % and {100 * b:.4g} % of the {what}: its "
+                        f"stiffness turns negative there, so the path solved beyond (to {100 * rec[-1][0]:.4g} %) is "
+                        f"unstable, not what happens",
+                hint=("" if driven else "drive it by displacement (fea.move) to follow a snap-through; ") +
+                     "a perfect, symmetric part (a column, an arch) needs a small side load as an imperfection to take the "
+                     "buckled path; fea.buckling estimates the load" + ("; error.result is the last stable step" if lo >= 0 else ""),
+                data=dict(last_fraction=a, steps=lo + 1, reason="negative stiffness"))
 
 
 def _surface_field(m, values, **kw) -> dict:
@@ -1836,6 +2279,12 @@ class TetResult:
     warnings: tuple = ()
     balanced: bool = False
     _gauss: Any = None  # Gauss-point stresses (elements, 4, 6), for buckling
+    moves: tuple = ()  # (Faces, dirs, d) per fea.move
+    move_forces: tuple = ()  # the force (Vec, N) each fea.move applies to the part: what drives it there
+    nonlinear: bool = False
+    steps: tuple = ()  # nonlinear: the converged load steps (Step), the path
+    linear_max_displacement: float | None = None  # nonlinear: what linear theory gives
+    _history: Any = None  # nonlinear: displacements per step (steps, n, 3), float32
 
     safety_factor = Result.safety_factor
 
@@ -1853,17 +2302,25 @@ class TetResult:
         """Von Mises stress (MPa) at points (``(n, 3)`` or one point)."""
         return self._interp(self.stress, points)
 
-    def displacement_at(self, points) -> np.ndarray:
-        """Displacement vectors (mm) at points."""
-        return self._interp(self.displacement, points)
+    def displacement_at(self, points, step: int | None = None) -> np.ndarray:
+        """Displacement vectors (mm) at points (of the undeformed part); ``step``: at that load step
+        of a nonlinear analysis (``steps[step]``) instead of the last."""
+        if step is None:
+            return self._interp(self.displacement, points)
+        if self._history is None:
+            raise TuleError("step= is for a nonlinear result", op="fea", hint="fea.static(..., nonlinear=True)")
+        return self._interp(self._history[step], points)
 
     def show(self, name: str, title: str | None = None, deform: float | None = None) -> str:
         """An overlay output: von Mises stress and displacement on the mesh's own surface (thin
-        walls and slots drawn as they are), supports, loads and the numbers. Returns the folder."""
+        walls and slots drawn as they are), supports, loads and the numbers. Returns the folder.
+        A nonlinear result is drawn at its true shape (``deform`` 1) by default."""
         from . import outputs
 
-        faces, arrows = _conditions(self.supports, self.loads)
+        faces, arrows = _conditions(self.supports, self.loads, self.moves)
         size = float(np.array(self.part.size).max())
+        if deform is None and self.nonlinear:
+            deform = 1.0
         if deform is None:
             deform = _nice(0.06 * size / self.max_displacement) if self.max_displacement > 0 else 0.0
         fields = [
@@ -1876,6 +2333,11 @@ class TetResult:
         m = self.mesh
         info = _static_info(self, f"{self.elements:,} quadratic tetrahedra, {m.smallest:.2g} to {m.size:.2g} mm, "
                                   f"{self.dofs:,} DOFs")
+        for (sel, _, d), fm in zip(self.moves, self.move_forces):
+            info[f"move faces {', '.join(map(str, sel.ids))}"] = f"{_vec(d)} mm takes {_vec(fm)} N"
+        if self.nonlinear:
+            info["nonlinear"] = (f"{len(self.steps)} load steps; linear theory: max displacement "
+                                 f"{self.linear_max_displacement:.3g} mm")
         return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
                                title=title or f"Static analysis: {self.part.name or name}, {self.material.name}")
 
@@ -1889,15 +2351,38 @@ class TetResult:
             f"99.5th percentile {self.stress_p995:.4g} MPa (surface)",
             f"  safety factor against yield: {self.safety_factor:.3g} on the peak, "
             f"{m.yield_strength / self.stress_p995 if self.stress_p995 > 0 else math.inf:.3g} on the 99.5th percentile",
-            f"  max displacement {self.max_displacement:.4g} mm at {_pt(self.max_displacement_at)}",
+            f"  max displacement {self.max_displacement:.4g} mm at {_pt(self.max_displacement_at)}"
+            + (f" (linear theory: {self.linear_max_displacement:.4g} mm)" if self.nonlinear and self.linear_max_displacement else ""),
             _balance_line(self),
-            f"  mass {self.mass:.4g} g",
         ]
+        for (sel, dirs, d), fm in zip(self.moves, self.move_forces):
+            lines.append(f"  fea.move faces {list(sel.ids)} by {_vec(d)} mm{'' if dirs == 'xyz' else f' (held in {dirs})'}: "
+                         f"it takes {_vec(fm)} N")
+        if self.nonlinear:
+            lines.append(f"  geometrically nonlinear (large displacements, St. Venant–Kirchhoff, dead loads): "
+                         f"{len(self.steps)} load steps; points are the undeformed part's")
+            lines += _path_table(self.steps)
+        lines.append(f"  mass {self.mass:.4g} g")
         lines += [f"  WARNING: {w}" for w in self.warnings]
         lines += [f"  note: {n}" for n in self.notes]
         return "\n".join(lines)
 
     __repr__ = __str__
+
+
+def _path_table(steps, rows: int = 10) -> list[str]:
+    """The load path, at most ``rows`` steps (evenly picked, the last always)."""
+    if not steps:
+        return []
+    k = len(steps)
+    pick = sorted(set(np.round(np.linspace(0, k - 1, min(rows, k))).astype(int).tolist()))
+    head = "    fraction  max displ (mm)  " + ("force on each fea.move (N)" if steps[0].move_forces else "reaction (N)")
+    out = [head]
+    for i in pick:
+        st = steps[i]
+        val = "  ".join(_vec(v) for v in st.move_forces) if st.move_forces else _vec(st.reaction)
+        out.append(f"    {st.fraction:8.4g}  {st.max_displacement:14.4g}  {val}")
+    return out
 
 
 def _shape_fields(m, shapes, labels, size: float, deform: float | None) -> list[dict]:

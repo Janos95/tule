@@ -630,6 +630,119 @@ class Model:
                         grad[..., 2, 0] + grad[..., 0, 2]], -1)
         return eps @ D_matrix(E, nu).T
 
+    # ------------------------------------------------ large displacements (total Lagrangian)
+
+    def reducer(self, free: np.ndarray):
+        """For a mask of free DOFs (3n): the free-free submatrix's CSR structure and where each of
+        its entries sits among the node-pair blocks (pattern, 3, 3), so a tangent's free part is one
+        gather (``reduce(blocks)``), not an assembly and a slice."""
+        from scipy.sparse import csr_matrix
+
+        pos = self._bsr(np.arange(1, len(self.keys) * 9 + 1, dtype=np.float64).reshape(-1, 3, 3))  # 1-based: no zeros
+        idx = np.flatnonzero(free)
+        sub = pos[idx][:, idx].tocsr()
+        sub.sort_indices()
+        gidx = sub.data.astype(np.int64) - 1
+        shape, indices, indptr = sub.shape, sub.indices, sub.indptr
+
+        def reduce(blocks: np.ndarray):
+            return csr_matrix((blocks.reshape(-1)[gidx], indices, indptr), shape=shape)
+
+        return reduce
+
+    def internal(self, u: np.ndarray, E: float, nu: float, chunk: int = 4000):
+        """Geometrically nonlinear St. Venant–Kirchhoff at displacements ``u`` (n, 3), in the
+        reference configuration: ``F = I + ∇u``, Green strain ``E = ½(FᵀF - I)``, ``S = λ tr E I + 2μE``.
+        Returns the internal forces (n, 3), the state at the Gauss points for ``stiffness_at``
+        (F and S per chunk of elements) and ``(min det F, max |E|)`` (|E|: the Frobenius norm,
+        at least the largest principal strain). Chunks run in threads."""
+        lam = E * nu / ((1 + nu) * (1 - 2 * nu))
+        mu = E / (2 * (1 + nu))
+        I3 = np.eye(3)
+
+        def piece(s):
+            sl = slice(s, min(s + chunk, len(self.tets)))
+            G, w, tets = self.G[sl], self.wdet[sl], self.tets[sl]
+            F = np.einsum("mai,mgak->mgik", u[tets], G) + I3  # I + ∂u_i/∂X_k
+            Eg = 0.5 * (np.swapaxes(F, -1, -2) @ F - I3)
+            S = 2 * mu * Eg + lam * np.trace(Eg, axis1=-2, axis2=-1)[..., None, None] * I3
+            det = (F[..., 0, 0] * (F[..., 1, 1] * F[..., 2, 2] - F[..., 1, 2] * F[..., 2, 1])
+                   - F[..., 0, 1] * (F[..., 1, 0] * F[..., 2, 2] - F[..., 1, 2] * F[..., 2, 0])
+                   + F[..., 0, 2] * (F[..., 1, 0] * F[..., 2, 1] - F[..., 1, 1] * F[..., 2, 0]))
+            stats = (float(det.min()), float(np.sqrt((Eg * Eg).sum((-1, -2))).max()))
+            fe = np.einsum("mgak,mgik->mai", G, (F @ S) * w[..., None, None])  # first Piola-Kirchhoff on ∇N
+            return fe, (sl, F, S), stats
+
+        pool = _pool()
+        parts = list(pool.map(piece, range(0, len(self.tets), chunk)))
+        fe = np.concatenate([p[0] for p in parts])
+        idx = self.tets.reshape(-1)
+        f = np.stack(list(pool.map(lambda c: np.bincount(idx, weights=fe[..., c].reshape(-1), minlength=self.n), range(3))), 1)
+        state = (lam, mu, [p[1] for p in parts])
+        return f, state, (min(p[2][0] for p in parts), max(p[2][1] for p in parts))
+
+    def stiffness_at(self, state) -> np.ndarray:
+        """The consistent tangent at a state from ``internal``, as node-pair blocks (pattern, 3, 3)
+        (``_bsr`` makes the matrix, ``reducer`` its free part):
+        ``K_ab = λ g_a g_bᵀ + μ g_b g_aᵀ + μ (G_a·G_b) F Fᵀ + (G_a·S G_b) I`` with ``g_a = F G_a``."""
+        lam, mu, chunks = state
+
+        def piece(item):
+            sl, F, S = item
+            G, w = self.G[sl], self.wdet[sl]
+            m = len(G)
+            g = G @ np.swapaxes(F, -1, -2)  # (m, 4, 10, 3): g_a = F G_a
+            X = (g * np.sqrt(w)[..., None, None]).reshape(m, 4, 30)
+            Q = (np.swapaxes(X, 1, 2) @ X).reshape(m, 10, 3, 10, 3)  # Σ w g_ai g_bj
+            K = lam * Q + mu * Q.transpose(0, 1, 4, 3, 2)
+            GG = (G @ np.swapaxes(G, -1, -2)) * w[..., None, None]  # w G_a·G_b
+            C = F @ np.swapaxes(F, -1, -2)
+            K += mu * (np.swapaxes(GG.reshape(m, 4, 100), 1, 2) @ C.reshape(m, 4, 9)).reshape(m, 10, 10, 3, 3).transpose(0, 1, 3, 2, 4)
+            GS = (G @ S) * w[..., None, None]  # the stress stiffness: Σ w G_a·S G_b on the diagonal
+            GSG = GS.transpose(0, 2, 1, 3).reshape(m, 10, 12) @ G.transpose(0, 1, 3, 2).reshape(m, 12, 10)
+            for i in range(3):
+                K[:, :, i, :, i] += GSG
+            return np.ascontiguousarray(K.transpose(0, 1, 3, 2, 4)).reshape(-1, 9)  # (m·100, 9): a then b
+
+        pool = _pool()
+        Kb = np.concatenate(list(pool.map(piece, chunks)))
+        slot = self.slot.reshape(-1)
+        data = np.empty((len(self.keys), 9))
+
+        def col(c):
+            data[:, c] = np.bincount(slot, weights=Kb[:, c], minlength=len(self.keys))
+
+        list(pool.map(col, range(9)))
+        return data.reshape(-1, 3, 3)
+
+    def tangent(self, u: np.ndarray, E: float, nu: float, stiffness: bool = True, blocks: bool = False):
+        """``internal`` and ``stiffness_at`` together: the internal forces (n, 3), the tangent (CSR;
+        node-pair blocks with ``blocks``; None without ``stiffness``) and ``(min det F, max |E|)``.
+        At ``u = 0`` the tangent is the linear stiffness."""
+        f, state, stats = self.internal(u, E, nu)
+        if not stiffness:
+            return f, None, stats
+        data = self.stiffness_at(state)
+        return f, (data if blocks else self._bsr(data)), stats
+
+    def cauchy(self, u: np.ndarray, E: float, nu: float) -> np.ndarray:
+        """Cauchy (true) stresses at the Gauss points (e, 4, 6) under large displacements ``u``:
+        ``σ = F S Fᵀ / det F``, in the global axes of the deformed part."""
+        lam = E * nu / ((1 + nu) * (1 - 2 * nu))
+        mu = E / (2 * (1 + nu))
+        I3 = np.eye(3)
+        F = np.einsum("mai,mgak->mgik", u[self.tets], self.G) + I3
+        Eg = 0.5 * (np.swapaxes(F, -1, -2) @ F - I3)
+        S = 2 * mu * Eg + lam * np.trace(Eg, axis1=-2, axis2=-1)[..., None, None] * I3
+        sig = F @ S @ np.swapaxes(F, -1, -2) / np.linalg.det(F)[..., None, None]
+        return np.stack([sig[..., 0, 0], sig[..., 1, 1], sig[..., 2, 2], sig[..., 0, 1], sig[..., 1, 2], sig[..., 2, 0]], -1)
+
+    def rotation(self, u: np.ndarray) -> np.ndarray:
+        """The small-displacement rotation angle (rad) at the Gauss points (e, 4): |½ curl u|."""
+        H = np.einsum("mai,mgak->mgik", u[self.tets], self.G)
+        W = 0.5 * (H - np.swapaxes(H, -1, -2))
+        return np.sqrt(W[..., 0, 1] ** 2 + W[..., 1, 2] ** 2 + W[..., 2, 0] ** 2)
+
     def nodal(self, gp: np.ndarray) -> np.ndarray:
         """Gauss-point values (e, 4, k) extrapolated to the corners (linear: exact on straight
         elements), midside nodes the mean of their corners, averaged over the elements at each node."""
@@ -656,6 +769,56 @@ def factorize(K):
 # ---------------------------------------------------------------- the solver
 
 
+def _dot(a, b) -> float:
+    """aᵀb without BLAS: OpenBLAS's threads spin after each call and slowed the threaded sparse
+    products between them 2.5× (conjugate gradients at 300,000 DOFs: 91 ms an iteration, now 37)."""
+    return float(np.einsum("i,i->", a, b))
+
+
+@functools.lru_cache(maxsize=1)
+def _pool():
+    """Threads for assembly chunks and sparse products (NumPy and SciPy release the GIL in them)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    return ThreadPoolExecutor(max(1, min(8, os.cpu_count() or 1)))
+
+
+class ParCSR:
+    """A CSR matrix whose products ``A @ x`` run as row blocks in threads: they are bound by
+    memory bandwidth, about 3× faster on 8 cores at 300,000 DOFs. ``.A`` is the matrix."""
+
+    def __init__(self, A, threads: int | None = None):
+        self.A, self.shape = A, A.shape
+        k = threads or max(1, min(8, os.cpu_count() or 1))
+        if k <= 1 or A.nnz < 4_000_000:
+            self.blocks = None
+            return
+        cuts = np.searchsorted(A.indptr, np.linspace(0, A.nnz, k + 1)[1:-1])  # equal shares of the nonzeros
+        self.cuts = np.concatenate([[0], cuts, [A.shape[0]]])
+        from scipy.sparse import csr_matrix
+
+        A.sort_indices()
+        p = A.indptr
+        self.blocks = [csr_matrix((A.data[p[a]:p[b]], A.indices[p[a]:p[b]], p[a:b + 1] - p[a]), shape=(b - a, A.shape[1]),
+                                  copy=False) for a, b in zip(self.cuts[:-1], self.cuts[1:])]  # views, not copies
+
+    def __matmul__(self, x):
+        if self.blocks is None:
+            return self.A @ x
+        out = np.empty(self.shape[0])
+        cuts = self.cuts
+
+        def mv(i):
+            out[cuts[i]:cuts[i + 1]] = self.blocks[i] @ x
+
+        list(_pool().map(mv, range(len(self.blocks))))
+        return out
+
+    def diagonal(self):
+        return self.A.diagonal()
+
+
+
 def prolongation(m: TetMesh):
     """Linear tetrahedra on the same corners into the quadratic ones: (3n × 3c) sparse, and the corner nodes."""
     import scipy.sparse as sp
@@ -680,24 +843,37 @@ def prolongation(m: TetMesh):
 class TwoLevel:
     """A two-level preconditioner for the quadratic stiffness: Chebyshev smoothing (degree 2, Jacobi-scaled,
     on [λmax/30, λmax]) and an exact solve on the linear tetrahedra of the same mesh (Galerkin,
-    SuperLU). Symmetric, so it preconditions conjugate gradients."""
+    SuperLU). Symmetric, so it preconditions conjugate gradients. ``set(A)`` moves the smoother to
+    another matrix of the same pattern (a Newton tangent) and keeps the coarse factor; ``factor()``
+    refactors the coarse level from the current one."""
 
     def __init__(self, A, P, degree: int = 2):
-        from scipy.sparse.linalg import splu
+        self.P, self.Pt, self.degree = P, P.T.tocsr(), degree
+        self._x = None
+        self.set(A)
+        self.factor()
 
-        self.A, self.P, self.Pt, self.degree = A, P, P.T.tocsr(), degree
-        Ac = (self.Pt @ A @ P).tocsc()
-        self.lu = splu(Ac, permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
-        self.coarse = Ac.shape[0]
+    def set(self, A, iterations: int = 15):
+        """The smoother on ``A``: its diagonal and λmax(D⁻¹A) (power iterations, warm-started)."""
+        self.A, self.Am = A, ParCSR(A)
         d = A.diagonal()
         self.dinv = 1 / np.where(d > 0, d, 1.0)
-        x = np.random.default_rng(0).standard_normal(A.shape[0])
+        x = np.random.default_rng(0).standard_normal(A.shape[0]) if self._x is None else self._x
         lam = 1.0
-        for _ in range(15):
-            x /= np.linalg.norm(x)
-            x = self.dinv * (A @ x)
-            lam = np.linalg.norm(x)
+        for _ in range(iterations):
+            x = x / math.sqrt(_dot(x, x))
+            x = self.dinv * (self.Am @ x)
+            lam = math.sqrt(_dot(x, x))
+        self._x = x
         self.lmax = 1.1 * lam
+
+    def factor(self):
+        """The coarse level ``Pᵀ A P`` factorized (SuperLU, a symmetric ordering, no pivoting)."""
+        from scipy.sparse.linalg import splu
+
+        Ac = (self.Pt @ self.A @ self.P).tocsc()
+        self.lu = splu(Ac, permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
+        self.coarse = Ac.shape[0]
 
     def smooth(self, r, x):
         lmax = self.lmax
@@ -705,13 +881,13 @@ class TwoLevel:
         theta, delta = (lmax + lmin) / 2, (lmax - lmin) / 2
         sigma = theta / delta
         rho = 1 / sigma
-        res = r - self.A @ x if x is not None else r
+        res = r - self.Am @ x if x is not None else r
         x = np.zeros_like(r) if x is None else x
         d = self.dinv * res / theta
         for k in range(self.degree):
             x = x + d
             if k < self.degree - 1:
-                res = res - self.A @ d
+                res = res - self.Am @ d
                 rho_new = 1 / (2 * sigma - rho)
                 d = rho_new * rho * d + (2 * rho_new / delta) * (self.dinv * res)
                 rho = rho_new
@@ -719,7 +895,7 @@ class TwoLevel:
 
     def __call__(self, r):
         x = self.smooth(r, None)
-        x = x + self.P @ self.lu.solve(self.Pt @ (r - self.A @ x))
+        x = x + self.P @ self.lu.solve(self.Pt @ (r - self.Am @ x))
         return self.smooth(r, x)
 
 
@@ -735,32 +911,44 @@ class Solver:
         self.pre = TwoLevel(self.K, P[self.idx][:, cfree].tocsr())
         self.iterations = 0
         self.solves = 0
+        self.negative = False  # the last solve met a direction of negative stiffness (pᵀKp <= 0)
+
+    def update(self, K, refactor: bool = False, reduced: bool = False):
+        """Another matrix of the same pattern (a Newton tangent; ``reduced``: already on the free
+        DOFs): the smoother follows it at once, the coarse factor only with ``refactor`` (it is the
+        costly part, and an older one still preconditions well)."""
+        self.K = K if reduced else K[self.idx][:, self.idx].tocsr()
+        self.pre.set(self.K, iterations=6)
+        if refactor:
+            self.pre.factor()
 
     def solve(self, b: np.ndarray, tol: float = 1e-9, maxiter: int = 5000) -> tuple[np.ndarray, int, float]:
         """x with K x = b (both on the free DOFs), the iterations and the relative residual."""
-        A, M = self.K, self.pre
+        A, M = self.pre.Am, self.pre  # the preconditioner's smoother holds K too (threaded products)
         x = np.zeros_like(b)
-        bn = float(np.linalg.norm(b))
+        bn = math.sqrt(_dot(b, b))
         if bn == 0:
             return x, 0, 0.0
         r = b.copy()
         z = M(r)
         p = z.copy()
-        rz = float(r @ z)
+        rz = _dot(r, z)
         res = 1.0
+        self.negative = False
         for it in range(1, maxiter + 1):
             Ap = A @ p
-            pAp = float(p @ Ap)
+            pAp = _dot(p, Ap)
             if not pAp > 0:
+                self.negative = True
                 break
             alpha = rz / pAp
             x += alpha * p
             r -= alpha * Ap
-            res = float(np.linalg.norm(r)) / bn
+            res = math.sqrt(_dot(r, r)) / bn
             if res <= tol:
                 break
             z = M(r)
-            rz_new = float(r @ z)
+            rz_new = _dot(r, z)
             p = z + (rz_new / rz) * p
             rz = rz_new
         self.iterations += it
