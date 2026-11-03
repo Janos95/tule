@@ -788,11 +788,16 @@ def _shelves(sizes, width: float, gap: float):
 
 
 def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
-           printer: str | None = None) -> list[tuple[str, "Shape", dict, int, int, tuple]]:
+           printer: str | None = None, base: dict | None = None) -> list[tuple[str, "Shape", dict, int, int, tuple]]:
     """Parts laid out on the bed (origin at its front left corner), each dropped to z = 0:
     (name, shape, settings, copy, copies, shift), one entry per copy (copy 1 to copies, next to each other).
-    ``printer``: whose bed it is, for the errors."""
+    ``printer``: whose bed it is, for the errors; ``base``: the plate's settings, whose brim and
+    supports widen ``gap`` (a slicer refuses brims or supports of neighbours that overlap)."""
     listed = _plate_items(items)
+    every = [{**(base or {}), **st} for _, _, st, _ in listed]
+    brim = max([float(s.get("brim") or 0) for s in every] or [0])
+    if brim or any(s.get("supports") for s in every):
+        gap = max(gap, 2 * brim + 3 + (3 if any(s.get("supports") for s in every) else 0))
     if not arrange and any(n > 1 for *_, n in listed):
         raise TuleError("copies need arrange=True (with arrange=False they would sit on each other)", op="export_3mf",
                         hint="arrange=True, or place each copy yourself as a part of its own")
@@ -866,7 +871,7 @@ def export_3mf(items, path: str, *, bed=(256, 256, 256), gap: float = 5.0, arran
     ``("pin", pin, {"copies": 4})``: four of a part, one object with four instances, arranged.
     """
     base = _print_settings(settings)
-    return _write_3mf(_plate(items, bed, gap, arrange), path, base, tolerance, angular)
+    return _write_3mf(_plate(items, bed, gap, arrange, base=base), path, base, tolerance, angular)
 
 
 def _write_3mf(placed, path: str, base: dict, tolerance: float = 0.02, angular: float = 0.1) -> str:
@@ -1124,7 +1129,7 @@ def _slice_estimate(path: str, settings: dict, bed, timeout: float | None = None
             lines = [ln.strip() for ln in (run.stderr + "\n" + run.stdout).splitlines()]
             said = [ln for ln in lines if ln and not re.match(r"^\d+ => ", ln)][-6:]
             raise TuleError("PrusaSlicer could not slice the plate: " + (" | ".join(said) or f"exit status {run.returncode}"),
-                            op="estimate", hint="the 3MF is written; the slicer's message says which part or setting it refused")
+                            op="estimate", hint="the slicer's message says which part or setting it refused; estimate=False writes the plate without a print time")
         with open(gcode, "rb") as f:  # the estimate is in the last comments, before the config block
             f.seek(max(0, os.path.getsize(gcode) - (1 << 20)))
             text = f.read().decode("utf-8", "replace")

@@ -420,6 +420,7 @@ function fact(o) {
   if (building(o)) return ["building", "live"];
   // what it reads changed since it was built: it may not show the design any more (the tooltip says why)
   if (o.build?.state === "stale" && o.build.why !== "never built" && (o.files.length || o.docs.length)) return ["out of date", "warning"];
+  if (o.build?.state === "stale" && o.build.why === "never built") return ["not built", ""];
   if (changed(o).length) return ["check again", "warning"];
   if (!o.files.length) return ["", ""];
   const kind = kindOf(o);
@@ -491,7 +492,7 @@ const groupOpen = new Map();
 const groupOf = (o) => (o.root === "outputs" && o.name.includes("/") ? o.name.split("/")[0] : null);
 
 // "01-printing" sorts before "02-checks" and shows as "printing": a number in front orders, it is not a name
-const shown = (n) => n.replace(/^\d+[-_. ]+(?=\S)/, "");
+const shown = (n) => n.replace(/^(\d+|\d{2,}[a-z])[-_. ]+(?=\S)/, ""); // 01-print, 02a-fit: the order, unshown (3d-print stays)
 
 function fill(list, entries) {
   list.textContent = "";

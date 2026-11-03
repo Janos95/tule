@@ -395,3 +395,16 @@ def test_loose_edges_weld_at_the_solids_tolerance(monkeypatch):
     monkeypatch.setattr(io, "_max_tolerance", lambda s: 0.02)
     V, F = io._closed_mesh(part, "p", 0.05, 0.3)
     assert len(V) == 8 and len(F) == 12
+
+
+def test_brim_and_supports_widen_the_gap():
+    from tule.io import _plate
+
+    parts = [box(20, 20, 5).named("a"), box(20, 20, 5).named("b")]
+    def spread(**base):
+        placed = _plate(parts, gap=5, base=base)
+        (la, ha), (lb, hb) = (p[1].bounds for p in placed)
+        return max(lb.x - ha.x, la.x - hb.x, lb.y - ha.y, la.y - hb.y)
+    assert abs(spread() - 5) < 1e-6
+    assert spread(brim=4) >= 2 * 4 + 3 - 1e-6
+    assert spread(brim=4, supports=True) >= 2 * 4 + 6 - 1e-6

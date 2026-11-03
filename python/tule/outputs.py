@@ -344,7 +344,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     if bed is None:
         bed = printer[1].bed if printer else (256, 256, 256)
         whose = printer[1].label if printer and printer[0] != "generic" else None
-    placed = _plate(parts, bed, gap, arrange, whose)
+    placed = _plate(parts, bed, gap, arrange, whose, base)
     folder = _folder(name)
     stem = _slug(name.rsplit("/", 1)[-1])
     path = _write_3mf(placed, os.path.join(folder, f"{stem}.3mf"), base)
