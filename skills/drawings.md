@@ -64,4 +64,4 @@ One iso view (`views="front"`), the parts apart, a numbered balloon per distinct
 
 `info`: `part`, `number`, `rev`, `material`, `finish`, `tolerance` (default ISO 2768-m; `""` drops it), `drawn`, `date`, `checked`, `approved`; other keys get rows. `revisions=[("A", "First issue"), ("B", "Slots longer", "2026-11-02")]`. `notes=[...]`: one note per item, numbered on sheet 1 (typed numbers dropped, a line continuing the one before joined); more than 12 lines go on A4 portrait notes sheets. Nothing is dated unless you say so.
 
-Sheet metal: a flat (`part.unfold()`) draws as its top view with dash-dot bend lines and a bend table, and `dxf=` writes it with CUT and BEND layers (`tule docs sheetmetal`).
+Sheet metal: a flat (`part.unfold()`) draws as its top view with dash-dot bend lines and a bend table; `dxf=` writes its cut file, layer CUT only (`tule docs sheetmetal`).

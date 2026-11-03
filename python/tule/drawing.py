@@ -4352,7 +4352,8 @@ def to_dxf(view: _View) -> str:
 
 
 # R12 linetypes: name -> (description, pattern in mm: dashes > 0, gaps < 0, dots 0)
-DXF_LTYPES = {"CONTINUOUS": ("Solid line", ()), "DASHDOT": ("Dash dot __ . __ .", (8.0, -2.0, 0.0, -2.0))}
+DXF_LTYPES = {"CONTINUOUS": ("Solid line", ()), "DASHDOT": ("Dash dot __ . __ .", (8.0, -2.0, 0.0, -2.0)),
+              "DASHED": ("Dashed __ __ __", (6.0, -3.0))}
 
 
 def to_dxf_entities(prims, texts=(), layers=None) -> str:

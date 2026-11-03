@@ -234,7 +234,7 @@ def test_dxf_is_a_clean_cut_file(tmp_path):
     header, layers, ents = _dxf(text)
     assert header["$INSUNITS"] == "4" and layers == {"CUT", "BEND_UP", "BEND_DOWN"}
     assert "TEXT" not in {k for k, _ in ents} and "%%d" not in text
-    assert "LAYER\n2\nBEND_UP\n70\n0\n62\n3\n6\nDASHDOT" in text and "LTYPE\n2\nDASHDOT" in text
+    assert "LAYER\n2\nBEND_UP\n70\n0\n62\n3\n6\nDASHED" in text and "LTYPE\n2\nDASHED" in text
     kinds = [(k, d[8][0]) for k, d in ents]
     assert kinds.count(("LINE", "BEND_UP")) == 1 and kinds.count(("LINE", "BEND_DOWN")) == 1
     cut = _outlines(ents)
@@ -401,3 +401,10 @@ def test_part_and_flat_in_one_output(tmp_path, monkeypatch):
     meta = json.load(open(os.path.join(folder, "output.json")))
     a, b = meta["parts"]
     assert meta["kind"] == "assembly" and "transform" not in a and b["transform"][3] > 120  # beside, not inside
+
+
+def test_a_negative_flange_says_to_turn_the_angle():
+    s = base(100, 60)
+    with pytest.raises(TuleError, match="outside length, more than 0 mm") as e:
+        s.flange(s.faces.normal(Y), -18)
+    assert "angle=-90" in e.value.hint

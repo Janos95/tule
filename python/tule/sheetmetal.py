@@ -639,6 +639,9 @@ def flange(part: "Shape", where, length: float, angle: float = 90, radius: float
         raise TuleError("inset is a distance ≥ 0, or two of them (at the edge's lower and upper end)", op=op)
     ossb = (R + t) * math.tan(a / 2)
     L = float(length)
+    if L <= 0:
+        raise TuleError(f"a flange's length is its outside length, more than 0 mm, got {_num(L)}", op=op,
+                        hint="to fold it the other way, give a negative angle (angle=-90)")
     if L <= ossb + 1e-9:
         raise TuleError(f"a {_num(L)} mm flange is too short for a {_num(abs(angle))}° bend with inside radius "
                         f"{_num(R)} in {_num(t)} mm sheet: the bend alone takes {_num(ossb)} mm of it", op=op,
@@ -1037,7 +1040,7 @@ def bend_csv(part: "Shape") -> str:
 
 
 # layer: (ACI color, linetype)
-LAYERS = {"CUT": (7, "CONTINUOUS"), "BEND_UP": (3, "DASHDOT"), "BEND_DOWN": (1, "DASHDOT"), "BEND_NOTES": (8, "CONTINUOUS")}
+LAYERS = {"CUT": (7, "CONTINUOUS"), "BEND_UP": (3, "DASHED"), "BEND_DOWN": (1, "DASHED"), "BEND_NOTES": (8, "CONTINUOUS")}  # portals read dashed lines as bends
 
 
 def _flat(part: "Shape", op: str, name: str | None = None) -> "Shape":
@@ -1100,7 +1103,7 @@ def _wire_prim(w, f, tol: float) -> tuple:
 def flat_dxf(part: "Shape", notes: bool = False, bends: bool = False) -> str:
     """The flat pattern as an R12 DXF in mm (``$INSUNITS`` 4) for a laser or waterjet shop: the
     outline and every hole as closed outlines (CIRCLE, closed POLYLINE) on CUT, nothing else (a
-    portal cuts every line). ``bends=True`` adds the bend lines on BEND_UP / BEND_DOWN (dash-dot),
+    portal cuts every line). ``bends=True`` adds the bend lines on BEND_UP / BEND_DOWN (dashed, as SendCutSend reads bends),
     ``notes=True`` also their labels (``B1 UP 90° R1.5``) as TEXT on BEND_NOTES; the bend table
     and the drawing carry them anyway."""
     from .drawing import to_dxf_entities
