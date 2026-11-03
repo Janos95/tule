@@ -1,6 +1,6 @@
 # Stress, deflection, vibration and buckling (`tule.fea`)
 
-Linear analysis of one part: fixed faces and loads from **tags**, a material by name. Units: mm, N, MPa, g, Hz.
+Analysis of one part: fixed faces and loads from **tags**, a material by name. Units: mm, N, MPa, g, Hz.
 
 ```python
 from tule import *
@@ -25,15 +25,15 @@ Read both PNGs. In the viewer, buttons switch fields, hovering shows the value, 
 ## Reading the numbers
 
 - **Peak**: the highest stress on the surface, and where. At a sharp inside corner or the edge of a clamped face it is a singularity that grows as the mesh shrinks; a peak in a smooth region is real.
-- **99.5th percentile**: 0.5 % of the surface area is above it. It holds steady as the mesh changes: judge a design by it. Red on the scale starts there.
+- **99.5th percentile**: 0.5 % of the surface area is above it; steady as the mesh changes: judge a design by it.
 - `r.safety_factor` = yield / peak. Printed plastics: aim for 2 to 4 on the percentile. A peak at a sharp corner wants a fillet.
 - **Reactions** must balance the loads. If not, a support is missing or a load sits on fixed faces.
-- `r.warnings`: red flags (printed too): an unconverged solve, a singular peak, a point load, a poorly gripped support. Resolve them before trusting the numbers.
+- `r.warnings`: red flags (printed too): an unconverged solve, a singular peak, a point load, a weak support, a large deflection. Resolve them before trusting the numbers.
 - **Convergence**: `fea.converge(part, ...)` takes `static`'s arguments, solves at three budgets up to `dofs` and prints the spread; `.converged`, `.result`.
 
 ## Inputs
 
-- `fixed`: a tag, a selection (`part.faces.cylindrical(r=2.6)`), or a list. Clamped; `fea.fix("base", "z")` holds z only.
+- `fixed`: a tag, a selection (`part.faces.cylindrical(r=2.6)`), or a list. Clamped; `fea.fix("base", "z")` holds z only. `fea.move("top", (2, 0, 0))` drives faces by 2 mm: the force it takes is `r.move_forces`.
 - `loads`: `fea.force(faces, (fx, fy, fz))` total N by area (`at=(x, y, z), r=4`: only within r of the point); `fea.pressure(faces, p)` MPa into the faces; `fea.moment(faces, (mx, my, mz))` N·mm about their centroid; `fea.bearing(bore, (fx, fy, 0))` a pin's cosine pressure on the half it pushes (`fea.force` on a whole bore pulls its far side too).
 - `balanced=True` instead of `fixed`: a free part whose loads balance (a link pulled at both ends).
 - `accel`: mm/s² on the part's own mass. `fea.g` = 9810.
@@ -41,13 +41,13 @@ Read both PNGs. In the viewer, buttons switch fields, hovering shows the value, 
 
 ## The mesh: voxels or tetrahedra
 
-`mesh="auto"` measures the thinnest wall and narrowest slot (`fea.thinnest(part)`, under a second) and picks:
-- **voxels** for chunky parts: a grid sized from `dofs` (or `voxel=0.5` mm), cut cells integrated exactly. Fast; CuPy on a GPU.
-- **quadratic tetrahedra** (gmsh) when a wall is under 3 voxels or a slot under 2: blades, flexures, ribs, sheet. Faces thinner than the overall size get elements of half their thickness. `mesh="tet"` forces it, `size=0.5` sets the element size. 300,000 DOFs: 10–30 s.
+`mesh="auto"` measures the thinnest wall and narrowest slot (`fea.thinnest(part)`) and picks:
+- **voxels** for chunky parts: a grid sized from `dofs` (or `voxel=0.5` mm). Fast; CuPy on a GPU.
+- **quadratic tetrahedra** (gmsh) when a wall is under 3 voxels or a slot under 2: blades, flexures, ribs, sheet. `mesh="tet"` forces it, `size=0.5` sets the element size. 300,000 DOFs: 10–30 s.
 
-Same result either way: `max_stress`, `stress_p995`, `safety_factor`, `max_displacement`, `reaction`, `mass`, `stress_at(points)`, `displacement_at(points)`, `show()`. On tetrahedra the fields are drawn on the mesh's own surface, so 0.3 mm slots stay open.
+Same result either way: `max_stress`, `stress_p995`, `safety_factor`, `max_displacement`, `reaction`, `mass`, `stress_at(points)`, `displacement_at(points)`, `show()`.
 
-## Vibration modes and buckling (tetrahedra)
+## Modes, buckling, large deflection (tetrahedra)
 
 ```python
 from tule import *
@@ -56,13 +56,17 @@ stage = box(30, 10, 10) | box(0.5, 20, 10).at(2, 10, 0) | box(0.5, 20, 10).at(27
 stage = stage.tag("base", stage.faces.nearest((15, 0, 5))).tag("top", stage.faces.nearest((15, 40, 5)))
 md = fea.modes(stage, "aluminium", fixed="base", n=4, dofs=30_000)   # default dofs 100,000; needs a density
 print(md)                     # Hz, and which way each mode moves the mass (effective mass %)
-md.show("stage-modes")        # a field per mode, swinging in the viewer
 bk = fea.buckling(stage, "aluminium", fixed="base", loads=[fea.force("top", (0, -100, 0))], dofs=30_000)
 print(bk.factor)              # the loads × factor buckle it; inf: none found (say, in tension)
+nl = fea.static(stage, "aluminium", fixed=["base", fea.move("top", (3, 0, 0), "x")],
+               nonlinear=True, dofs=30_000)   # pushed 3 mm along x, free in y and z
+for s in nl.steps: print(s.fraction, s.move_forces[0].x)   # force vs stroke
 ```
 
-`md.frequencies` (Hz) and `md.shapes` ((n, nodes, 3), largest motion 1). Keep the first mode above about 2× any excitation (motor steps, servo bandwidth); a free part has six 0 Hz modes, so fix it. Buckling is linear (Euler) for the perfect part: real parts buckle sooner, so want a factor over 3. If the stress at that load passes yield, it yields first (the printout says so).
+`md.frequencies` (Hz), `md.shapes`; `md.show(name)` swings them. Keep the first mode above 2× any excitation. Buckling is linear (Euler) for the perfect part: want a factor over 3, and check yield at that load (printed).
+
+`nonlinear=True` when a part moves over ~10 % of its span, turns over ~0.15 rad (a warning says so), or a strip held at both ends bends about its thickness (it stretches and stiffens). Loads and moves go on in steps (`steps=10`, else adaptive), Newton in each; the loads keep their direction. Drive a flexure by `fea.move`, not a force. Buckling or snap-through under a load is a `TuleError` naming the last converged fraction (`err.result`).
 
 ## Limits
 
-Linear only: small displacements, no plasticity, no contact. A flexure whose travel closes a slot touches there: compare `max_displacement` with the gap from `fea.thinnest`. Bolted and press-fit joints are modelled as clamps.
+Small strains, no plasticity, no contact. A flexure whose travel closes a slot touches there: compare `max_displacement` with the gap from `fea.thinnest`. Bolted and press-fit joints are modelled as clamps.
