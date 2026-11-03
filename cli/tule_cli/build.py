@@ -909,7 +909,8 @@ def _run_script(script: str):
         os._exit(NEEDS if needs else code)
 
     reads[script] = stamp(os.path.join(root, script))
-    sys.path[:0] = [root, os.path.join(root, os.path.dirname(script))]
+    sys.path.insert(0, root)
+    sys.path.append(os.path.join(root, os.path.dirname(script)))  # after the stdlib: src/numbers.py must not shadow numbers
     sys.argv = [script]
     sys.addaudithook(hook)
     code = 0

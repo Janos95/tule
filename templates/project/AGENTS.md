@@ -46,8 +46,6 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 
 # The loop: edit, build, look, iterate
 
-Work so the user can follow along and nothing is lost.
-
 ## One iteration
 
 1. **Edit** a script in `src/` (keep parameters at the top). Rename the placeholder `src/part.py` for your part (`git mv src/part.py src/bracket.py`). It writes its output with `tule.outputs`, named like the script (`outputs.part("bracket", …)`; other files into `outputs.folder()`).
@@ -71,7 +69,7 @@ outputs/   made by tule build; never edit it by hand
 
 A script may read inputs and other outputs (`import_step("outputs/bracket/bracket.step")`): `tule build` records what each script read, builds what it reads first, and reruns a script only when something it read changed. A script may write only its own output. Results come from a build, never copied in; keep Tule's warnings.
 
-Before you show the user anything, `tule build --check`: it lists what is out of date or failed (with why and how long its last run took), outputs whose script is gone (`rm -r outputs/<name>` retires one), and work to check again. Rebuild what you changed and what reads it: `tule build plate --dependents`, `tule build 'plate-*'`, or everything but a long run, `tule build --skip study`. Leave long runs until the design settles, and say so; a long study imports only its own parameters (`lib/fea_params.py`), so other edits don't rerun it. An output some machine already built from the same files is downloaded instead of run (the build cache); `--force` runs it anyway.
+Before you show the user anything, `tule build --check`: it lists what is out of date or failed (with why and how long its last run took), outputs whose script is gone (`rm -r outputs/<name>` retires one), and work to check again (exit status 1 if any). Rebuild what you changed and what reads it: `tule build plate --dependents`, `tule build 'plate-*'`, or everything but a long run, `tule build --skip study`. Leave long runs until the design settles, and say so; a long study imports only its own parameters (`lib/fea_params.py`), so other edits don't rerun it. An output some machine already built from the same files is downloaded instead of run (the build cache); `--force` runs it anyway.
 
 ## Work done by hand
 
@@ -106,7 +104,7 @@ The machine stops after 30 minutes without SSH sessions or traffic; a background
 ## Housekeeping
 
 - `pip install`, or `apt-get update && apt-get install -y prusa-slicer`; list them in `tule.toml` (`[packages] pip = [...]`, `apt = [...]`) to keep them after a restart.
-- Scratch and big generated data go to `/tmp`. From your computer, write a file without quoting: `tule ssh -p <name> -- 'cat > src/a.py' < a.py`.
+- Big generated data go to `/tmp`; scripts you reason with go in `work/` and are saved. From your computer, write a file without quoting: `tule ssh -p <name> -- 'cat > src/a.py' < a.py`.
 - Several load cases or variants of one study: one overlay output with a field each, not an output per case.
 - Put notes for the next session (decisions, open questions) in `NOTES.md` and save it.
 
@@ -255,9 +253,9 @@ Optional: without it one file is a part, numbered files a sequence, several file
 ```
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid`, …) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
-- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend. Stress over the whole surface: `tule docs fea`.
-- **Info** (any kind): flat facts, rounded (`"20.8 g"`), shown under the view.
-- **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", "filament_g", …}}` (`estimate=True` or the user's printer, `estimate="bambu-p1s"`: `tule docs outputs.plate`).
+- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend; stress: `tule docs fea`.
+- **Info** (any kind): flat facts, rounded (`"20.8 g"`).
+- **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", …}}` (`estimate="bambu-p1s"`, the user's printer: `tule docs outputs.plate`). Overflow: more plates; a part's `{"down": "base"}` lays that tagged face down.
 - **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images

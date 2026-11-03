@@ -322,8 +322,8 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     oriented to print (flat face down); ``("pin", pin, {"copies": 4})`` puts four on the plate.
     ``bed``, ``gap``, ``arrange`` and ``settings`` (``layer_height``, ``walls``, ``infill`` %,
     ``supports``, ``brim`` mm, ``material``: PLA, PETG, …) as for ``export_3mf``; the settings
-    also show under the view. ``bed``: the printer's (256 × 256 × 256 mm without one). ``info``:
-    more facts.
+    also show under the view. ``bed``: the printer's (256 × 256 × 256 mm without one); parts that don't fit on one
+    go onto more plates (``<name>-2.3mf``, …, shown side by side). ``info``: more facts.
 
     ``estimate=True`` slices the plate with PrusaSlicer's command line (``prusa-slicer``; raises
     with the install command when it is missing) and shows the print time and filament (g, m)
@@ -333,7 +333,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     ``"prusa-mk4"``, ``"prusa-core-one"``, ``"ender-3"``, ``"voron-2.4"``. What settings leave
     out is the profile's: 0.2 mm layers, 2 walls, 15 % infill, no supports or brim.
     """
-    from .io import _duration, _print_settings, _printer, _prusa_slicer, _slice_estimate, _write_3mf
+    from .io import _duration, _plates, _print_settings, _printer, _prusa_slicer, _slice_estimate, _write_3mf
 
     info = _info(info)
     base = _print_settings(settings)
@@ -344,52 +344,71 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     if bed is None:
         bed = printer[1].bed if printer else (256, 256, 256)
         whose = printer[1].label if printer and printer[0] != "generic" else None
-    placed = _plate(parts, bed, gap, arrange, whose, base)
+    plates = _plates(parts, bed, gap, arrange, whose, base)  # more than one when they don't fit on one
+    placed = [x for pl in plates for x in pl]
     folder = _folder(name)
     stem = _slug(name.rsplit("/", 1)[-1])
-    path = _write_3mf(placed, os.path.join(folder, f"{stem}.3mf"), base)
+    paths = [_write_3mf(pl, os.path.join(folder, f"{stem}.3mf" if i == 0 else f"{stem}-{i + 1}.3mf"), base)
+             for i, pl in enumerate(plates)]
     shown: dict[str, Any] = {"bed": " × ".join(f"{float(b):g}" for b in tuple(bed)[:2]) + " mm"}
+    if len(plates) > 1:
+        shown["plates"] = f"{len(plates)}: " + ", ".join(os.path.basename(x) for x in paths)
     for k, v in base.items():
         shown[k.replace("_", " ")] = (False if k == "brim" and not v else f"{v:g} mm" if k in ("layer_height", "brim")
                                       else f"{v:g} %" if k == "infill" else v)
     own = list(dict.fromkeys(n for n, _, o, *_ in placed if o))
     if own:
         shown["own settings"] = ", ".join(own)
-    summary: dict[str, Any] = {"file": os.path.basename(path), "parts": {}}
-    for n, _, _, _, copies, _ in placed:
-        summary["parts"][n] = copies
+    total: dict[str, int] = {}
+    for pl in plates:
+        for n, c in {n: copies for n, _, _, _, copies, _ in pl}.items():
+            total[n] = total.get(n, 0) + c
+    summary: dict[str, Any] = {"file": os.path.basename(paths[0]), "parts": total}
+    if len(plates) > 1:
+        summary["plates"] = [{"file": os.path.basename(x), "parts": {n: c for n, _, _, _, c, _ in pl}}
+                             for x, pl in zip(paths, plates)]
     if printer:
-        est = _slice_estimate(path, base, bed, printer=printer[1])
+        ests = [_slice_estimate(x, base, bed, printer=printer[1]) for x in paths]
+        est = {k: (sum(e[k] for e in ests) if all(isinstance(e.get(k), (int, float)) for e in ests) else v)
+               for k, v in ests[0].items()}  # the plates' totals
         summary["printer"] = printer[0]
         summary["estimate"] = est
-        shown["print time"] = _duration(est["print_time_s"])
+        for d, e in zip(summary.get("plates", []), ests):
+            d["estimate"] = e
+        shown["print time"] = _duration(est["print_time_s"]) + (f" on {len(plates)} plates" if len(plates) > 1 else "")
         if "filament_g" in est:
             g, m = est["filament_g"], est.get("filament_m")
             shown["filament"] = f"{g:.1f} g" if g < 10 else f"{g:.0f} g"
             if m is not None:
                 shown["filament"] += f" ({m:.2f} m)" if m < 10 else f" ({m:.1f} m)"
         shown["estimate"] = f"{printer[1].label}, {printer[1].preset} speeds, PrusaSlicer"
-    # the view: each part's file once, its copies placed again ("pin ×4/2")
-    entries, files, used = [], {}, set()
-    for n, shp, _, k, copies, _ in placed:
-        if n not in files:
-            base_name = _slug(n.replace("/", "_"))
-            fname, i = f"{base_name}.step", 2
-            while fname in used:
-                fname, i = f"{base_name}_{i}.step", i + 1
-            used.add(fname)
-            _write_geometry(os.path.join(folder, fname), shp)
-            files[n] = (fname, shp.bounds[0])
-        fname, first = files[n]
-        entry: dict[str, Any] = {"file": fname, "name": f"{name}/{n}" if copies == 1 else f"{name}/{n} ×{copies}/{k}"}
-        if shp.color:
-            entry["color"] = shp.color
-        if copies > 1:
-            entry["copies"] = copies
-            if k > 1:
-                lo = shp.bounds[0]
-                entry["transform"] = [1, 0, 0, round(lo.x - first.x, 5), 0, 1, 0, round(lo.y - first.y, 5), 0, 0, 1, 0, 0, 0, 0, 1]
-        entries.append(entry)
+    # the view: the plates side by side, each part's file once, its copies placed again ("pin ×4/2")
+    W = float(tuple(bed)[0])
+    entries, files, used, seen = [], {}, set(), {}
+    for p_i, pl in enumerate(plates):
+        for n, shp, _, _, _, _ in pl:
+            if p_i:
+                shp = shp.at(p_i * (W + 30), 0, 0)
+            k = seen[n] = seen.get(n, 0) + 1
+            copies = total[n]
+            if n not in files:
+                base_name = _slug(n.replace("/", "_"))
+                fname, i = f"{base_name}.step", 2
+                while fname in used:
+                    fname, i = f"{base_name}_{i}.step", i + 1
+                used.add(fname)
+                _write_geometry(os.path.join(folder, fname), shp)
+                files[n] = (fname, shp.bounds[0])
+            fname, first = files[n]
+            entry: dict[str, Any] = {"file": fname, "name": f"{name}/{n}" if copies == 1 else f"{name}/{n} ×{copies}/{k}"}
+            if shp.color:
+                entry["color"] = shp.color
+            if copies > 1:
+                entry["copies"] = copies
+                if k > 1:
+                    lo = shp.bounds[0]
+                    entry["transform"] = [1, 0, 0, round(lo.x - first.x, 5), 0, 1, 0, round(lo.y - first.y, 5), 0, 0, 1, 0, 0, 0, 0, 1]
+            entries.append(entry)
     meta: dict[str, Any] = {"kind": "assembly", "parts": entries, "title": title or name,
                             "info": {**shown, **(info or {})}, "plate": summary}
     _write_json(folder, meta)

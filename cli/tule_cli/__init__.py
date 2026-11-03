@@ -480,7 +480,7 @@ def _maybe_stale(root: str):
 def _check(root: str, names: list[str] | None = None):
     """What needs updating: outputs that are out of date or failed (with the reason and how long
     the last run took), outputs whose script is gone, and work in work/ to check again (all of
-    it, or just the named outputs). Prints a line when all is current."""
+    it, or just the named outputs). Prints a line when all is current; returns whether it is."""
     from . import build
     from .cache import Cache
 
@@ -517,10 +517,11 @@ def _check(root: str, names: list[str] | None = None):
             lines.append((w["path"], "check again", f"{', '.join(w['changed'])} changed", ""))
     if not lines:
         print("everything is up to date")
-        return
+        return True
     width = max(len(x[0]) for x in lines)
     for name, state, why, took in lines:
         print(f"{name:<{width}}  {state:<11}  {why}" + (f"  ({took})" if took else ""))
+    return False
 
 
 def cmd_build(args):
@@ -538,8 +539,10 @@ def cmd_build(args):
     if not args.check and not os.environ.get("TULE_BUILD_CHILD"):
         return _build_detached(root, sys.argv[sys.argv.index("build") + 1:] if "build" in sys.argv else [])
     try:
-        if args.check:
-            return _check(root, args.names)
+        if args.check:  # exit status 1 when anything needs updating: tule build --check && tule save
+            if not _check(root, args.names):
+                sys.exit(1)
+            return
         done = build.build(root, args.names or None, force=args.force, dependents=args.dependents, skip=args.skip)
     except build.BuildError as e:
         raise CliError(str(e)) from None
@@ -628,6 +631,31 @@ def cmd_save(args):
     print(f"tule: saved {r['saved'][:12]}" + (" (merged the latest save)" if r.get("merged") else "") + ("" if r.get("committed", True) else " (nothing new to commit)"))
     if r.get("warning"):
         print(f"tule: {r['warning']}", file=sys.stderr)
+    root = _project_root() if not args.project and machine.on_machine() else None
+    if root:
+        _say_stale(root)
+
+
+def _project_root():
+    from . import build
+
+    try:
+        return build.find_root()
+    except Exception:
+        return None
+
+
+def _say_stale(root: str):
+    """After a save: outputs saved out of date or failed, which the viewer marks too."""
+    from . import build
+
+    try:
+        bad = [r["name"] for r in build.status(root) if r.get("failed") or r.get("why")]
+    except Exception:
+        return
+    if bad:
+        print(f"tule: saved with {len(bad)} output{'s' * (len(bad) != 1)} out of date or failed "
+              f"({', '.join(bad[:5])}{', …' if len(bad) > 5 else ''}): tule build, then tule save", file=sys.stderr)
 
 
 def cmd_status(args):

@@ -325,8 +325,16 @@ def test_outputs_plate_printer_bed(outdir, tmp_path, monkeypatch):
     with pytest.raises(TuleError, match=r"part 'rail' \(240.0 × 20.0 × 5.0 mm\) does not fit the Creality Ender-3's bed \(220 × 220 × 250 mm\)") as e:
         outputs.plate("print", [long], estimate="ender-3")
     assert "larger bed" in e.value.hint
-    with pytest.raises(TuleError, match=r"5 parts do not fit on the Prusa MK4 / MK4S's bed \(250 × 210 mm\).*need about"):
-        outputs.plate("print", [("tile", box(100, 100, 5), {"copies": 5})], estimate="prusa-mk4")
+    folder = outputs.plate("tiles", [("tile", box(100, 100, 5), {"copies": 5}), box(10).named("cube")],
+                           estimate="prusa-mk4")  # 4 tiles to a 250 × 210 bed: two plates
+    meta = json.load(open(f"{folder}/output.json"))
+    assert meta["info"]["plates"] == "2: tiles.3mf, tiles-2.3mf" and meta["plate"]["parts"] == {"tile": 5, "cube": 1}
+    assert [p["parts"] for p in meta["plate"]["plates"]] == [{"tile": 4, "cube": 1}, {"tile": 1}]
+    one = meta["plate"]["plates"][0]["estimate"]["print_time_s"]
+    assert meta["plate"]["estimate"]["print_time_s"] == 2 * one and meta["info"]["print time"].endswith("on 2 plates")
+    assert len(meta["parts"]) == 6 and (outdir / "tiles" / "tiles-2.3mf").exists()
+    with pytest.raises(TuleError, match=r"5 parts do not fit on the bed \(250 × 210 mm\).*need about"):
+        export_3mf([("tile", box(100, 100, 5), {"copies": 5})], str(outdir / "x.3mf"), bed=(250, 210))
     outputs.plate("print", [long], bed=(250, 250), estimate="ender-3")  # the user's own bed= wins
 
 
@@ -408,3 +416,20 @@ def test_brim_and_supports_widen_the_gap():
     assert abs(spread() - 5) < 1e-6
     assert spread(brim=4) >= 2 * 4 + 3 - 1e-6
     assert spread(brim=4, supports=True) >= 2 * 4 + 6 - 1e-6
+
+
+def test_plate_down_lays_a_face_on_the_bed():
+    from tule.io import _plate
+
+    p = box(10, 20, 30)
+    p = p.tag("side", p.faces.normal((1, 0, 0)))
+    for down, size in (("side", (30, 20, 10)), (p.faces.normal((0, 1, 0)), (10, 30, 20)), (p.faces.normal((0, 0, -1)), (10, 20, 30))):
+        placed = _plate([("p", p, {"down": down})], (200, 200))
+        assert tuple(round(v, 6) for v in placed[0][1].size) == size
+    with pytest.raises(TuleError, match="no face group named 'nope'"):
+        _plate([("p", p, {"down": "nope"})], (200, 200))
+    c = cylinder(5, 10)
+    with pytest.raises(TuleError, match="names no flat face"):
+        _plate([("c", c, {"down": c.faces.cylindrical()})], (200, 200))
+    with pytest.raises(TuleError, match="down is per part"):
+        export_3mf([p], "x.3mf", settings={"down": "side"})

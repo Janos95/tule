@@ -1697,7 +1697,16 @@ def _tet_mesh(part: Shape, dofs: int, size: float | None, say, notes: list, patc
     say(f"fea: meshing {part.name or 'the part'} with gmsh: elements up to {H:.3g} mm"
         + (f", {thin:.3g} mm on {len(faces)} thin face(s) (walls down to {th.min_wall:.3g} mm)" if faces else "") + " …")
     balls = [(tuple(at), r, min(H, r / 2)) for at, r in patches]
-    m = tetfe.mesh(part, H, faces, smallest=min([thin / 2 if thin else H, H / 25] + [b[2] for b in balls]), balls=balls)
+    smallest = min([thin / 2 if thin else H, H / 25] + [b[2] for b in balls])
+    m = tetfe.mesh(part, H, faces, smallest=smallest, balls=balls)
+    for _ in range(0 if size else 2):  # curved detail (gear teeth) took far more: coarser, at most twice
+        if 3 * len(m.nodes) <= 2.5 * dofs:
+            break
+        k = (3 * len(m.nodes) / dofs) ** (1 / 3)
+        say(f"fea: {3 * len(m.nodes):,} DOFs is over the budget of {dofs:,}; meshing again {k:.2g}× coarser …")
+        H, faces, smallest = H * k, {f: x * k for f, x in faces.items()}, smallest * k
+        balls = [(at, r, min(H, h * k)) for at, r, h in balls]
+        m = tetfe.mesh(part, H, faces, smallest=smallest, balls=balls)
     notes += m.notes
     if 3 * len(m.nodes) > 2.5 * dofs:
         notes.append(f"the mesh has {3 * len(m.nodes):,} DOFs, over the budget of {dofs:,}: thin walls and small "

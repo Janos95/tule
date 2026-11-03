@@ -1,7 +1,5 @@
 # The loop: edit, build, look, iterate
 
-Work so the user can follow along and nothing is lost.
-
 ## One iteration
 
 1. **Edit** a script in `src/` (keep parameters at the top). Rename the placeholder `src/part.py` for your part (`git mv src/part.py src/bracket.py`). It writes its output with `tule.outputs`, named like the script (`outputs.part("bracket", …)`; other files into `outputs.folder()`).
@@ -25,7 +23,7 @@ outputs/   made by tule build; never edit it by hand
 
 A script may read inputs and other outputs (`import_step("outputs/bracket/bracket.step")`): `tule build` records what each script read, builds what it reads first, and reruns a script only when something it read changed. A script may write only its own output. Results come from a build, never copied in; keep Tule's warnings.
 
-Before you show the user anything, `tule build --check`: it lists what is out of date or failed (with why and how long its last run took), outputs whose script is gone (`rm -r outputs/<name>` retires one), and work to check again. Rebuild what you changed and what reads it: `tule build plate --dependents`, `tule build 'plate-*'`, or everything but a long run, `tule build --skip study`. Leave long runs until the design settles, and say so; a long study imports only its own parameters (`lib/fea_params.py`), so other edits don't rerun it. An output some machine already built from the same files is downloaded instead of run (the build cache); `--force` runs it anyway.
+Before you show the user anything, `tule build --check`: it lists what is out of date or failed (with why and how long its last run took), outputs whose script is gone (`rm -r outputs/<name>` retires one), and work to check again (exit status 1 if any). Rebuild what you changed and what reads it: `tule build plate --dependents`, `tule build 'plate-*'`, or everything but a long run, `tule build --skip study`. Leave long runs until the design settles, and say so; a long study imports only its own parameters (`lib/fea_params.py`), so other edits don't rerun it. An output some machine already built from the same files is downloaded instead of run (the build cache); `--force` runs it anyway.
 
 ## Work done by hand
 
@@ -60,6 +58,6 @@ The machine stops after 30 minutes without SSH sessions or traffic; a background
 ## Housekeeping
 
 - `pip install`, or `apt-get update && apt-get install -y prusa-slicer`; list them in `tule.toml` (`[packages] pip = [...]`, `apt = [...]`) to keep them after a restart.
-- Scratch and big generated data go to `/tmp`. From your computer, write a file without quoting: `tule ssh -p <name> -- 'cat > src/a.py' < a.py`.
+- Big generated data go to `/tmp`; scripts you reason with go in `work/` and are saved. From your computer, write a file without quoting: `tule ssh -p <name> -- 'cat > src/a.py' < a.py`.
 - Several load cases or variants of one study: one overlay output with a field each, not an output per case.
 - Put notes for the next session (decisions, open questions) in `NOTES.md` and save it.

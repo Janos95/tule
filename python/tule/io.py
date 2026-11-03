@@ -250,6 +250,19 @@ def export_step(item: Union["Shape", "Assembly"], path: str) -> str:
     return path
 
 
+def _not_step(path: str) -> str | None:
+    """What a file that is not STEP is, from its first bytes (a download that got a web page)."""
+    with open(path, "rb") as f:
+        head = f.read(512).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if head.startswith((b"<!doctype html", b"<html")) or b"<html" in head:
+        return f"{path} is a web page (HTML), not STEP: the download needed a login or a redirect; get the file another way"
+    if head.startswith(b"pk\x03\x04"):
+        return f"{path} is a zip archive: unzip it and import the .step inside"
+    if head and not head.startswith(b"iso-10303-21"):
+        return f"{path} does not start with ISO-10303-21, so it is not a STEP file ({head[:40]!r})"
+    return None
+
+
 def import_step(path: str):
     """Read a STEP file: a Shape (one part) or an Assembly, with names, colors and tags.
 
@@ -280,7 +293,7 @@ def import_step(path: str):
     r.SetNameMode(True)
     r.SetColorMode(True)
     if r.ReadFile(path) != IFSelect_RetDone:
-        raise TuleError("could not read the STEP file", op="import_step", hint=path)
+        raise TuleError("could not read the STEP file", op="import_step", hint=_not_step(path) or path)
     say(f"making solids from {r.Reader().Model().NbEntities():,} STEP entities")
     doc, st, ct = _new_doc()
     r.Transfer(doc)
@@ -552,6 +565,7 @@ PRINT_SETTINGS = {
     "brim": "brim width in mm, True (5 mm) or False",
     "material": "the filament, PLA, PETG, ABS, ASA, TPU, PA or PC (for the estimate; the user picks it in the slicer)",
     "copies": "a part's number of copies on the plate (its own settings only)",
+    "down": "the face to lay on the bed: a tag, a face id or a selection of the part (its own settings only)",
 }
 
 # g/cm³ and nozzle/bed °C of generic filaments: the print estimate's profile
@@ -579,6 +593,11 @@ def _print_settings(settings, who: str = "settings") -> dict:
             continue
         if hasattr(v, "item"):
             v = v.item()
+        if k == "down":
+            if not own:
+                raise TuleError("down is per part, not for the whole plate", op="export_3mf", hint='("rib", rib, {"down": "base"})')
+            out[k] = v
+            continue
         if k == "copies" and not own:
             raise TuleError("copies are per part, not for the whole plate", op="export_3mf",
                             hint='("pin", pin, {"copies": 4}); the whole plate twice: print it twice')
@@ -739,6 +758,8 @@ def _plate_items(items) -> list[tuple[str, "Shape", dict, int]]:
             raise TuleError(f"cannot print a {type(shape).__name__}", op="export_3mf",
                             hint="pass Shapes, (name, shape) pairs, (name, shape, settings) or an Assembly")
         own = _print_settings(settings, f"settings of {name or shape.name or 'a part'!r}")
+        if own.get("down") is not None:
+            shape = _lay_down(shape, own.pop("down"), name or shape.name or "a part")
         out.append((name or shape.name or f"part{len(out) + 1}", shape, own, own.pop("copies", 1)))
 
     for it in items:
@@ -760,6 +781,34 @@ def _plate_items(items) -> list[tuple[str, "Shape", dict, int]]:
         k = seen[name] = seen.get(name, 0) + 1
         named.append((name if k == 1 else f"{name}-{k}", shape, s, n))
     return named
+
+
+def _lay_down(shape, down, name: str):
+    """The part turned so the face ``down`` (a tag, a face id, a selection: its largest flat face)
+    faces the bed."""
+    import numpy as np
+
+    from .selection import Selection, face_area, face_normal
+
+    try:
+        faces = (shape.face(down) if isinstance(down, int) else shape.faces[down] if isinstance(down, str)
+                 else shape._resolve(down, "face") if isinstance(down, Selection) else None)
+    except TuleError as e:
+        raise TuleError(f"{name}'s down={down!r}: {e.message if hasattr(e, 'message') else e}", op="export_3mf",
+                        hint="a tag of the part (part.tags), a face id, or part.faces...") from None
+    flat = faces.planar().items if faces is not None else []
+    if not flat:
+        raise TuleError(f"{name}'s down={down!r} names no flat face to lay on the bed", op="export_3mf",
+                        hint="a tag of a planar face, a face id, or part.faces.normal((0, 0, -1))")
+    n = np.array(tuple(face_normal(max(flat, key=face_area))), dtype=float)
+    want = np.array([0.0, 0.0, -1.0])
+    axis = np.cross(n, want)
+    angle = float(np.degrees(np.arccos(np.clip(n @ want, -1, 1))))
+    if angle < 1e-6:
+        return shape
+    if np.linalg.norm(axis) < 1e-9:  # facing up: turn it over
+        axis = np.array([1.0, 0.0, 0.0])
+    return shape.rotate_about(tuple(axis), angle)
 
 
 def _shelves(sizes, width: float, gap: float):
@@ -785,6 +834,57 @@ def _shelves(sizes, width: float, gap: float):
             pos[i] = (x + shift, y + (r[1] - sizes[i][1]) / 2)
         y += r[1] + gap
     return pos, (total_w, y - gap)
+
+
+def _pack(sizes, W: float, D: float, gap: float):
+    """The most compact shelf layout of footprints ``sizes`` on a W × D bed, near-square and close
+    to its middle: ([(x, y)], (width, depth)), or None when they do not fit."""
+    best = None
+    widths = sorted({W} | {min(W, sum(w for w, _ in sizes[:k]) + gap * (k - 1)) for k in range(1, len(sizes) + 1)})
+    for cw in widths:
+        if cw < max(w for w, _ in sizes) - 1e-9:
+            continue
+        pos, (lw, ld) = _shelves(sizes, cw, gap)
+        if lw <= W + 1e-6 and ld <= D + 1e-6:
+            score = (max(lw, ld), lw * ld)
+            if best is None or score < best[0]:
+                best = (score, pos, (lw, ld))
+    return best[1:] if best else None
+
+
+def _plates(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
+            printer: str | None = None, base: dict | None = None) -> list[list]:
+    """``_plate``, onto as many plates as the parts need (copies of a part may be split between
+    them): biggest footprints first, each onto the first plate it still fits."""
+    try:
+        return [_plate(items, bed, gap, arrange, printer, base)]
+    except TuleError as e:
+        if not arrange or "do not fit on" not in str(e):
+            raise
+    listed = _plate_items(items)
+    every = [{**(base or {}), **st} for _, _, st, _ in listed]
+    brim = max([float(x.get("brim") or 0) for x in every] or [0])
+    if brim or any(x.get("supports") for x in every):  # as _plate widens it
+        gap = max(gap, 2 * brim + 3 + (3 if any(x.get("supports") for x in every) else 0))
+    singles = [(i, (hi.x - lo.x, hi.y - lo.y)) for i, (_, shape, _, n) in enumerate(listed)
+               for lo, hi in [shape.bounds] for _ in range(n)]
+    W, D = (float(b) for b in tuple(bed)[:2])
+    groups: list[list] = []
+    for i, size in sorted(singles, key=lambda t: -t[1][0] * t[1][1]):
+        for g in groups:
+            if _pack([sz for _, sz in g] + [size], W, D, gap):
+                g.append((i, size))
+                break
+        else:
+            groups.append([(i, size)])
+    out = []
+    for g in groups:
+        count: dict[int, int] = {}
+        for i, _ in g:
+            count[i] = count.get(i, 0) + 1
+        out.append(_plate([(listed[i][0], listed[i][1], {**listed[i][2], "copies": n}) for i, n in sorted(count.items())],
+                          bed, gap, arrange, printer, base))
+    return out
 
 
 def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
@@ -820,16 +920,7 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
                             "lay it on another face, split it, or " +
                             (bigger if printer else "give the printer's bed=(width, depth, height)"))
     if arrange:
-        best = None
-        widths = sorted({W} | {min(W, sum(w for w, _ in sizes[:k]) + gap * (k - 1)) for k in range(1, len(sizes) + 1)})
-        for cw in widths:  # the most compact layout that fits: near-square, parts close to the bed's middle
-            if cw < max(w for w, _ in sizes) - 1e-9:
-                continue
-            pos, (lw, ld) = _shelves(sizes, cw, gap)
-            if lw <= W + 1e-6 and ld <= D + 1e-6:
-                score = (max(lw, ld), lw * ld)
-                if best is None or score < best[0]:
-                    best = (score, pos, (lw, ld))
+        best = _pack(sizes, W, D, gap)
         if best is None:
             pos, (lw, ld) = _shelves(sizes, W, gap)
             area = sum(w * d for w, d in sizes)
@@ -837,7 +928,7 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
                             f"(they need about {lw:.0f} × {ld:.0f} mm)", op="export_3mf",
                             hint=f"print them on two plates (two calls), a smaller gap=, or {bigger} "
                                  f"(footprints alone cover {100 * area / (W * D):.0f} % of the bed)")
-        _, pos, (lw, ld) = best
+        pos, (lw, ld) = best
         x0, y0 = (W - lw) / 2, (D - ld) / 2
         targets = [(x0 + x, y0 + y) for x, y in pos]
     else:  # the caller's layout, moved as a whole to the middle of the bed

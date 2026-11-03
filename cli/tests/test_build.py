@@ -188,13 +188,15 @@ def test_subsets_dependents_and_skip(project):
 
 def test_check_lists_what_needs_updating(project):
     def check():
-        return subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=project,
-                              capture_output=True, text=True).stdout
+        r = subprocess.run([sys.executable, "-m", "tule_cli", "build", "--check"], cwd=project,
+                           capture_output=True, text=True)
+        return r.returncode, r.stdout
 
     build(project)
-    assert check().strip() == "everything is up to date"
+    assert check() == (0, "everything is up to date\n")
     (project / "lib" / "params.py").write_text("WALL = 7\n")
-    out = check()
+    code, out = check()
+    assert code == 1  # tule build --check && tule save saves nothing stale
     assert "plate  out of date  lib/params.py changed  (last run" in out
     assert "bom    out of date  outputs/plate is out of date" in out
 
@@ -427,3 +429,10 @@ def test_a_module_imported_from_its_cache_is_still_read(project):
     assert build(project, "plate")[0] == 0
     rec = json.loads((project / "outputs" / ".build" / "plate.json").read_text())
     assert "lib/params.py" in rec["reads"]
+
+
+def test_a_script_named_like_a_stdlib_module_does_not_shadow_it(project):
+    (project / "src" / "numbers.py").write_text('from tule import outputs\nimport numpy\nopen(outputs.folder() + "/n.txt", "w").write("1")\n')
+    code, err = build(project)
+    assert code == 0, err
+    assert (project / "outputs" / "numbers" / "n.txt").exists() and (project / "outputs" / "plate").exists()
