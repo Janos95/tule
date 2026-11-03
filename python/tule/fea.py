@@ -873,7 +873,8 @@ class Result:
         ]
         info = _static_info(self, f"{self.elements:,} voxels of {self.voxel:.3g} mm, {self.dofs:,} DOFs")
         return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
-                               title=title or f"Static analysis: {self.part.name or name}, {self.material.name}")
+                               title=title or f"Static analysis: {self.part.name or name}, {self.material.name}",
+                               fact=_safety(self))
 
     def __str__(self) -> str:
         m = self.material
@@ -960,6 +961,11 @@ def _static_info(r, mesh: str) -> dict:
                      f"{_vec(r.reaction)} N (balance {100 * r.imbalance:.2g} %)",
         "mesh": mesh,
     }
+
+
+def _safety(r) -> str:
+    """The sidebar's fact for a static analysis: the safety factor on the 99.5th percentile."""
+    return f"safety {r.material.yield_strength / r.stress_p995:.2g}" if r.stress_p995 > 0 else "no stress"
 
 
 def _pt(p) -> str:
@@ -2348,7 +2354,8 @@ class TetResult:
             info["nonlinear"] = (f"{len(self.steps)} load steps; linear theory: max displacement "
                                  f"{self.linear_max_displacement:.3g} mm")
         return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
-                               title=title or f"Static analysis: {self.part.name or name}, {self.material.name}")
+                               title=title or f"Static analysis: {self.part.name or name}, {self.material.name}",
+                               fact=_safety(self))
 
     def __str__(self) -> str:
         m = self.material
@@ -2445,7 +2452,8 @@ class Modes:
             info[f"mode {i + 1}"] = f"{f:.4g} Hz, {_moves(self.effective_mass[i])}"
         info["mesh"] = f"{self.elements:,} quadratic tetrahedra, {self.dofs:,} DOFs"
         return outputs.overlay(name, self.part, faces, info=info, fields=fields,
-                               title=title or f"Vibration modes: {self.part.name or name}, {self.material.name}")
+                               title=title or f"Vibration modes: {self.part.name or name}, {self.material.name}",
+                               fact=f"{self.frequencies[0]:.3g} Hz" if len(self.frequencies) else None)
 
     def __str__(self) -> str:
         m = self.material
@@ -2566,7 +2574,8 @@ class Buckling:
         info["static, 99.5th pct"] = f"{self.static.stress_p995:.3g} MPa (yield {self.material.yield_strength:g} MPa)"
         info["mesh"] = f"{self.static.elements:,} quadratic tetrahedra, {self.static.dofs:,} DOFs"
         return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
-                               title=title or f"Buckling: {self.part.name or name}, {self.material.name}")
+                               title=title or f"Buckling: {self.part.name or name}, {self.material.name}",
+                               fact=f"buckles at {self.factors[0]:.3g}×" if len(self.factors) else None)
 
     def __str__(self) -> str:
         lines = [f"fea.buckling: {self.part.name or 'part'} in {self.material.name}, {self.static.elements:,} quadratic "

@@ -154,7 +154,7 @@ def test_show_marks_the_worst_frame(outdir):
     assert r.pairs[1].gap == pytest.approx(0.3)
     folder = r.show("sweep-clearance")
     meta = json.load(open(os.path.join(folder, "output.json")))
-    assert meta["kind"] == "overlay" and meta["title"] == "Clearance: 1 clash"
+    assert meta["kind"] == "overlay" and meta["title"] == "Clearance: 1 clash" and meta["fact"] == "1 clash"
     assert {f["severity"] for f in meta["faces"].values()} == {"error"} and len(meta["arrows"]) == 1
     assert meta["info"]["shown"] == "frame 9 (90 deg)"
     rows = json.load(open(os.path.join(folder, "clearance.json")))
@@ -162,6 +162,9 @@ def test_show_marks_the_worst_frame(outdir):
     meta = json.load(open(os.path.join(r.show("sweep-clearance", frame=0), "output.json")))
     assert {f["severity"] for f in meta["faces"].values()} == {"info"} and len(meta["faces"]) >= 2
     assert meta["arrows"][0]["label"] == "lever × wall: 0.3 mm"
+    no_post = clearance({k: Assembly(*[c for c in a.children if c.name != "post"]) for k, a in frames.items()})
+    meta = json.load(open(os.path.join(no_post.show("near"), "output.json")))
+    assert meta["fact"] == "closest 0.3 mm"
 
 
 def test_closest_points():

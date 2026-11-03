@@ -887,6 +887,33 @@ def _plates(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
     return out
 
 
+def _spaced(parts, boxes, every, which):
+    """A hand-made layout keeps the room the slicer needs between neighbours: as much as the
+    arranger leaves for brims and supports, else 1 mm. Raises naming the closest pair."""
+    brim = max([float(s.get("brim") or 0) for s in every] or [0])
+    sup = any(s.get("supports") for s in every)
+    need = 2 * brim + 3 + (3 if sup else 0) if brim or sup else 1.0
+    near = []
+    for i in range(len(parts)):
+        (a, b) = boxes[i]
+        for j in range(i + 1, len(parts)):
+            (c, d) = boxes[j]
+            if b.x + need > c.x and d.x + need > a.x and b.y + need > c.y and d.y + need > a.y:
+                gap = parts[i][1].at(0, 0, -a.z).distance(parts[j][1].at(0, 0, -c.z))
+                if gap < need - 1e-6:
+                    near.append((gap, i, j))
+    if not near:
+        return
+    gap, i, j = min(near)
+    name = lambda k: parts[k][0] + (f" (copy {which[k][0]})" if which[k][1] > 1 else "")
+    why = (f"a {brim:g} mm brim" if brim else "") + (" and " if brim and sup else "") + ("supports" if sup else "")
+    what = "overlap" if gap < 1e-6 else f"are {gap:.1f} mm apart"
+    raise TuleError(f"{name(i)!r} and {name(j)!r} {what}; " + (f"with {why} the slicer needs {need:g} mm between parts"
+                    if why else f"parts need {need:g} mm between them")
+                    + (f" ({len(near) - 1} more pairs too close)" if len(near) > 1 else ""),
+                    op="export_3mf", hint="move them apart, or arrange=True lays them out (and spills onto more plates)")
+
+
 def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
            printer: str | None = None, base: dict | None = None) -> list[tuple[str, "Shape", dict, int, int, tuple]]:
     """Parts laid out on the bed (origin at its front left corner), each dropped to z = 0:
@@ -939,6 +966,7 @@ def _plate(items, bed=(256, 256, 256), gap: float = 5.0, arrange: bool = True,
         if lw > W + 1e-6 or ld > D + 1e-6:
             raise TuleError(f"the parts as placed span {lw:.0f} × {ld:.0f} mm, more than {the_bed} ({W:g} × {D:g} mm)",
                             op="export_3mf", hint="arrange=True lays them out")
+        _spaced(parts, boxes, every, which)
         x0, y0 = (W - lw) / 2, (D - ld) / 2
         targets = [(x0 + lo.x - lo_x, y0 + lo.y - lo_y) for lo, _ in boxes]
     return [(name, s.at(tx - lo.x, ty - lo.y, -lo.z), st, k, n, (tx - lo.x, ty - lo.y, -lo.z))

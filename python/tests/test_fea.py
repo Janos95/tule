@@ -126,7 +126,7 @@ def test_show_writes_fields_and_screenshot_draws_them(tmp_path, monkeypatch):
     assert "peak" in text and "99.5th percentile" in text and "PLA" in text and "safety factor" in text
     folder = r.show("beam-fea")
     meta = json.load(open(os.path.join(folder, "output.json")))
-    assert meta["kind"] == "overlay"
+    assert meta["kind"] == "overlay" and meta["fact"] == f"safety {r.material.yield_strength / r.stress_p995:.2g}"
     roles = sorted(f["role"] for f in meta["faces"].values())
     assert roles == ["fixed", "load"]
     stress, disp = meta["fields"]

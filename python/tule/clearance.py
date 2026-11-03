@@ -594,7 +594,11 @@ class Clearance:
         if title is None:
             n = len(self.clashes)
             title = f"Clearance: {n} clash{'es' if n != 1 else ''}" if n else "Clearance: no clashes"
-        return outputs.overlay(name, Shape(comp, name=name), faces, arrows=arrows, title=title, info=info)
+        n = {s: sum(p.status == s for p in self.pairs) for s in ("clash", "touch")}
+        gaps = [p.gap for p in self.pairs if p.status == "gap"]
+        fact = (f"{n['clash']} clash{'es' if n['clash'] != 1 else ''}" if n["clash"] else
+                f"{n['touch']} touching" if n["touch"] else f"closest {min(gaps):.2g} mm" if gaps else "no clashes")
+        return outputs.overlay(name, Shape(comp, name=name), faces, arrows=arrows, title=title, info=info, fact=fact)
 
     def _near_faces(self, key, at, size) -> list[int]:
         """Faces of a solid at a point (within ``size`` of it: an overlap's faces)."""

@@ -137,7 +137,9 @@ def load_items(path: str) -> list[tuple[str, object]]:
         return [(base, read_stl(path))]
     if ext not in (".step", ".stp"):
         raise CliError(f"{path}: unsupported file type {ext or '(none)'}; use STEP, STL or a PDF"
-                       + ("; read an image directly" if ext in (".png", ".jpg", ".jpeg", ".svg") else ""))
+                       + ("; read an image directly" if ext in (".png", ".jpg", ".jpeg", ".svg") else
+                          "; a chart or doc: read its data in the file (charts show in the viewer)"
+                          if ext in (".json", ".md") else ""))
     _need_tule()
     from tule import Assembly, import_step
 
@@ -870,6 +872,17 @@ def cmd_docs(args):
         ref = reference(args.topic)
         if ref is None and "." in args.topic and _lookup(args.topic.rsplit(".", 1)[0]) is not None:
             raise CliError(_no_member(*args.topic.rsplit(".", 1)))
+        if ref is None and re.fullmatch(r"[A-Za-z][\w-]*", args.topic):
+            word = re.compile(rf"\b{re.escape(args.topic)}", re.I)
+            hits = sorted(((len(word.findall(open(os.path.join(d, n + ".md")).read())), n) for n in names if n != "index"),
+                          reverse=True)
+            hits = [n for k, n in hits if k]
+            if hits:
+                print(f"tule: no topic {args.topic!r}; showing {hits[0]}, where it comes up most"
+                      + (f" (also: {', '.join(hits[1:4])})" if hits[1:] else ""), file=sys.stderr)
+                with open(os.path.join(d, hits[0] + ".md")) as f:
+                    sys.stdout.write(f.read())
+                return
         if ref is None:
             close = _close_names(args.topic.split(".")[0])
             raise CliError(f"no topic {args.topic!r}" + (f"; library names close to it: {', '.join(close)}" if close else "")

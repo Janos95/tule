@@ -430,6 +430,8 @@ function fact(o) {
   if (kind === "overlay") {
     const faces = Object.values(o.meta?.faces ?? {});
     const n = (s) => faces.filter((f) => f?.severity === s).length;
+    // the result in a few words, when the writer gave one: "closest 0.13 mm", "safety 1.5"
+    if (o.meta?.fact) return [String(o.meta.fact), n("error") ? "error" : n("warning") ? "warning" : ""];
     if (n("error")) return [plural(n("error"), "error"), "error"];
     if (n("warning")) return [plural(n("warning"), "warning"), "warning"];
     // the conditions by role: "4 fixed · 4 load", not "10 conditions"

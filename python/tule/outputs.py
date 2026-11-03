@@ -714,7 +714,7 @@ def _fields(fields) -> list[tuple[dict, dict]]:
 
 
 def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None = None,
-            scale: dict | None = None, info: dict | None = None, fields=()) -> str:
+            scale: dict | None = None, info: dict | None = None, fields=(), fact: str | None = None) -> str:
     """Write a part with per-face data: ``outputs/<name>/<part>.step`` plus an overlay ``output.json``.
 
     ``faces`` maps a face id or a face selection (``part.faces["load"]``) to a number, a label, or a
@@ -724,7 +724,7 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     ``{"label", "values", "unit", "min", "max", "deform", "note", "animate"}`` with either a grid of
     nodes (values (nx, ny, nz) or (nx, ny, nz, 3), ``"origin"``, ``"step"``) or a surface ``"mesh"``:
     ``(vertices (n, 3), triangles (m, 3), B-rep face id per triangle)`` with values (n,) or (n, 3)
-    (``tule.fea`` writes both kinds).
+    (``tule.fea`` writes both kinds). ``fact``: the result in a few words, for the outputs list.
     The format is described at the top of this module. Returns the folder.
     """
     if not isinstance(part, Shape):
@@ -746,6 +746,8 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     meta: dict[str, Any] = {"kind": "overlay", "file": fname}
     if title:
         meta["title"] = title
+    if fact:
+        meta["fact"] = str(fact)
     meta["faces"] = entries
     if arrows:
         out = []

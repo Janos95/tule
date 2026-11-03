@@ -433,3 +433,14 @@ def test_plate_down_lays_a_face_on_the_bed():
         _plate([("c", c, {"down": c.faces.cylindrical()})], (200, 200))
     with pytest.raises(TuleError, match="down is per part"):
         export_3mf([p], "x.3mf", settings={"down": "side"})
+
+
+def test_a_hand_layout_too_tight_for_the_brim_names_the_pair(tmp_path):
+    a, b = cylinder(10, 5).named("a"), cylinder(10, 5).at(26, 0, 0).named("b")  # 6 mm apart
+    export_3mf([a, b], str(tmp_path / "ok.3mf"), arrange=False)
+    with pytest.raises(TuleError, match=r"'a' and 'b' are 6.0 mm apart; with a 3 mm brim the slicer needs 9 mm") as e:
+        export_3mf([a, b], str(tmp_path / "p.3mf"), arrange=False, settings={"brim": 3})
+    assert "arrange=True" in e.value.hint
+    with pytest.raises(TuleError, match="overlap"):
+        export_3mf([a, b.at(-10, 0, 0)], str(tmp_path / "q.3mf"), arrange=False)
+    export_3mf([a, b.at(4, 0, 0)], str(tmp_path / "r.3mf"), arrange=False, settings={"brim": 3})
