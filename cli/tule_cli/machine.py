@@ -528,11 +528,15 @@ def remote(args, argv: list[str], out: str | None = None):
     if out is None:
         sys.exit(subprocess.call(cmd))
     with open(out, "wb") as f:
-        code = subprocess.call(cmd, stdout=f)
-    if code:
+        r = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True)
+    # the machine says where it wrote: here that is out, not its stdout
+    said = r.stderr.replace("the PNG to stdout", f"{out} (from {args.project}'s machine)")
+    sys.stderr.write(said)
+    if r.returncode:
         os.remove(out)
-        sys.exit(code)
-    print(f"tule: wrote {out} (from {args.project}'s machine)", file=sys.stderr)
+        sys.exit(r.returncode)
+    if "tule: wrote" not in said:
+        print(f"tule: wrote {out} (from {args.project}'s machine)", file=sys.stderr)
 
 
 def _pdf_page(args):

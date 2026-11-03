@@ -853,7 +853,8 @@ def _run_script(script: str):
             return
         if rel_of(path) is not None:
             r = os.path.relpath(p, root)
-            refused.append(f"writes {r}: a script writes only its own output (tule.outputs, or files in outputs.folder())")
+            refused.append(f"writes {r}: a script writes only its own output (tule.outputs, or files in outputs.folder()); "
+                           "to keep slow geometry, make it a script of its own and import_step its output (cached by the build)")
             raise PermissionError(refused[-1])
 
     def by_import() -> bool:

@@ -374,3 +374,24 @@ def test_self_touching_part_says_where(tmp_path):
     part = box(10, 10, 10) - cylinder(2, 30, center=True).translate(8, 5, 0)  # the hole just touches x=10
     with pytest.raises(TuleError, match=r"touches itself .*near \(10, 5, 10\)"):
         export_3mf([("lug", part)], str(tmp_path / "p.3mf"))
+
+
+def test_loose_edges_weld_at_the_solids_tolerance(monkeypatch):
+    import tule.io as io
+
+    real = io.tessellate
+
+    def drifted(shape, tolerance, angular):  # each face's copy of an edge point off by up to 8 µm, as on a loose sweep
+        m = real(shape, tolerance, angular)
+        rng = np.random.default_rng(0)
+        m.positions = (m.positions + rng.uniform(-8e-3, 8e-3, m.positions.shape)).astype(np.float32)
+        return m
+
+    monkeypatch.setattr(io, "tessellate", drifted)
+    part = box(10, 10, 10)
+    monkeypatch.setattr(io, "_max_tolerance", lambda s: 1e-7)
+    with pytest.raises(TuleError, match="open edges, near"):
+        io._closed_mesh(part, "p", 0.05, 0.3)
+    monkeypatch.setattr(io, "_max_tolerance", lambda s: 0.02)
+    V, F = io._closed_mesh(part, "p", 0.05, 0.3)
+    assert len(V) == 8 and len(F) == 12

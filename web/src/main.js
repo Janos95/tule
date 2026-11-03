@@ -348,7 +348,9 @@ function views(o) {
   // (a set of parts with their drawings opens on the first drawing); data beside a model (motion.csv, plate.gcode)
   // and motions and plates open on the 3D
   const moving = o.meta?.kind === "sequence" || o.meta?.frames || o.meta?.plate;
-  const named = o.files.length && !moving && (o.docs.find((f) => readme(f) || (["document", "pdf", "dxf"].includes(f.type) && base(f.file) === o.name.split("/").pop())) ?? drawn(o)[0]);
+  // a part, assembly or overlay is its model: a README beside it comes after the 3D
+  const model = ["part", "assembly", "overlay"].includes(o.meta?.kind);
+  const named = o.files.length && !moving && (o.docs.find((f) => (readme(f) && !model) || (["document", "pdf", "dxf"].includes(f.type) && base(f.file) === o.name.split("/").pop())) ?? drawn(o)[0]);
   if (o.files.length && !named) v.push({ id: "3d", label: "3D", type: "geometry" });
   // a README first; beside a model, files with no view of their own (an STL, a .3mf) are only in Download
   // then by type, a document before a table; the one named after the output first among its type

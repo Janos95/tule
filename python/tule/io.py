@@ -633,6 +633,20 @@ def _g3(p) -> str:
     return "(" + ", ".join(f"{v:.3g}" for v in p) + ")"
 
 
+def _max_tolerance(shape: "Shape") -> float:
+    """The largest vertex tolerance of a shape (mm): how far its faces' shared edges may drift apart."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    ex, t = TopExp_Explorer(shape.wrapped, TopAbs_VERTEX), 0.0
+    while ex.More():
+        t = max(t, BRep_Tool.Tolerance_s(TopoDS.Vertex(ex.Current())))
+        ex.Next()
+    return t
+
+
 def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float, origin=(0, 0, 0)) -> tuple[np.ndarray, np.ndarray]:
     """A watertight triangle mesh of a solid: the faces' triangulations welded along their edges."""
     from scipy.sparse import coo_matrix
@@ -643,27 +657,35 @@ def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float, or
     if not m.triangles:
         raise TuleError(f"part {name!r} has no surface to print", op="export_3mf", hint="pass solids")
     P = m.positions.astype(np.float64)
-    pairs = cKDTree(P).query_pairs(1e-3, output_type="ndarray")  # the same B-rep edge point, once per face
-    n = len(P)
-    g = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
-    _, label = connected_components(g, directed=False)
-    F = label[m.indices.astype(np.int64)]
-    F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])]
-    used, F = np.unique(F, return_inverse=True)
-    F = F.reshape(-1, 3)
-    V = np.zeros((label.max() + 1, 3))
-    V[label] = P  # the points of one weld lie within a micron of each other: any one will do
-    V = V[used]
-    # closed: every edge in exactly two triangles, once in each direction
-    e = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
-    key = e[:, 0] * len(V) + e[:, 1]
-    rev = e[:, 1] * len(V) + e[:, 0]
-    if len(np.unique(key)) != len(key) or not np.isin(key, rev).all():
+    tree = cKDTree(P)
+    # the same B-rep edge point, once per face: within a micron, or within the solid's own tolerance (a sweep
+    # or a Boolean on one can leave edges loose by 0.01 mm and more, so neighbouring faces' points differ)
+    for weld in sorted({1e-3, min(0.05, max(1e-3, 2 * _max_tolerance(shape)))}):
+        pairs = tree.query_pairs(weld, output_type="ndarray")
+        n = len(P)
+        g = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+        _, label = connected_components(g, directed=False)
+        F = label[m.indices.astype(np.int64)]
+        F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])]
+        used, F = np.unique(F, return_inverse=True)
+        F = F.reshape(-1, 3)
+        V = np.zeros((label.max() + 1, 3))
+        V[label] = P  # the points of one weld lie within its distance of each other: any one will do
+        V = V[used]
+        # closed: every edge in exactly two triangles, once in each direction
+        e = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
+        key = e[:, 0] * len(V) + e[:, 1]
+        rev = e[:, 1] * len(V) + e[:, 0]
+        if len(np.unique(key)) == len(key) and np.isin(key, rev).all():
+            break
+    else:
         open_ = int((~np.isin(key, rev)).sum())
         shared = len(key) - len(np.unique(key))
         if open_:
-            raise TuleError(f"part {name!r} does not make a closed mesh ({open_} open edges)", op="export_3mf",
-                            hint="pass a closed solid (not a face or an open shell); if it is one, try tolerance=0.01")
+            at = V[e[~np.isin(key, rev)][0, 0]]
+            raise TuleError(f"part {name!r} does not make a closed mesh ({open_} open edges, near {_g3(at + origin)})",
+                            op="export_3mf", hint="pass a closed solid (not a face or an open shell); if it is one "
+                            "(part.is_valid), try tolerance=0.01")
         _, inv, count = np.unique(key, return_inverse=True, return_counts=True)
         at = V[np.bincount(e[count[inv.ravel()] > 1].ravel()).argmax()]  # the pinch: on most doubled edges
         raise TuleError(f"part {name!r} touches itself along {shared} edges (near {_g3(at + origin)}): "
