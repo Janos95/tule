@@ -480,6 +480,8 @@ class Sequence:
                if fname is None else "add a list of parts (or an Assembly) per frame, each made once and moved, not one merged shape")
         print(f"tule: sequence {self.name!r}: {self._bytes >> 20} MB after {n} frames, about {later / (n - 1) / 2**20:.1f} MB "
               f"of new geometry per frame; {how}", file=sys.stderr, flush=True)
+        # in the viewer too, where a slow-loading motion shows it: the parts are rebuilt every frame
+        self.info = {**(self.info or {}), "warning": f"{later / (n - 1) / 2**20:.1f} MB of new parts per frame: slow to load"}
 
     def _place(self, name: str, part: Shape) -> dict:
         """A frame's entry for one part: its file (written the first time this solid appears) and placement."""

@@ -57,3 +57,13 @@ def test_spline_dense_and_tol():
     assert p.extrude(1).volume == pytest.approx(exact, rel=1e-5)
     light = spline(pts, tol=1e-3)
     assert light.area == pytest.approx(exact, rel=1e-5) and light.extrude(1).is_valid
+
+
+def test_round_too_big_says_the_largest_that_fits():
+    import pytest
+
+    from tule import TuleError, rect
+
+    with pytest.raises(TuleError, match="largest radius that works ≈ 5") as e:
+        rect(20, 10).round(6)
+    assert 4.9 < e.value.data["max_radius"] <= 5

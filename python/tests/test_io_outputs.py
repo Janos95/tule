@@ -288,7 +288,8 @@ def test_sequence_warns_when_frames_rebuild_their_parts(outdir, monkeypatch, cap
             seq.add([(cylinder(5, 20) - box(2).at(a, 0, 0)).named("arm")])
     err = capsys.readouterr().err
     assert err.count("sequence 'rebuilt'") == 1 and "make each part once and move it" in err
-    assert "new" not in json.load(open(outdir / "rebuilt" / "output.json"))["frames"][0]["parts"][0]
+    meta = json.load(open(outdir / "rebuilt" / "output.json"))
+    assert "new" not in meta["frames"][0]["parts"][0] and "per frame" in meta["info"]["warning"]
 
 
 def test_sequence_writes_a_part_made_again_each_frame_once(outdir):

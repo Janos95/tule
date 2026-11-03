@@ -240,11 +240,30 @@ class Profile:
 
     def round(self, r: float) -> "Profile":
         """Round every corner (convex and concave) with radius ``r``."""
-        return self._corner_op(r, "round")
+        return self._largest(r, "round")
+
+    def _largest(self, size: float, op: str) -> "Profile":
+        """``op`` on every corner; when ``size`` does not fit, the error says the largest that does."""
+        try:
+            return self._corner_op(size, op)
+        except TuleError:
+            pass
+        lo, hi = 0.0, float(size)
+        for _ in range(10):
+            mid = (lo + hi) / 2
+            try:
+                self._corner_op(mid, op)
+                lo = mid
+            except TuleError:
+                hi = mid
+        word = "radius" if op == "round" else "distance"
+        raise TuleError(f"could not {op} corners with {size:g}", op=op,
+                        hint=f"largest {word} that works ≈ {lo:.3g}" if lo > 0 else "no size works: a corner's edges are too short",
+                        **({"max_radius": round(lo, 6)} if op == "round" else {"max_distance": round(lo, 6)}))
 
     def chamfer(self, d: float) -> "Profile":
         """Bevel every corner by ``d``."""
-        return self._corner_op(d, "chamfer")
+        return self._largest(d, "chamfer")
 
     # ------------------------------------------------------------ sweeps
     def extrude(self, h: float = 1, center: bool = False, **kw):

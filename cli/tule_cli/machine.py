@@ -611,7 +611,7 @@ def cmd_screenshot(args):
         lines.append(f"  labeled: {_ids(rep['labeled'])}")
         if rep["small"]:
             lines.append(f"  visible but too small to label: {_ids(rep['small'])}")
-    hidden = rep["hidden"]
+    hidden = rep["hidden"] if args.labels or overlay is not None else []  # only when face ids are asked for
     if len(hidden) > 12:  # a count, and the faces that matter by name
         tagged = rep.get("hidden_tagged") or []
         lines.append(f"  {len(hidden)} faces not visible from {args.view}" + (f", tagged: {_ids(tagged)}" if tagged else "")
