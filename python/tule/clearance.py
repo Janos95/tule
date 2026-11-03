@@ -542,6 +542,8 @@ class Clearance:
                  "frame": p.frame, "label": p.label, "on a": _pt(p.points[0]), "on b": _pt(p.points[1])}
                 for p in self.pairs]
 
+    LABELS = 5  # gaps labeled in the model (clashes always are)
+
     def show(self, name: str, frame: int | None = None, title: str | None = None) -> str:
         """Write an overlay output: the worst pair's frame (or ``frame``) with the faces of each pair
         at their worst there marked (red: clash, amber: touching, blue: a gap under ``below``, green: contact), arrows at
@@ -575,10 +577,13 @@ class Clearance:
                     faces[everything.index(own[f])] = {"severity": sev[p.status],
                                                        "label": f"{p.status} with {other}: {p._amount()}"}
             if p.overlapping and not p.contact:
-                arrows.append({"at": p.points[0], "dir": (0, 0, -1), "label": f"{p.a} × {p.b}: {p._amount()}"})
+                arrows.append((0, 0, {"at": p.points[0], "dir": (0, 0, -1), "label": f"{p.a} × {p.b}: {p._amount()}"}))
             elif p.gap > 0 and not p.contact:
-                arrows.append({"at": p.points[1], "dir": (np.asarray(p.points[1]) - p.points[0]) / p.gap,
-                               "label": f"{p.a} × {p.b}: {p._amount()}"})
+                arrows.append((1, p.gap, {"at": p.points[1], "dir": (np.asarray(p.points[1]) - p.points[0]) / p.gap,
+                                          "label": f"{p.a} × {p.b}: {p._amount()}"}))
+        # labels in the model: every clash and the closest few gaps (the rest are in the legend and table)
+        arrows.sort(key=lambda t: t[:2])
+        arrows = [a for i, (clash, _, a) in enumerate(arrows) if clash == 0 or i < self.LABELS]
         folder = outputs.folder(name)
         write_atomic(os.path.join(folder, "clearance.json"), json.dumps(self.records(), indent=1, ensure_ascii=False) + "\n")
         worst = self.pairs[0] if self.pairs else None

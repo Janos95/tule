@@ -369,11 +369,15 @@ export class Project extends DurableObject<Env> {
     if (!instance)
       return { error: `unknown machine ${JSON.stringify(machine)}`, hint: `use one of ${Object.keys(MACHINES).join(", ")}, gpu-<type> (${Object.keys(GPUS).map((g) => `gpu-${g}`).join(", ")}), or one of your computers (tule hosts)` };
     const c = this.ctx.container;
-    if (!c)
+    if (!c) {
+      // no cloud machines here: a machine that is on already serves the project
+      const live = Object.values(this.machines).find((m) => m.on);
+      if (live) return { ...(await this.status()), note: `the project is running on ${live.id}` };
       return {
-        error: "this deployment has no container runtime",
-        hint: "run wrangler dev with containers enabled, or start a machine yourself with a join token (POST .../join)",
+        error: "this deployment has no cloud machines",
+        hint: "start a machine with the project's join token (tule join), or use one of your computers (tule hosts)",
       };
+    }
     const cur = this.machines.cloud;
     if (c.running && cur?.on) {
       if (cur.size === machine) return this.status();

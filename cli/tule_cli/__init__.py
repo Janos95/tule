@@ -93,8 +93,19 @@ def need(cfg: dict) -> tuple[str, str]:
     return cfg["url"].rstrip("/"), cfg["token"]
 
 
+def _machine_info() -> dict:
+    """On a Tule machine, its project and control plane (from the tule-agent's machine file)."""
+    try:
+        with open(os.environ.get("TULE_MACHINE_FILE", "/etc/tule/machine.json")) as f:
+            m = json.load(f)
+        return {k: m[k] for k in ("url", "project") if m.get(k)}
+    except (OSError, ValueError):
+        return {}
+
+
 def project_of(args, cfg) -> str:
-    p = getattr(args, "project", None) or os.environ.get("TULE_PROJECT") or cfg.get("project")
+    p = (getattr(args, "project", None) or os.environ.get("TULE_PROJECT") or cfg.get("project")
+         or _machine_info().get("project"))
     if not p:
         raise CliError("which project? pass -p <name> (lowercase letters, digits and '-')")
     if p != cfg.get("project"):
@@ -681,7 +692,9 @@ def cmd_join(args):
 
 def cmd_open(args):
     p = project_of(args, load())
-    url, _ = need(load())
+    url = (load().get("url") or _machine_info().get("url") or "").rstrip("/")
+    if not url:
+        url, _ = need(load())
     link = f"{url}/p/{p}"
     print(link)
     if not args.print:
