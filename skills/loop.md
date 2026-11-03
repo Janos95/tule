@@ -6,7 +6,7 @@ Work so the user can follow along and nothing is lost.
 
 1. **Edit** a script in `src/` (keep parameters at the top). Rename the placeholder `src/part.py` for your part (`git mv src/part.py src/bracket.py`). It writes its output with `tule.outputs`, named like the script (`outputs.part("bracket", …)`; other files into `outputs.folder()`).
 2. **Build**: `tule build` runs the scripts whose inputs changed (`tule build part` for one); the viewer updates live. Fix `TuleError`s from their message and hint (`tule docs occt`). Nothing rebuilds by itself: keeping outputs current is your job.
-3. **Look**: `tule screenshot -o /tmp/view.png --labels`, then read the PNG (your checks stay in `/tmp`). Check other sides (`--view top|front|right`). Claim a feature only once seen.
+3. **Look**: `tule screenshot -o /tmp/view.png --labels`, then read the PNG. Check other sides (`--view top|front|right`). Claim a feature only once seen.
 4. **Check numbers**: `tule inspect outputs/<name>/<file>.step` (size, volume, faces, tags), or print measurements in the script (`part.size`, `part.volume`, `part.is_valid`).
 5. **Iterate** until it matches the request; then save (`tule save -m "…"`) and tell the user what to look at in the viewer. Don't end a turn with work unsaved.
 
@@ -23,7 +23,7 @@ work/      done by hand from the design: supplier quotes, part comparisons, revi
 outputs/   made by tule build; never edit it by hand
 ```
 
-A script may read inputs and other outputs (`import_step("outputs/bracket/bracket.step")`): `tule build` records what each script read, builds what it reads first, and reruns a script only when something it read changed. A script may write only its own output.
+A script may read inputs and other outputs (`import_step("outputs/bracket/bracket.step")`): `tule build` records what each script read, builds what it reads first, and reruns a script only when something it read changed. A script may write only its own output. Results come from a build, never copied in; keep Tule's warnings.
 
 Before you show the user anything, `tule build --check`: it lists what is out of date or failed (with why and how long its last run took), outputs whose script is gone (`rm -r outputs/<name>` retires one), and work to check again. Rebuild what you changed and what reads it: `tule build plate --dependents`, `tule build 'plate-*'`, or everything but a long run, `tule build --skip study`. Leave long runs until the design settles, and say so; a long study imports only its own parameters (`lib/fea_params.py`), so other edits don't rerun it. An output some machine already built from the same files is downloaded instead of run (the build cache); `--force` runs it anyway.
 
@@ -49,7 +49,7 @@ tule save -m "Bracket: 4 M5 holes, 2 mm fillets"
 
 For **variants** the user compares side by side, put the model in a function in `lib/` and make a script per variant (`src/bracket-thin.py` calls `make(wall=1.5)`). A branch (`git switch -c thin-wall`) is for trying something you may throw away; `tule save` on it saves the branch, not main.
 
-Old revisions live in git history (`git show <rev>:src/bracket.py`), not archive folders. Autosaves (every few seconds) stay on this machine's copy; a save is what other machines and sessions get. `tule snapshot` autosaves now.
+Old revisions live in git history (`git show <rev>:src/bracket.py`), not archive folders. Autosaves (every few seconds) stay on this machine's copy; a save is what other machines and sessions get.
 
 ## Long jobs
 
