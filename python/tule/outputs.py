@@ -401,7 +401,8 @@ class Sequence:
 
     Each ``add`` writes one frame file; ``output.json`` (``"status": "running"``) follows
     at most once a second, and ``done()`` (the end of a ``with`` block) writes it finished.
-    ``info``: facts shown under the view, as for a part.
+    ``info``: facts shown under the view, as for a part. ``fps``: frames per second when the
+    viewer plays it (4 when left out); a motion sampled every 0.05 s plays in real time at 20.
 
     A motion: make the parts once and move them per frame (``.at``, ``.rotate``); a driven part
     from contact with ``touch``; check every frame with ``clearance(output_or_frames)``, not a
@@ -410,7 +411,11 @@ class Sequence:
 
     WARN_TOTAL = 50 << 20  # new geometry per sequence before the warning (and 1/50 of it per frame)
 
-    def __init__(self, name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None):
+    def __init__(self, name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None,
+                 fps: float | None = None):
+        if fps is not None and not 0 < float(fps) <= 60:
+            raise TuleError(f"fps is frames per second when played, between 0 and 60, got {fps}", op="sequence")
+        self.fps = fps
         self.name = name
         self.title = title
         self.info = info
@@ -517,6 +522,8 @@ class Sequence:
 
     def _flush(self) -> str:
         meta: dict[str, Any] = {"kind": "sequence", "frames": self.frames, "status": self.status}
+        if self.fps:
+            meta["fps"] = float(self.fps)
         if self.title:
             meta["title"] = self.title
         if self.info:
@@ -543,8 +550,9 @@ def _brep_hash(shape) -> str:
     return hashlib.sha1(f.getvalue()).hexdigest()
 
 
-def sequence(name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None) -> Sequence:
-    return Sequence(name, title, fmt, info)
+def sequence(name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None,
+             fps: float | None = None) -> Sequence:
+    return Sequence(name, title, fmt, info, fps)
 
 
 sequence.__doc__ = Sequence.__doc__
@@ -750,7 +758,8 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
     (several parts side by side). Returns the folder.
 
     ``item``: a part, or ``{"B-20": b20, "B-30": b30}``: each on its own sheets, titled by its
-    name; ``dims``, ``datums``, ``tol`` or ``info`` keyed by part name go to that part.
+    name; ``dims``, ``datums``, ``tol`` or ``info`` keyed by part name go to that part (``info`` may
+    also hold shared facts beside the parts' own: ``{"tolerance": "ISO 2768-m", "B-40": {"number": "B40"}}``).
 
     Views (``front top right left bottom back iso``) are projected with hidden lines
     (dashed; ``hidden=False`` drops them) and placed by ``projection`` (``"first"``
@@ -820,6 +829,10 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
     """
     from .drawing import write as write_drawing
 
+    if isinstance(item, dict) and isinstance(info, dict) and any(isinstance(info.get(k), dict) for k in item):
+        # shared facts and each part's own: {"tolerance": "ISO 2768-m", "Motor block": {"number": "EB-01"}}
+        shared = {k: v for k, v in info.items() if k not in item}
+        info = {k: {**shared, **(info.get(k) or {})} for k in item}
     each = isinstance(item, dict) and isinstance(info, dict) and info and set(info) <= set(item)
     info = {k: _info(v) for k, v in info.items()} if each else _info(info)
     folder = _folder(name)

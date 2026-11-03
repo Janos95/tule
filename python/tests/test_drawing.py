@@ -731,3 +731,13 @@ def test_many_notes_get_a_readable_sheet(outdir):
     _, _, h = drawing.render(plate(), notes=notes, table=[["Size", "Qty"], ["M5", 4]])
     assert [s for _, s in h["pages"]][1:] == [drawing.SHEETS["A4"], (210, 297)]
     assert "See sheet 3." in [t for t, _ in h["pages"][0][0].labels]
+
+
+def test_drawing_info_mixes_shared_and_per_part(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path))
+    a, b = box(40, 20, 5).named("A"), box(60, 20, 5).named("B")
+    outputs.drawing("fam", {"A": a, "B": b}, info={"tolerance": "ISO 2768-m", "A": {"number": "A-1"}, "B": {"number": "B-1"}})
+    svg = [p.read_text() for p in sorted((tmp_path / "fam").glob("*.svg"))]
+    assert any("A-1" in t and "ISO 2768-m" in t for t in svg) and any("B-1" in t and "ISO 2768-m" in t for t in svg)

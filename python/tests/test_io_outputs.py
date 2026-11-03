@@ -319,3 +319,13 @@ def test_bounds_are_cached_and_follow_quarter_turns():
         assert [*m.bounds[0], *m.bounds[1]] == pytest.approx([*fresh[0], *fresh[1]], abs=1e-9)
     a = Assembly(s.named("a"), box(1).at(-5, 0, 0).named("b"))
     assert [*a.bounds[0], *a.bounds[1]] == pytest.approx([-5, 0, 0, 11, 22, 33])
+
+
+def test_sequence_fps_is_the_play_rate(outdir):
+    with outputs.sequence("run", fps=20) as seq:
+        part = box(10).named("slider")
+        for x in range(3):
+            seq.add([part.at(x, 0, 0)])
+    assert json.load(open(outdir / "run" / "output.json"))["fps"] == 20
+    with pytest.raises(TuleError, match="between 0 and 60"):
+        outputs.sequence("bad", fps=0)

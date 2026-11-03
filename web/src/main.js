@@ -886,11 +886,12 @@ async function show() {
 let playing = null;
 function play(on) {
   clearInterval(playing);
+  const fps = Number(state.outputs.find((o) => o.id === state.selected)?.meta?.fps); // the sequence's own pace (real time)
   playing = on ? setInterval(() => {
     const max = +$("scrub").max;
     state.frame = state.frame >= max ? 0 : state.frame + 1;
     show();
-  }, 250) : null;
+  }, fps > 0 && fps <= 60 ? 1000 / fps : 250) : null;
   $("play").classList.toggle("on", !!on);
 }
 $("play").addEventListener("click", () => play(!playing));
