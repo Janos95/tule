@@ -87,6 +87,62 @@ def test_import_step_missing_file(tmp_path):
         import_step(str(tmp_path / "b.step"))
 
 
+def _nested_board_step(path, rows=40, pins=50):
+    """A vendor-style STEP: board > rows (sub-assemblies, placed) > pins (one solid, placed)."""
+    from OCP.gp import gp_Trsf, gp_Vec
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.STEPControl import STEPControl_AsIs
+    from OCP.TopLoc import TopLoc_Location
+    from tule.io import _new_doc, _set_name, parse_color
+    from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+    from OCP.XCAFDoc import XCAFDoc_ColorGen
+
+    def at(x, y, z=0.0):
+        t = gp_Trsf()
+        t.SetTranslation(gp_Vec(x, y, z))
+        return TopLoc_Location(t)
+
+    doc, st, ct = _new_doc()
+    pin = st.AddShape(cylinder(0.3, 2).wrapped, False)
+    _set_name(pin, "pin")
+    ct.SetColor(pin, Quantity_Color(*parse_color("#c9a43a"), Quantity_TOC_RGB), XCAFDoc_ColorGen)
+    row = st.NewShape()
+    _set_name(row, "row")
+    for i in range(pins):
+        st.AddComponent(row, pin, at(i, 0))
+    board = st.NewShape()
+    _set_name(board, "board")
+    st.AddComponent(board, st.AddShape(box(60, 50, 1.6).wrapped, False), at(0, 0, -1.6))
+    for j in range(rows):
+        st.AddComponent(board, row, at(5, 5 + j, 0))
+    st.UpdateAssemblies()
+    w = STEPCAFControl_Writer()
+    w.SetNameMode(True)
+    w.SetColorMode(True)
+    w.Transfer(doc, STEPControl_AsIs)
+    w.Write(path)
+
+
+def test_import_step_large_nested_assembly(tmp_path):
+    import time
+
+    path = str(tmp_path / "board.step")
+    _nested_board_step(path)
+    t = time.monotonic()
+    a = import_step(path)
+    took = time.monotonic() - t
+    parts = a.parts()
+    assert len(parts) == 1 + 40 * 50  # leaves only: no sub-assembly read again as a part
+    assert parts[1][0] == "board/row/pin" and parts[1][1].color == "#c9a43a"
+    # placements compose down the tree: row j at y = 5 + j, pin i at x = 5 + i
+    lo, hi = parts[1 + 3 * 50 + 7][1].bounds
+    assert (lo.x, lo.y, lo.z) == pytest.approx((5 + 7 - 0.3, 5 + 3 - 0.3, 0), abs=1e-6)
+    assert a.bounds[1] == pytest.approx((60, 50, 2), abs=1e-6)
+    # the pins are the file's one solid, placed: no copy per instance (that took minutes on a Pi 5 board)
+    assert parts[1][1].wrapped.IsPartner(parts[-1][1].wrapped)
+    assert took < 10, f"import_step took {took:.1f} s for 2001 small parts"
+
+
 def test_tessellate_ids_and_normals():
     part = tagged_bracket()
     m = part.tessellate()
@@ -252,3 +308,13 @@ def test_an_empty_part_is_refused_by_name(tmp_path, monkeypatch):
     with pytest.raises(TuleError, match="sheath is empty"):
         outputs.assembly("hand", Assembly(box(2, 2, 2).named("palm"), empty))
     assert not (tmp_path / "outputs" / "hand").exists()  # refused before anything is written
+
+
+def test_bounds_are_cached_and_follow_quarter_turns():
+    s = box(10, 20, 30).at(1, 2, 3)
+    assert s.bounds is s.bounds and s.named("x").bounds is s.bounds
+    for m in (s.rotate(z=90), s.rotate(x=-90).at(5, 0, 0), s.mirror(1, 0, 0), s.rotate(z=30)):
+        fresh = Shape(m.wrapped).bounds
+        assert [*m.bounds[0], *m.bounds[1]] == pytest.approx([*fresh[0], *fresh[1]], abs=1e-9)
+    a = Assembly(s.named("a"), box(1).at(-5, 0, 0).named("b"))
+    assert [*a.bounds[0], *a.bounds[1]] == pytest.approx([-5, 0, 0, 11, 22, 33])

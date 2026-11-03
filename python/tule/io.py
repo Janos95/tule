@@ -123,6 +123,8 @@ def write_atomic(path: str, data: Union[bytes, str]) -> str:
 
 # ---------------------------------------------------------------- STEP
 
+_BIG_STEP = 20_000_000  # bytes: above this, import_step says what it is doing on stderr
+
 
 def _new_doc():
     app = static(XCAFApp_Application, "GetApplication")()
@@ -249,51 +251,59 @@ def export_step(item: Union["Shape", "Assembly"], path: str) -> str:
 
 
 def import_step(path: str):
-    """Read a STEP file: a Shape (one part) or an Assembly, with names, colors and tags."""
+    """Read a STEP file: a Shape (one part) or an Assembly, with names, colors and tags.
+
+    Sub-assemblies stay nested (``a.parts()`` lists ``"board/usb/shell"``). A part
+    keeps the file's solid, moved to its place in the assembly, not a copy.
+    """
+    import time
+
     from .assembly import Assembly
-    from .shape import Shape
+    from .shape import Shape, _Moved
 
     sys.audit("tule.read", os.path.abspath(path))  # read by native code: tule build records it this way
-    r = STEPCAFControl_Reader()
-    _enable_subshape_names()
-    r.SetNameMode(True)
-    r.SetColorMode(True)
     if not os.path.isfile(path):
         d = os.path.dirname(path) or "."
         there = sorted(f for f in os.listdir(d) if f.lower().endswith((".step", ".stp"))) if os.path.isdir(d) else []
         raise TuleError(f"no such file: {path}", op="import_step",
                         hint=f"STEP files in {d}/: {', '.join(there)}" if there else f"{d}/ does not exist" if not os.path.isdir(d) else f"no STEP files in {d}/")
+    size = os.path.getsize(path)
+    t0 = time.monotonic()
+
+    def say(msg: str):
+        if size > _BIG_STEP:
+            print(f"tule: import_step: {msg} ({time.monotonic() - t0:.0f} s)", file=sys.stderr, flush=True)
+
+    say(f"reading {size / 1e6:.0f} MB {os.path.basename(path)}")
+    r = STEPCAFControl_Reader()
+    _enable_subshape_names()
+    r.SetNameMode(True)
+    r.SetColorMode(True)
     if r.ReadFile(path) != IFSelect_RetDone:
         raise TuleError("could not read the STEP file", op="import_step", hint=path)
+    say(f"making solids from {r.Reader().Model().NbEntities():,} STEP entities")
     doc, st, ct = _new_doc()
     r.Transfer(doc)
+    ST, CT = type(st), type(ct)
 
     def color_of(label):
         c = Quantity_Color()
         for t in (XCAFDoc_ColorGen, XCAFDoc_ColorSurf):
-            if static(type(ct), "GetColor")(label, t, c):
+            if static(CT, "GetColor")(label, t, c):
                 return color_hex((c.Red(), c.Green(), c.Blue()))
         return None
 
-    def part_from(label, loc=None, instance=None) -> Shape:
-        s = static(st.__class__, "GetShape")(label)
-        name = _get_name(label)
-        color = color_of(label) or (color_of(instance) if instance is not None else None)
-        if color is None:
-            c = Quantity_Color()
-            for t in (XCAFDoc_ColorGen, XCAFDoc_ColorSurf):
-                if static(type(ct), "GetColor")(s, t, c) if False else ct.GetColor(s, t, c):
-                    color = color_hex((c.Red(), c.Green(), c.Blue()))
-                    break
-        sh = Shape(s, name=name, color=color)
+    def part_from(label, loc=None, color=None) -> Shape:
+        s = static(ST, "GetShape")(label)
+        sh = Shape(s, name=_get_name(label), color=color_of(label) or color)
         subs = TDF_LabelSequence()
-        static(st.__class__, "GetSubShapes")(label, subs)
+        static(ST, "GetSubShapes")(label, subs)
         for i in range(1, subs.Length() + 1):
             lab = subs.Value(i)
             n = _get_name(lab) or ""
             if not n.startswith("tag:"):
                 continue
-            sub = static(st.__class__, "GetShape")(lab)
+            sub = static(ST, "GetShape")(lab)
             from .selection import SELECTION_TYPES
 
             kind = kind_of(sub)
@@ -304,37 +314,54 @@ def import_step(path: str):
                 if sel.items:
                     sh = sh.tag(tag, sel)
         if loc is not None and not loc.IsIdentity():
-            from .shape import carry
-            from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-
-            b = BRepBuilderAPI_Transform(sh.wrapped, loc.Transformation(), True)
-            from ._occ import from_list
-
-            sh = Shape(b.Shape(), carry(sh._groups, b.Shape(), lambda x: from_list(b.Modified(x))), sh._alias, sh.name, sh.color)
+            # a placement, as Shape.at does: the same solid moved, its tags moved when read
+            sh = Shape(sh.wrapped.Moved(loc), _Moved(sh._g, loc), sh._alias, sh.name, sh.color)
         return sh
+
+    count = [0]
+
+    def children(label, loc, color) -> list:
+        """The parts and sub-assemblies under an assembly label, placed in the root's frame."""
+        comps = TDF_LabelSequence()
+        static(ST, "GetComponents")(label, comps, False)
+        out = []
+        for j in range(1, comps.Length() + 1):
+            c = comps.Value(j)
+            ref = TDF_Label()
+            static(ST, "GetReferredShape")(c, ref)
+            here = static(ST, "GetLocation")(c)
+            here = here if loc is None else loc.Multiplied(here)
+            col = color_of(c) or color
+            if static(ST, "IsAssembly")(ref):
+                kids = children(ref, here, color_of(ref) or col)
+                if kids:
+                    out.append(Assembly(*kids, name=_get_name(ref) or _get_name(c)))
+            else:
+                out.append(part_from(ref, here, col))
+                count[0] += 1
+                if count[0] % 1000 == 0:
+                    say(f"{count[0]:,} parts")
+        return out
 
     free = TDF_LabelSequence()
     st.GetFreeShapes(free)
-    parts = []
-    names = []
+    say("collecting parts")
+    items = []
     for i in range(1, free.Length() + 1):
         lab = free.Value(i)
-        if static(st.__class__, "IsAssembly")(lab):
-            comps = TDF_LabelSequence()
-            static(st.__class__, "GetComponents")(lab, comps, True)
-            names.append(_get_name(lab))
-            for j in range(1, comps.Length() + 1):
-                c = comps.Value(j)
-                ref = TDF_Label()
-                static(st.__class__, "GetReferredShape")(c, ref)
-                loc = static(st.__class__, "GetLocation")(c)
-                parts.append(part_from(ref, loc, c))
+        if static(ST, "IsAssembly")(lab):
+            kids = children(lab, None, color_of(lab))
+            if kids:
+                items.append(Assembly(*kids, name=_get_name(lab)))
         else:
-            parts.append(part_from(lab))
-    if len(parts) == 1:  # one part, even inside an assembly node: a Shape
-        p = parts[0]
-        return p if p.name or not names or not names[0] else p.named(names[0])
-    return Assembly(*parts, name=(names[0] if names else None))
+            items.append(part_from(lab))
+    say(f"read {count[0] or len(items):,} parts")
+    top = items[0] if len(items) == 1 else Assembly(*items)
+    leaves = top.parts() if isinstance(top, Assembly) else [("", top)]
+    if len(leaves) == 1:  # one part, even inside an assembly node: a Shape
+        p = leaves[0][1]
+        return p if p.name or not isinstance(top, Assembly) or not top.name else p.named(top.name)
+    return top
 
 
 # ---------------------------------------------------------------- meshes
