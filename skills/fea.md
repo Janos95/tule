@@ -58,8 +58,8 @@ md = fea.modes(stage, "aluminium", fixed="base", n=4, dofs=30_000)   # default d
 print(md)                     # Hz, and which way each mode moves the mass (effective mass %)
 bk = fea.buckling(stage, "aluminium", fixed="base", loads=[fea.force("top", (0, -100, 0))], dofs=30_000)
 print(bk.factor)              # the loads × factor buckle it; inf: none found (say, in tension)
-nl = fea.static(stage, "aluminium", fixed=["base", fea.move("top", (3, 0, 0), "x")],
-               nonlinear=True, dofs=30_000)   # pushed 3 mm along x, free in y and z
+nl = fea.static(stage, "PETG", fixed=["base", fea.move("top", (3, 0, 0), "x")],
+               nonlinear=True, dofs=30_000)   # printed: pushed 3 mm along x, free in y and z
 for s in nl.steps: print(s.fraction, s.move_forces[0].x)   # force vs stroke
 ```
 
