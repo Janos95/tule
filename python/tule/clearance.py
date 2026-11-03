@@ -544,7 +544,7 @@ class Clearance:
 
     def show(self, name: str, frame: int | None = None, title: str | None = None) -> str:
         """Write an overlay output: the worst pair's frame (or ``frame``) with the faces of each pair
-        at their worst there marked (red: clash, amber: gap or touching, green: contact), arrows at
+        at their worst there marked (red: clash, amber: touching, blue: a gap under ``below``, green: contact), arrows at
         the gaps and overlaps, and ``clearance.json``, the table. Returns the folder."""
         from . import outputs
         from .io import write_atomic
@@ -562,7 +562,7 @@ class Clearance:
         for s in placed:
             b.Add(comp, s)
         everything = subshapes(comp, "face")
-        sev = {"clash": "error", "gap": "warning", "touch": "warning", "contact": "ok"}
+        sev = {"clash": "error", "touch": "warning", "gap": "info", "contact": "ok"}  # a gap is a finding to read, not a fault
         faces, arrows = {}, []
         for p in self.pairs:
             if p.frame != frame:

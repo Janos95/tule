@@ -138,7 +138,7 @@ outputs.part("bracket", part)
 ## Building blocks
 
 - Solids: `box(x, y, z, center=)`, `cube`, `cylinder(r, h, center=)`, `cone(r, h, r2)`, `sphere(r)`, `torus(R, r)`, `wedge`, `polyhedron(points, faces)`.
-- Profiles (xy plane): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(length, width)`, `polygon([(x, y), (x, y, r), ...])` (r rounds that corner), `spline(points, tol=)`, `text("MK4", size, bold=)`. Combine with `| - & ^`; `.round(r)`, `.chamfer(d)`, `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
+- Profiles (xy): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(l, w)`, `polygon([(x, y), (x, y, r), ...])` (r rounds it), `spline(points)`, `text("MK4", size)`. Combine: `| - & ^`; `.round(r)`, `.chamfer(d)`, `.offset(d)` (rim: `p.offset(2) - p`), `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
 - Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`, `sweep(profile, [(x, y, z), …])` along a 3D path (faces `start`, `end`), `pipe(points, r, wall=)` for cables, tubes; a point `(x, y, z, r)` rounds that corner (a pulley).
 - Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)`.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.

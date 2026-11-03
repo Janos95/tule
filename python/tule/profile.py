@@ -75,6 +75,16 @@ def _polygon_face(points: Sequence[Point2]):
     return mk.Face()
 
 
+def _region(wire):
+    """The region a closed planar wire bounds, whichever way the wire runs."""
+    from OCP.ShapeAnalysis import ShapeAnalysis
+
+    face = BRepBuilderAPI_MakeFace(wire, True).Face()
+    if not ShapeAnalysis.IsOuterBound_s(face):  # wound the other way: its material would be outside it
+        face = BRepBuilderAPI_MakeFace(cast(wire.Reversed()), True).Face()
+    return face
+
+
 class Profile:
     """An immutable planar region in the xy plane."""
 
@@ -264,6 +274,47 @@ class Profile:
     def chamfer(self, d: float) -> "Profile":
         """Bevel every corner by ``d``."""
         return self._largest(d, "chamfer")
+
+    def offset(self, d: float, round: bool = True) -> "Profile":
+        """The region grown by ``d`` (shrunk when negative), holes shrinking as it grows: a rim
+        band is ``p.offset(2) - p``, a wall of 1.5 mm ``p - p.offset(-1.5)``. Corners grown
+        outward are rounded (``round=False``: sharp, the edges extended)."""
+        from functools import reduce
+
+        from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
+        from OCP.GeomAbs import GeomAbs_Arc, GeomAbs_Intersection
+
+        if d == 0:
+            return self
+        kind = GeomAbs_Arc if round else GeomAbs_Intersection
+
+        def grown(wire, by):
+            # the region inside one outline, offset; None when it vanishes
+            try:
+                mk = BRepOffsetAPI_MakeOffset(_region(wire), kind)
+                mk.Perform(float(by))
+                ok = mk.IsDone()
+            except OCC_ERRORS:
+                ok = False
+            regions = [Profile(_region(w)) for w in subshapes(mk.Shape(), "wire")] if ok else []
+            regions = [r for r in regions if r.area > 1e-9]
+            return reduce(lambda a, b: a ^ b, regions) if regions else None  # nested ones cancel
+
+        out = []
+        for face in self.faces:
+            outer = BRepTools.OuterWire_s(face)
+            region = grown(outer, d)
+            if region is None:
+                continue
+            holes = [grown(w, -d) for w in subshapes(face, "wire") if not w.IsSame(outer)]
+            for hole in holes:  # a hole shrinks as the region grows, and may close
+                if hole is not None:
+                    region = region - hole
+            out.append(region)
+        if not out or sum(p.area for p in out) <= 1e-12:
+            raise TuleError(f"offsetting the profile by {d:g} leaves nothing", op="offset",
+                            hint="shrink by less than half its narrowest width")
+        return reduce(lambda a, b: a | b, out)
 
     # ------------------------------------------------------------ sweeps
     def extrude(self, h: float = 1, center: bool = False, **kw):

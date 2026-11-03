@@ -67,3 +67,24 @@ def test_round_too_big_says_the_largest_that_fits():
     with pytest.raises(TuleError, match="largest radius that works ≈ 5") as e:
         rect(20, 10).round(6)
     assert 4.9 < e.value.data["max_radius"] <= 5
+
+
+def test_offset_grows_shrinks_and_closes_holes():
+    import math
+
+    import pytest
+
+    from tule import TuleError, circle, rect
+
+    assert rect(40, 20).offset(2, round=False).area == pytest.approx(44 * 24, rel=1e-6)
+    assert rect(40, 20).offset(2).area == pytest.approx(44 * 24 - (4 - math.pi) * 4, rel=1e-6)
+    assert rect(40, 20).offset(-2).area == pytest.approx(36 * 16, rel=1e-6)
+    assert circle(10).offset(-1).area == pytest.approx(math.pi * 81, rel=1e-6)
+    h = rect(40, 20) - circle(5).at(20, 10)
+    assert h.offset(-1).area == pytest.approx(38 * 18 - math.pi * 36, rel=1e-6)   # the hole grows
+    assert h.offset(1).area == pytest.approx(42 * 22 - (4 - math.pi) - math.pi * 16, rel=1e-6)
+    assert h.offset(6).area == pytest.approx(52 * 32 - (4 - math.pi) * 36, rel=1e-6)  # the hole closes
+    rim = rect(30, 30).round(5).offset(1.5) - rect(30, 30).round(5)
+    assert rim.extrude(3).is_valid
+    with pytest.raises(TuleError, match="leaves nothing"):
+        rect(10, 4).offset(-3)

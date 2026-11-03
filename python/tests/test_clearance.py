@@ -160,7 +160,7 @@ def test_show_marks_the_worst_frame(outdir):
     rows = json.load(open(os.path.join(folder, "clearance.json")))
     assert [(x["status"], x["a"], x["b"]) for x in rows] == [("clash", "lever", "post"), ("gap", "lever", "wall")]
     meta = json.load(open(os.path.join(r.show("sweep-clearance", frame=0), "output.json")))
-    assert {f["severity"] for f in meta["faces"].values()} == {"warning"} and len(meta["faces"]) >= 2
+    assert {f["severity"] for f in meta["faces"].values()} == {"info"} and len(meta["faces"]) >= 2
     assert meta["arrows"][0]["label"] == "lever × wall: 0.3 mm"
 
 
