@@ -4425,6 +4425,19 @@ def dxf(item, path: str, view: str = "top") -> str:
     return write_atomic(path, to_dxf(v))
 
 
+def _warn_dfm(shape, name: str):
+    """A sheet part's cut file goes to a shop: say on stderr what breaks the default bending rules."""
+    from .sheetmetal import dfm
+
+    try:
+        r = dfm(shape)
+    except TuleError:  # does not unfold: render has said so
+        return
+    if not r.ok:
+        print(f"tule: {name}: {r}\n  (default rules; part.dfm(min_flange=, hole_to_bend=, hole_to_edge=) "
+              "takes your shop's)", file=sys.stderr, flush=True)
+
+
 def write(folder: str, base: str, item, views=None, dims=(),
           title=None, info=None, sheet=None, scale=None, hidden=True, projection="first", dxf_view=None,
           notes=None, tol=None, revisions=None, callouts=None, sheets=None, datums=None, table=None, explode=None,
@@ -4469,5 +4482,7 @@ def write(folder: str, base: str, item, views=None, dims=(),
             from .sheetmetal import bend_csv
 
             write_atomic(os.path.join(folder, stem(k) + "-bends.csv"), bend_csv(shape))
+        if shape.sheet_metal is not None:
+            _warn_dfm(shape, k or base)
     facts["stems"] = [(stem(k), it) for k, it in parts]
     return facts

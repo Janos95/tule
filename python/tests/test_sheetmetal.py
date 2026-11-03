@@ -408,3 +408,65 @@ def test_a_negative_flange_says_to_turn_the_angle():
     with pytest.raises(TuleError, match="outside length, more than 0 mm") as e:
         s.flange(s.faces.normal(Y), -18)
     assert "angle=-90" in e.value.hint
+
+
+def test_dfm_flags_a_hole_near_a_bend_with_the_bend_and_distance():
+    s = base(120, 80)
+    tray = s.flange(s.faces["side"], 20)
+    line = OSSB - BA / 2                                                     # the front bend line, y = 1.30
+    near = tray - cylinder(2.5, 10).at(60, OSSB + 1 + 2.5, -1)               # 1 mm from the bend (tangent line)
+    r = near.dfm()
+    assert not r.ok and len(r.issues) == 1
+    i = r.issues[0]
+    front = next(b for b in near.bends if approx(b.line[0][1], line))
+    assert (i.rule, i.bend, i.bend) == ("hole_to_bend", front.id, "B4")
+    assert approx(i.distance, 1 + BA / 2, 1e-3) and approx(i.limit, 2 * T + R)   # from the bend line; 2t + R
+    assert i.at == pytest.approx((60, OSSB + 1), abs=0.1)                     # the closest point
+    assert "B4  hole ⌀5 at (60, 6.5): 2.7 from the bend line, needs 4.5 (hole_to_bend)" in str(r)
+    assert near.unfold().dfm().issues == r.issues                            # the formed part or its flat
+    far = tray - cylinder(2.5, 10).at(60, 20, -1)
+    assert far.dfm().ok and tray.dfm().ok and "no issues" in str(far.dfm())  # corner reliefs are no notches
+
+
+def test_dfm_short_flange_notch_and_custom_rules():
+    s = base(100, 60)
+    short = s.flange(s.faces.normal(-Y), 5)                                  # 3.70 from the bend line < 2t + BA/2
+    (i,) = short.dfm().issues
+    assert (i.rule, i.bend) == ("min_flange", "B1")
+    assert approx(i.distance, 5 - OSSB + BA / 2, 0.01) and approx(i.limit, 2 * T + BA / 2)
+    assert short.dfm(min_flange=3.5).ok                                      # the shop's own table
+    tray = s.flange(s.faces["side"], 20)
+    r = tray.dfm(min_flange=20)                                              # 20 - OSSB + BA/2 = 18.70
+    assert [x.bend for x in r.issues] == ["B1", "B2", "B3", "B4"] and approx(r.issues[0].distance, 18.696, 0.01)
+    near = tray - cylinder(2.5, 10).at(50, OSSB - BA / 2 + 3.5, -1)
+    assert not near.dfm().ok and near.dfm(hole_to_bend=0.5).ok
+    notch = s.flange(s.faces.normal(-Y), 20) - box(10, 30, 50).at(55, -20, OSSB + 0.5)  # cut into the flange
+    (i,) = notch.dfm().issues
+    assert i.rule == "hole_to_bend" and i.what.startswith("notch") and approx(i.distance, BA / 2 + 0.5, 1e-3)
+    with pytest.raises(TuleError, match="min_flange is a distance"):
+        tray.dfm(min_flange=-1)
+    with pytest.raises(TuleError, match="not a sheet part"):
+        box(10, 10, 2).dfm()
+
+
+def test_dfm_without_bends_checks_holes_to_edges():
+    plate = rect(100, 110).sheet(1.6) - cylinder(1.7, 10).at(10, 10, -1)
+    r = plate.dfm()
+    assert r.ok and r.rules == {"hole_to_edge": 1.6}                         # t
+    bad = plate - cylinder(1.7, 10).at(2.5, 50, -1) - cylinder(1.7, 10).at(6.5, 50, -1)
+    pair, edge = bad.dfm().issues                                            # closest first
+    assert (edge.rule, edge.bend) == ("hole_to_edge", None) and approx(edge.distance, 0.8, 1e-3)
+    assert " and " in pair.what and approx(pair.distance, 0.6, 1e-3)
+    assert bad.dfm(hole_to_edge=0.5).ok
+
+
+def test_drawing_warns_once_about_dfm_issues(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
+    s = base(120, 80)
+    tray = s.flange(s.faces["side"], 20) - cylinder(2.5, 10).at(60, 6.5, -1)
+    outputs.drawing("tray", {"tray": tray, "tray-flat": tray.unfold()}, dxf="top")
+    err = capsys.readouterr().err                                            # for the flat, not again for the part
+    assert err.count("sheet check: 1 issue") == 1 and "tray-flat:" in err and "B4  hole ⌀5" in err
+    assert "part.dfm(" in err
+    outputs.drawing("tray-ok", s.flange(s.faces["side"], 20), dxf="top")
+    assert capsys.readouterr().err == ""

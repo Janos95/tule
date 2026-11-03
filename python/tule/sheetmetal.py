@@ -100,6 +100,7 @@ class Bend:
     thickness: float
     line: tuple
     zone: tuple = field(default=(), repr=False)
+    spans: tuple = field(default=(), repr=False)  # the stretches of ``line`` where the sheet is bent
 
     @property
     def allowance(self) -> float:
@@ -182,7 +183,8 @@ def moved(sm: SheetMetal, t: gp_Trsf) -> SheetMetal | None:
         q = _apply(t, Vec(x, y, 0))
         return (round(q.x, 9), round(q.y, 9))
 
-    bends = tuple(replace(b, line=tuple(p2(*p) for p in b.line), zone=tuple(tuple(p2(*p) for p in z_) for z_ in b.zone))
+    bends = tuple(replace(b, line=tuple(p2(*p) for p in b.line), zone=tuple(tuple(p2(*p) for p in z_) for z_ in b.zone),
+                          spans=tuple(tuple(p2(*p) for p in s_) for s_ in b.spans))
                   for b in sm.bends)
     return replace(sm, bends=bends)
 
@@ -959,7 +961,8 @@ def unfold(part: "Shape") -> "Shape":
     bends = []
     for g in groups:
         b0 = g[0]
-        vs = [(_vertex_pnt(v) - b0["m"]).dot(b0["d"]) for x in g for v in subshapes(skin.faces[x["face"]], "vertex")]
+        each = [[(_vertex_pnt(v) - b0["m"]).dot(b0["d"]) for v in subshapes(skin.faces[x["face"]], "vertex")] for x in g]
+        vs = [v for w in each for v in w]
         ang = max(x["angle"] for x in g)
         BA = ang * b0["nf"]
 
@@ -969,7 +972,14 @@ def unfold(part: "Shape") -> "Shape":
         lo_v, hi_v = min(vs), max(vs)
         line = tuple((round(p.x, 9), round(p.y, 9)) for p in (at(lo_v, BA / 2), at(hi_v, BA / 2)))
         zone = tuple(tuple((round(p.x, 9), round(p.y, 9)) for p in (at(lo_v, s), at(hi_v, s))) for s in (0, BA))
-        bends.append(Bend("", "up" if b0["up"] else "down", math.degrees(ang), b0["R"], k, t, line, zone))
+        runs: list[list[float]] = []  # one per stretch of bent sheet: tabs on one axis, a cut across the bend
+        for lo_, hi_ in sorted((min(w), max(w)) for w in each):
+            if runs and lo_ <= runs[-1][1] + 1e-6:
+                runs[-1][1] = max(runs[-1][1], hi_)
+            else:
+                runs.append([lo_, hi_])
+        spans = tuple(tuple((round(p.x, 9), round(p.y, 9)) for p in (at(a_, BA / 2), at(b_, BA / 2))) for a_, b_ in runs)
+        bends.append(Bend("", "up" if b0["up"] else "down", math.degrees(ang), b0["R"], k, t, line, zone, spans))
     bends.sort(key=lambda b: (-round((b.line[0][1] + b.line[1][1]) / 2, 3), round((b.line[0][0] + b.line[1][0]) / 2, 3)))
     bends = [replace(b, id=f"B{i + 1}") for i, b in enumerate(bends)]
     # bend lines as edges on the top face, tagged bend_up / bend_down
@@ -1034,6 +1044,270 @@ def bend_csv(part: "Shape") -> str:
         return "bend,direction,angle,radius,k,thickness,allowance,deduction,length\n"
     head = list(rows[0])
     return ",".join(head) + "\n" + "".join(",".join(str(r[h]) for h in head) + "\n" for r in rows)
+
+
+# ---------------------------------------------------------------- manufacturability
+
+
+@dataclass(frozen=True)
+class Issue:
+    """One rule a flat pattern breaks: ``rule`` (``min_flange``, ``hole_to_bend``, ``hole_to_edge``),
+    ``what`` (``hole ⌀5 at (60, 4)``, ``cut 4 × 30 at (60, 25)``, ``notch at (60, -1)``, ``flange``), ``bend``
+    (``B1``, or None), ``distance`` and the rule's ``limit`` in mm, ``at`` the closest point (flat xy)."""
+
+    rule: str
+    what: str
+    bend: str | None
+    distance: float
+    limit: float
+    at: tuple
+
+    def __str__(self) -> str:
+        d, lim = _num(self.distance), _num(self.limit)
+        if self.rule == "min_flange":
+            text = f"flange {d} from the bend line, needs {lim}"
+        elif self.bend:
+            text = f"{self.what}: {d} from the bend line, needs {lim}"
+        else:
+            text = f"{self.what}: {d} {'apart' if ' and ' in self.what else 'from the edge'}, needs {lim}"
+        return f"{self.bend or '':<4}{text} ({self.rule})"
+
+
+class SheetCheck:
+    """What ``part.dfm()`` found: ``issues`` (``Issue``), ``ok`` (none), ``rules`` (mm, per bend where
+    they depend on it). ``print(r)`` lists them."""
+
+    def __init__(self, issues: list, rules: dict, n_bends: int, n_cuts: int):
+        self.issues: list[Issue] = issues
+        self.rules = rules
+        self._n = (n_bends, n_cuts)
+
+    @property
+    def ok(self) -> bool:
+        return not self.issues
+
+    def __iter__(self):
+        return iter(self.issues)
+
+    def __str__(self) -> str:
+        def val(v):
+            vs = sorted({_num(x) for x in v.values()}) if isinstance(v, dict) else [_num(v)]
+            return "/".join(vs) if vs else "-"
+
+        rules = ", ".join(f"{k} {val(v)}" for k, v in self.rules.items())
+        nb, nc = self._n
+        head = (f"sheet check: {len(self.issues) or 'no'} issue{'s' if len(self.issues) != 1 else ''} "
+                f"({nb} bend{'s' if nb != 1 else ''}, {nc} cut{'s' if nc != 1 else ''}; mm: {rules})")
+        lines = [head] + [f"  {i}" for i in self.issues[:25]]
+        if len(self.issues) > 25:
+            lines.append(f"  … and {len(self.issues) - 25} more (r.issues)")
+        return "\n".join(lines)
+
+    __repr__ = __str__
+
+
+def _loops(flat: "Shape") -> list[tuple]:
+    """The flat's bottom-face loops as closed 2D polylines (outer first): ``(points (n, 2), diameter or None)``."""
+    import numpy as np
+    from OCP.GCPnts import GCPnts_TangentialDeflection
+
+    out = []
+    for f in flat._sub("face"):
+        if not (_ftype(f) == "plane" and abs(_plane(f)[0].z) < 1e-9 and _plane(f)[1].z < -0.5):
+            continue
+        outer = static(BRepTools, "OuterWire")(f)
+        for w in [outer] + [w for w in subshapes(f, "wire") if not w.IsSame(outer)]:
+            pts, dia = [], None
+            ex = BRepTools_WireExplorer(w, f)
+            while ex.More():
+                e = ex.Current()
+                c = BRepAdaptor_Curve(e)
+                t0, t1 = c.FirstParameter(), c.LastParameter()
+                if c.GetType() == GeomAbs_Line:
+                    ts = [t0, t1]
+                else:
+                    if c.GetType() == GeomAbs_Circle and t1 - t0 > 2 * math.pi - 1e-9:
+                        dia = 2 * c.Circle().Radius()
+                    g = GCPnts_TangentialDeflection(c, 0.05, 0.002)
+                    ts = sorted({t0, t1, *(g.Parameter(i) for i in range(1, g.NbPoints() + 1))})
+                if e.Orientation() == TopAbs_REVERSED:
+                    ts = ts[::-1]
+                pts += [(p.X(), p.Y()) for p in (c.Value(u) for u in ts)]
+                ex.Next()
+            if len(pts) >= 3:
+                out.append((not w.IsSame(outer), np.array(pts), dia))
+    out.sort(key=lambda x: x[0])
+    return [(p, d) for _, p, d in out]
+
+
+def _seg_dist(p, a, b):
+    """Distances from points ``p`` (n, 2) to segments ``a``→``b`` (m, 2): (n, m) and the closest points."""
+    import numpy as np
+
+    ab = b - a
+    ll = np.maximum((ab * ab).sum(1), 1e-30)
+    s = np.clip(((p[:, None, :] - a[None]) * ab[None]).sum(2) / ll[None], 0, 1)
+    q = a[None] + s[..., None] * ab[None]
+    return np.linalg.norm(p[:, None, :] - q, axis=2), q
+
+
+def _poly_gap(pa, pb):
+    """Smallest distance between two closed polylines and a point on ``pa`` there."""
+    import numpy as np
+
+    a0, a1, b0, b1 = pa, np.roll(pa, -1, 0), pb, np.roll(pb, -1, 0)
+    d1, _ = _seg_dist(pa, b0, b1)
+    d2, q2 = _seg_dist(pb, a0, a1)
+    i, j = np.unravel_index(d1.argmin(), d1.shape)
+    k, m = np.unravel_index(d2.argmin(), d2.shape)
+    return (d1[i, j], pa[i]) if d1[i, j] <= d2[k, m] else (d2[k, m], q2[k, m])
+
+
+def _near_line(poly, p0, u, n, length, eps=1e-6):
+    """``poly``'s closed polyline within the strip beside segment ``p0`` + ``u``·[0, length]:
+    per side (+1 left of ``u``, −1 right) the smallest distance to the line and the point there."""
+    import numpy as np
+
+    a, b = poly, np.roll(poly, -1, 0)
+    sa, sb = (a - p0) @ u, (b - p0) @ u
+    ha, hb = (a - p0) @ n, (b - p0) @ n
+    lo, hi = eps, length - eps
+    ds = sb - sa
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t0 = np.where(np.abs(ds) < 1e-15, np.where((sa > lo) & (sa < hi), 0.0, 2.0), np.minimum((lo - sa) / ds, (hi - sa) / ds))
+        t1 = np.where(np.abs(ds) < 1e-15, np.where((sa > lo) & (sa < hi), 1.0, -1.0), np.maximum((lo - sa) / ds, (hi - sa) / ds))
+    t0, t1 = np.clip(t0, 0, 1), np.clip(t1, 0, 1)
+    best = {}
+    for i in np.nonzero(t1 > t0)[0]:
+        h0, h1 = ha[i] + (hb[i] - ha[i]) * t0[i], ha[i] + (hb[i] - ha[i]) * t1[i]
+        if h0 * h1 <= 0:  # crosses the line
+            tz = t0[i] if h0 == h1 else t0[i] + (t1[i] - t0[i]) * h0 / (h0 - h1)
+            cands = [(1, 0.0, tz), (-1, 0.0, tz)]
+        else:
+            cands = [(1 if h0 > 0 else -1, abs(h0), t0[i]), (1 if h1 > 0 else -1, abs(h1), t1[i])]
+        for side, d, t in cands:
+            if side not in best or d < best[side][0]:
+                best[side] = (d, a[i] + (b[i] - a[i]) * t)
+    return best
+
+
+def _flange_lengths(outer, p0, u, n, length, step=0.5):
+    """Per side, ray lengths from points along the segment, square to it, to the outer outline."""
+    import numpy as np
+
+    k = int(max(8, min(400, math.ceil(length / step))))
+    o = p0 + u * ((np.arange(k) + 0.5) / k * length)[:, None]
+    a, e = outer, np.roll(outer, -1, 0) - outer
+    out = {}
+    for side in (1, -1):
+        d = n * side
+        den = d[0] * e[:, 1] - d[1] * e[:, 0]
+        ao = a[None] - o[:, None]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tau = (ao[..., 0] * e[None, :, 1] - ao[..., 1] * e[None, :, 0]) / den[None]
+            lam = (ao[..., 0] * d[1] - ao[..., 1] * d[0]) / den[None]
+        ok = (np.abs(den)[None] > 1e-15) & (lam >= 0) & (lam <= 1) & (tau > 1e-9)
+        tau = np.where(ok, tau, np.inf).min(1)
+        out[side] = tau[np.isfinite(tau)]
+    return out
+
+
+def _xy(q) -> tuple:
+    return (round(float(q[0]), 3), round(float(q[1]), 3))
+
+
+def _rule(v, name: str):
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not v >= 0:
+        raise TuleError(f"{name} is a distance in mm (≥ 0), got {v!r}", op="dfm",
+                        hint="leave it out for the default; give your shop's value for this material and thickness")
+    return float(v)
+
+
+def dfm(part: "Shape", min_flange: float | None = None, hole_to_bend: float | None = None,
+        hole_to_edge: float | None = None) -> SheetCheck:
+    """Check a sheet part's flat pattern against bending rules. See :meth:`Shape.dfm`."""
+    import numpy as np
+
+    _need(part, "dfm")
+    rules_in = (_rule(min_flange, "min_flange"), _rule(hole_to_bend, "hole_to_bend"), _rule(hole_to_edge, "hole_to_edge"))
+    flat = _flat(part, "dfm")
+    sm = flat._sm
+    t = sm.thickness
+    loops = _loops(flat)
+    outer, inner = loops[0][0], loops[1:]
+
+    def name(poly, dia):
+        lo, hi = poly.min(0), poly.max(0)
+        c = (lo + hi) / 2
+        at = f"at ({_num(c[0], 1)}, {_num(c[1], 1)})"
+        if dia is not None:
+            return f"hole ⌀{_num(dia)} {at}"
+        w, h = sorted(hi - lo)
+        return f"cut {_num(w)} × {_num(h)} {at}"
+
+    names = [name(p, d) for p, d in inner]
+    issues: list[Issue] = []
+    fl_rule, hb_rule = {}, {}
+    for b in sm.bends:
+        # defaults: the press brake's minimum, OSSB + 2t outside (4t at R = t), is 2t + BA/2 from the bend
+        # line in the flat; a cut closer than 2t + R to the bend line distorts as the sheet bends
+        fl = rules_in[0] if rules_in[0] is not None else 2 * t + b.allowance / 2
+        hb = rules_in[1] if rules_in[1] is not None else 2 * t + b.radius
+        fl_rule[b.id], hb_rule[b.id] = fl, hb
+        rays = {1: [], -1: []}
+        near: dict = {}   # (feature index or -1 for the outline, side) -> (distance, point)
+        for s0, s1 in b.spans or (b.line,):
+            p0, p1 = np.array(s0, float), np.array(s1, float)
+            L = float(np.linalg.norm(p1 - p0))
+            if L < 1e-9:
+                continue
+            u = (p1 - p0) / L
+            n = np.array([-u[1], u[0]])
+            for side, r in _flange_lengths(outer, p0, u, n, L).items():
+                rays[side].append(r)
+            for fi, (poly, _) in [(-1, (outer, None))] + list(enumerate(inner)):
+                for side, (d, q) in _near_line(poly, p0, u, n, L).items():
+                    key = (fi, side if fi < 0 else 0)
+                    if key not in near or d < near[key][0]:
+                        near[key] = (d, q)
+        flange = {}
+        for side, rs in rays.items():
+            r = np.sort(np.concatenate(rs))[::-1] if rs else np.array([])
+            if len(r):
+                flange[side] = float(r[(len(r) - 1) // 2])  # what at least half the bend length has
+        (x0, y0), (x1, y1) = b.line
+        mid, nn = np.array([(x0 + x1) / 2, (y0 + y1) / 2]), np.array([y0 - y1, x1 - x0]) / max(b.length, 1e-12)
+        for side, f in sorted(flange.items()):
+            if f < fl - 1e-6:
+                q = mid + nn * side * f
+                issues.append(Issue("min_flange", "flange", b.id, f, fl, _xy(q)))
+        for (fi, side), (d, q) in sorted(near.items()):
+            if fi < 0:  # the outline: a notch reaching toward the bend, not the flange's own tip
+                if d >= hb - 1e-6 or d >= flange.get(side, math.inf) - 1e-3:
+                    continue
+                issues.append(Issue("hole_to_bend", f"notch at ({_num(q[0], 1)}, {_num(q[1], 1)})", b.id, float(d), hb,
+                                    _xy(q)))
+            elif d < hb - 1e-6:
+                issues.append(Issue("hole_to_bend", names[fi], b.id, float(d), hb, _xy(q)))
+    he = rules_in[2] if rules_in[2] is not None else t
+    boxes = [(p.min(0), p.max(0)) for p, _ in loops]
+    for i, (poly, _) in enumerate(inner):
+        for j in [-1] + list(range(i + 1, len(inner))):
+            other = outer if j < 0 else inner[j][0]
+            if j >= 0:  # far apart by their boxes: no need to look closer
+                (alo, ahi), (blo, bhi) = boxes[i + 1], boxes[j + 1]
+                if np.max(np.maximum(alo - bhi, blo - ahi)) >= he:
+                    continue
+            d, q = _poly_gap(poly, other)
+            if d < he - 1e-6:
+                what = names[i] if j < 0 else f"{names[i]} and {names[j]}"
+                issues.append(Issue("hole_to_edge", what, None, float(d), he, _xy(q)))
+    order = {b.id: i for i, b in enumerate(sm.bends)}
+    issues.sort(key=lambda x: (order.get(x.bend, len(order)), x.rule != "min_flange", x.distance))
+    rules = {"min_flange": fl_rule, "hole_to_bend": hb_rule, "hole_to_edge": he} if sm.bends else {"hole_to_edge": he}
+    return SheetCheck(issues, rules, len(sm.bends), len(inner))
 
 
 # ---------------------------------------------------------------- DXF
