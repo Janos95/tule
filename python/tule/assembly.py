@@ -8,6 +8,7 @@ from OCP.BRep import BRep_Builder
 from OCP.TopoDS import TopoDS_Compound
 
 from .errors import TuleError
+from .geom import Vec
 from .shape import Shape
 
 Child = Union[Shape, "Assembly"]
@@ -109,7 +110,16 @@ class Assembly:
 
     @property
     def bounds(self):
-        return self.to_shape().bounds
+        """Axis-aligned bounds of every part: the union of the parts' (cached) bounds."""
+        boxes = []
+        for _, p in self.parts():
+            try:
+                boxes.append(p.bounds)
+            except TuleError:  # an empty part has no bounds; the others still do
+                pass
+        if not boxes:
+            return self.to_shape().bounds
+        return Vec(*map(min, zip(*(lo for lo, _ in boxes)))), Vec(*map(max, zip(*(hi for _, hi in boxes))))
 
     @property
     def size(self):

@@ -121,6 +121,21 @@ class _Moved:
         return {k: tuple(cast(s.Moved(self.loc)) for s in v) for k, v in self.groups.items()}
 
 
+def _move_bounds(lohi, t: gp_Trsf, cache: dict):
+    """Bounds of a moved shape from its bounds, when the move keeps boxes exact (a turn by 90°)."""
+    m = t.VectorialPart()
+    if any(min(abs(m.Value(i, j)), abs(abs(m.Value(i, j)) - 1)) > 1e-12 for i in (1, 2, 3) for j in (1, 2, 3)):
+        return
+    lo, hi = lohi
+    pts = []
+    for x in (lo.x, hi.x):
+        for y in (lo.y, hi.y):
+            for z in (lo.z, hi.z):
+                p = gp_Pnt(x, y, z).Transformed(t)
+                pts.append((p.X(), p.Y(), p.Z()))
+    cache["bounds"] = (Vec(*map(min, zip(*pts))), Vec(*map(max, zip(*pts))))
+
+
 class Shape:
     """An immutable solid (or compound) with tags, provenance and metadata."""
 
@@ -167,10 +182,15 @@ class Shape:
 
     def named(self, name: str, color: str | None = None) -> "Shape":
         """The same shape with a part name and (optionally) a color like ``"#4a8"``."""
-        return Shape(self._s, self._g, self._alias, name, color or self.color, self._sm)
+        return self._renamed(name, color or self.color)
 
     def colored(self, color: str) -> "Shape":
-        return Shape(self._s, self._g, self._alias, self.name, color, self._sm)
+        return self._renamed(self.name, color)
+
+    def _renamed(self, name, color) -> "Shape":
+        out = Shape(self._s, self._g, self._alias, name, color, self._sm)
+        out._cache = self._cache  # the same solid: its faces, bounds, flat pattern
+        return out
 
     def __repr__(self) -> str:
         n = f" {self.name!r}" if self.name else ""
@@ -368,6 +388,8 @@ class Shape:
         else:  # a rigid move: the same solid, placed (as BRepBuilderAPI_Transform does), its groups when read
             loc = TopLoc_Location(t)
             out = self._derive(self._s.Moved(loc), _Moved(self._g, loc))
+            if "bounds" in self._cache:
+                _move_bounds(self._cache["bounds"], t, out._cache)
         if self._sm is not None:
             from .sheetmetal import moved
 
@@ -682,12 +704,15 @@ class Shape:
     @property
     def bounds(self) -> tuple[Vec, Vec]:
         """Tight axis-aligned bounds ``(lo, hi)``."""
-        b = Bnd_Box()
-        static(BRepBndLib, "AddOptimal")(self._s, b, False, False)
-        if b.IsVoid():
-            raise TuleError(f"{self.name or 'the shape'} is empty: it has no bounds", op="bounds",
-                            hint="the operation that made it left nothing: check len(part.faces) after each step")
-        return from_pnt(b.CornerMin()), from_pnt(b.CornerMax())
+        lohi = self._cache.get("bounds")
+        if lohi is None:  # exact bounds of a vendor board take seconds: once per shape
+            b = Bnd_Box()
+            static(BRepBndLib, "AddOptimal")(self._s, b, False, False)
+            if b.IsVoid():
+                raise TuleError(f"{self.name or 'the shape'} is empty: it has no bounds", op="bounds",
+                                hint="the operation that made it left nothing: check len(part.faces) after each step")
+            lohi = self._cache["bounds"] = (from_pnt(b.CornerMin()), from_pnt(b.CornerMax()))
+        return lohi
 
     @property
     def size(self) -> Vec:
