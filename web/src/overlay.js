@@ -299,7 +299,18 @@ export function initOverlay({ viewer, legend, marks }) {
       const bar = el("div", "legend-scale");
       bar.style.flexWrap = "wrap";
       const unit = s.unit ? ` ${s.unit}` : "";
-      if (fields.length > 1) {
+      if (fields.length > 5) {
+        // many fields (several parts' results): a menu, not a strip of buttons that wraps
+        const pick = el("select", "field-pick");
+        pick.setAttribute("aria-label", "Field");
+        fields.forEach((x, i) => pick.append(Object.assign(document.createElement("option"), { value: i, textContent: String(x.label ?? `field ${i + 1}`), selected: i === active })));
+        pick.addEventListener("change", () => {
+          active = +pick.value;
+          render(...current);
+          showField();
+        });
+        bar.append(pick);
+      } else if (fields.length > 1) {
         // which field: as `tule screenshot --field`
         const seg = el("div", "seg");
         seg.setAttribute("role", "group");

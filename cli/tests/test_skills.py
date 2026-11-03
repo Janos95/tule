@@ -69,6 +69,12 @@ def test_tule_docs_prints_the_library_reference(capsys, monkeypatch):
     assert "  sequence(name: str" in capsys.readouterr().out
     main(["docs", "tule.fea"])
     assert "  static(" in capsys.readouterr().out
+    main(["docs", "Faces"])  # returned by Shape.faces, not exported
+    assert "class Faces" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="Shape has no 'filet'; close: fillet"):
+        main(["docs", "Shape.filet"])
+    with pytest.raises(SystemExit, match="close to it: .*Faces"):
+        main(["docs", "FaceSelection.filter"])
 
 
 def test_agents_md_is_generated_from_skills():

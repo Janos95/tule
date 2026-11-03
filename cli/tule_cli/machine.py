@@ -758,26 +758,40 @@ def _first(obj) -> str:
     return doc.split("\n\n")[0].replace("\n", " ")
 
 
-def reference(name: str) -> str | None:
-    """Signatures and docs of a library name (``Shape``, ``Shape.fillet``, ``outputs``,
-    ``fea.solve``): a function in full, a class or module as a list of its public members."""
+def _lookup(name: str):
+    """The library object a name like ``Shape.fillet``, ``fea.static`` or ``FaceSelection`` means, or None."""
     import importlib
     import inspect
+    import sys
 
     try:
         tule = importlib.import_module("tule")
     except ImportError:
         return None
     path = name.removeprefix("tule.").split(".")
+    if path[0].startswith("_"):
+        return None
     try:
         obj = importlib.import_module("tule." + path[0])
     except ImportError:
         obj = getattr(tule, path[0], None)
+    if obj is None:  # a class the library returns but does not export (FaceSelection, Step)
+        obj = next((getattr(m, path[0]) for n, m in sorted(sys.modules.items()) if n.startswith("tule.") and m
+                    and inspect.isclass(getattr(m, path[0], None)) and getattr(m, path[0]).__module__ == n), None)
     for part in path[1:]:
         if obj is None:
             break
         obj = inspect.getattr_static(obj, part, None) if inspect.isclass(obj) else getattr(obj, part, None)
-    if obj is None or obj is tule or path[0].startswith("_"):
+    return None if obj is tule else obj
+
+
+def reference(name: str) -> str | None:
+    """Signatures and docs of a library name (``Shape``, ``Shape.fillet``, ``outputs``,
+    ``fea.solve``): a function in full, a class or module as a list of its public members."""
+    import inspect
+
+    obj = _lookup(name)
+    if obj is None:
         return None
     if isinstance(obj, (staticmethod, classmethod)):
         obj = obj.__func__
@@ -805,14 +819,33 @@ def reference(name: str) -> str | None:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _close_names(name: str) -> list[str]:
+    """Library names like ``name`` (FaceSelection: Faces, Selection)."""
+    import difflib
+    import inspect
+    import sys
+
+    if _lookup("Shape") is None:
+        return []
+    have = {n for m, mod in list(sys.modules.items()) if m.startswith("tule.") and mod
+            for n, v in vars(mod).items() if not n.startswith("_") and (inspect.isclass(v) or inspect.isfunction(v))
+            and getattr(v, "__module__", "") == m}
+    low = {n.lower(): n for n in have}
+    parts = [p for p in _camel_parts(name) if len(p) > 3]
+    hits = [low[p.lower()] for p in parts if p.lower() in low]
+    return list(dict.fromkeys(hits + difflib.get_close_matches(name, sorted(have), n=3, cutoff=0.6)))[:4]
+
+
+def _camel_parts(name: str) -> list[str]:
+    import re
+
+    return re.findall(r"[A-Z][a-z]+s?|[a-z]+", name) + [w + "s" for w in re.findall(r"[A-Z][a-z]+", name)]
+
+
 def _no_member(owner: str, name: str) -> str:
     import difflib
-    import importlib
 
-    tule = importlib.import_module("tule")
-    obj = tule
-    for part in owner.removeprefix("tule.").split("."):
-        obj = getattr(obj, part, None) or importlib.import_module("tule." + part)
+    obj = _lookup(owner)
     have = [n for n in dir(obj) if not n.startswith("_")
             and (getattr(getattr(obj, n), "__module__", None) or "tule").startswith("tule")]
     close = difflib.get_close_matches(name, have, n=3, cutoff=0.6)
@@ -831,10 +864,12 @@ def cmd_docs(args):
         return
     if args.topic not in names:
         ref = reference(args.topic)
-        if ref is None and "." in args.topic and reference(args.topic.rsplit(".", 1)[0]) is not None:
+        if ref is None and "." in args.topic and _lookup(args.topic.rsplit(".", 1)[0]) is not None:
             raise CliError(_no_member(*args.topic.rsplit(".", 1)))
         if ref is None:
-            raise CliError(f"no topic {args.topic!r}; topics: {', '.join(names)}, or a library name (tule docs Shape.fillet)")
+            close = _close_names(args.topic.split(".")[0])
+            raise CliError(f"no topic {args.topic!r}" + (f"; library names close to it: {', '.join(close)}" if close else "")
+                           + f"; topics: {', '.join(names)}, or a library name (tule docs Shape.fillet)")
         sys.stdout.write(ref)
         return
     with open(os.path.join(d, args.topic + ".md")) as f:

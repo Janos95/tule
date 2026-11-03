@@ -260,6 +260,57 @@ def _placed(shape, start, tangent):
     return cast(BRepBuilderAPI_Transform(shape, t, True).Shape())
 
 
+def _why(path_wire, profile) -> str:
+    """What in the path most likely stops a sweep: a corner where two of its pieces meet, or its tightest bend."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.BRepLProp import BRepLProp_CLProps
+
+    try:
+        box = Bnd_Box()
+        BRepBndLib.Add_s(profile, box)
+        lo, hi = box.CornerMin(), box.CornerMax()
+        size = max(abs(lo.X()), abs(lo.Y()), abs(hi.X()), abs(hi.Y()))  # the profile's reach from the path
+        edges = []
+        ex = BRepTools_WireExplorer(path_wire)
+        while ex.More():
+            edges.append(BRepAdaptor_Curve(ex.Current()))
+            ex.Next()
+
+        def d1(c, u):
+            p, v = gp_Pnt(), gp_Vec()
+            c.D1(u, p, v)
+            return p, v
+
+        for a, b in zip(edges, edges[1:]):
+            p, va = d1(a, a.LastParameter())
+            _, vb = d1(b, b.FirstParameter())
+            if va.Magnitude() > 1e-12 and vb.Magnitude() > 1e-12:
+                ang = math.degrees(va.Angle(vb))
+                if ang > 1:
+                    return (f": the path turns {ang:.0f}° at ({p.X():.4g}, {p.Y():.4g}, {p.Z():.4g}), where two of its "
+                            "pieces meet without a shared tangent (round it: a point (x, y, z, r))")
+        tight, where = math.inf, None
+        for c in edges:
+            u0, u1 = c.FirstParameter(), c.LastParameter()
+            for k in range(41):
+                u = u0 + (u1 - u0) * k / 40
+                pr = BRepLProp_CLProps(c, u, 2, 1e-7)
+                if pr.IsTangentDefined():
+                    kap = pr.Curvature()
+                    if kap > 1e-12 and 1 / kap < tight:
+                        p = pr.Value()
+                        tight, where = 1 / kap, (p.X(), p.Y(), p.Z())
+        if where and tight < size:
+            return (f": the path bends to radius {tight:.3g} mm at ({where[0]:.4g}, {where[1]:.4g}, {where[2]:.4g}), "
+                    f"less than the profile's {size:.3g} mm reach")
+    except Exception:  # a diagnosis only: never in the way of the error itself
+        pass
+    return ""
+
+
 def _sweep_face(face, path_wire, start, tangent):
     """A face with holes swept along the path in one go (a tube): cutting the swept hole out of
     the swept outline instead fails on some splines, as the two surfaces run parallel."""
@@ -291,7 +342,7 @@ def _sweep_wire(wire, path_wire, start, tangent, roles_out=None):
     except OCC_ERRORS:
         ok = False
     if not ok:
-        raise TuleError("could not sweep the profile along the path", op="sweep",
+        raise TuleError("could not sweep the profile along the path" + _why(path_wire, wire), op="sweep",
                         hint="a bend tighter than the profile's size folds it onto itself: smooth the path or make the profile smaller")
     if roles_out is not None:
         roles_out["start"] = _faces_of(mk.FirstShape())

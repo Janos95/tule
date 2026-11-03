@@ -1745,3 +1745,5 @@ button.link:hover, a.link:hover { text-decoration-color: var(--link); }
 .foot-save:hover { text-decoration: underline; }
 .foot-save:disabled { color: var(--faint); cursor: default; text-decoration: none; }
 .foot-save[hidden] { display: none; }
+
+select.field-pick { height: 24px; max-width: 100%; font: inherit; font-size: 12px; padding: 0 6px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }

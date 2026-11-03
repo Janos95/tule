@@ -227,6 +227,7 @@ def ssh_options(p: str) -> list[str]:
         "-o", "StrictHostKeyChecking=yes",
         "-o", "IdentitiesOnly=yes",
         "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=6",  # a machine busy with a build may answer late: 3 minutes before giving up
         "-o", "LogLevel=ERROR",
         "-i", KEY,
     ]
@@ -261,8 +262,15 @@ def cmd_ssh(args):
     if args.command and not (sys.stdin.isatty() and sys.stdout.isatty()):  # no terminal: bytes pass unchanged
         argv.append("-T")
     argv += [f"root@{HOST_PREFIX}{p}.{slot}", *args.command]
-    if os.name == "nt":
-        sys.exit(subprocess.call(argv))
+    if os.name == "nt" or args.command:
+        import signal
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl-C goes to ssh, which ends the command
+        rc = subprocess.call(argv)
+        if rc == 255 and args.command:  # ssh's own failure, which it does not explain at LogLevel=ERROR
+            print(f"tule: the connection to {p} dropped (ssh exit 255); what the command started may still run there: "
+                  f"a tule build goes on (tule build --check shows it, outputs/.build/build.log its log)", file=sys.stderr)
+        sys.exit(rc)
     os.execvp("ssh", argv)
 
 
