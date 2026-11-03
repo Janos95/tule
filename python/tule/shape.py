@@ -623,6 +623,25 @@ class Shape:
 
         return bend_table(self)
 
+    def dfm(self, min_flange: float | None = None, hole_to_bend: float | None = None,
+            hole_to_edge: float | None = None):
+        """Check a sheet part (or its flat) against the rules of a laser-and-brake shop; returns a
+        ``SheetCheck`` (``ok``, ``issues``; ``print`` it). Measured in the flat pattern, in mm:
+
+        * ``min_flange``: from each bend line to the outline across it, on both sides, met by at
+          least half the bend's length. Default ``2t + BA/2``: an outside flange length of
+          ``OSSB + 2t`` (4t at R = t), the least a press brake's die can hold.
+        * ``hole_to_bend``: from each hole, slot or cutout, and each notch in the outline, to a bend
+          line within the bend's extent. Default ``2t + R``: closer, the cut distorts in the bend.
+        * ``hole_to_edge``: from each hole to the outline and to the next hole. Default ``t``
+          (laser portals want bridges of 1–1.5 t).
+
+        Give your shop's values for the material and thickness to override. Violations are results,
+        not errors."""
+        from .sheetmetal import dfm
+
+        return dfm(self, min_flange, hole_to_bend, hole_to_edge)
+
     # ------------------------------------------------------------ measurements
     @property
     def volume(self) -> float:

@@ -9,17 +9,20 @@ t = 1.5
 tray = rect(120, 80).sheet(t, bend_radius=1.5, k=0.44)  # outside footprint; t, R, K stay on the part
 tray = tray.flange(tray.faces["side"], 30)              # four walls 30 mm tall outside, corner reliefs
 tray -= cylinder(2.5, 10).at(10, 10, -1)                # cuts are Booleans, before or after flanging
-tray -= cylinder(12, 10).rotate(x=90).at(60, 5, 16)     # a fan hole in the front wall
+tray -= cylinder(10, 10).rotate(x=90).at(60, 5, 17)     # a fan hole in the front wall
 for i in range(6):
     tray -= slot(40, 3).extrude(10).at(60, 25 + 6 * i, -1)
 flat = tray.unfold()                                    # the blank: a plate t thick in the xy plane
 print(flat.size, [b.label for b in flat.bends])         # UP 90° R1.5 ...
 print(tray.bend_table()[0])                             # bend, direction, angle, radius, k, allowance, ...
+print(tray.dfm())                                       # cuts too near a bend or edge, short flanges
 outputs.drawing("tray", {"tray": tray.named("tray", "#9ab"), "tray-flat": flat},  # one output: both,
                 dxf="top", info={"material": "DC01", "number": "TR-1"})         # in 3D and on sheets
 ```
 
 `outputs.drawing` writes the models (STEP) beside the drawing. A flat's sheet has its top view with dash-dot bend lines labeled `B1 UP 90° R1.5`, the overall blank size, hole and slot callouts and a bend table, plus `tray-flat-bends.csv`; `dxf=` writes `tray-flat.dxf`, the file to upload to a laser portal (SendCutSend and the like): mm (`$INSUNITS` 4), outline and holes as closed outlines on layer CUT, nothing else, as a portal cuts every line; the bend data is in the drawing and the CSV. `flat.export_dxf(path, bends=True)` adds bend lines on BEND_UP / BEND_DOWN for a shop that asks (`notes=True` their labels). Drawn alone, the formed part gets the bend table and the DXF itself. A part without bends (a lid, a gusset) unfolds to itself with no bends, through the same path.
+
+`part.dfm(min_flange=, hole_to_bend=, hole_to_edge=)` checks the flat in mm, from the bend lines: flange ≥ 2t + BA/2 (an outside OSSB + 2t, the brake's minimum) on at least half the bend; holes, cutouts and notches ≥ 2t + R from a bend line (else they distort); holes ≥ t from the edge and each other. Give your shop's table values instead of the defaults; `r.ok`, `r.issues`. `outputs.drawing` of a sheet part prints what breaks the defaults.
 
 ## Conventions
 
