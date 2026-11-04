@@ -37,9 +37,20 @@ npx wrangler deploy                   # Worker, Durable Objects, the machine ima
 ```
 
 Secrets (`npx wrangler secret put …`): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-`ENCRYPTION_KEY` (32 random bytes, base64), `DEV_TOKEN` (an admin token for tests).
+`ENCRYPTION_KEY` (32 random bytes, base64), `DEV_TOKEN` (a token for tests).
 
 Local: `npx wrangler dev` in `control/` with a `.dev.vars` holding those plus
 `PUBLIC_URL=http://127.0.0.1:8787` and `MACHINE_URL=http://host.docker.internal:8787`
 (the container reaches the dev server through Docker's host name);
 `tule login --url http://127.0.0.1:8787 --token <DEV_TOKEN>`.
+`npm --prefix control run dev` also rebuilds the viewer on every change and reloads open pages.
+
+A real project, to try changes on (nothing is deployed):
+
+```sh
+tule admin pull pomodore          # signed in to production: your project's newest autosave, into the dev server
+tools/dev-machine.sh pomodore     # a Docker machine running this checkout's python/, cli/ and runtime/
+open http://127.0.0.1:8787/auth/dev?next=/p/pomodore
+```
+
+Someone else's project: `tule admin copy OWNER PROJECT` first, then pull the copy.

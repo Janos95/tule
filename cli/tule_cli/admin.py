@@ -2,6 +2,7 @@
 
   tule admin ls                          every account's projects
   tule admin copy OWNER PROJECT          copy a project's newest autosave into your account, to debug it there
+  tule admin pull PROJECT                a project of yours (or a copy) into a local dev server, to try changes on it
   tule admin browser CODE                (support) sign in the browser showing CODE at /auth/agent, for 12 hours
   tule admin support-key                 (admin) a new key for the support account; old keys stop working
   tule admin log                         (admin) what admins and support did
@@ -47,6 +48,56 @@ def cmd_copy(args):
     print(r["copy"])
 
 
+def cmd_pull(args):
+    """A project of yours (or your tule admin copy of someone's), its newest autosave, into a local dev server."""
+    import json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+    from . import CliError, api, load, need
+
+    prod, token = need(load())
+    local = args.to.rstrip("/")
+    if local == prod:
+        raise SystemExit(f"tule: --to is the server you are signed in to ({prod}); pull into a local dev server")
+    name = urllib.parse.quote(args.project)
+
+    def call(method, url, data=None, headers=None):
+        req = urllib.request.Request(url, data=data, method=method, headers={"User-Agent": "tule-cli/0.1", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            raise CliError(f"{method} {url}: {e.read().decode(errors='replace')[:300]}") from None
+        except urllib.error.URLError as e:
+            raise CliError(f"cannot reach {url}: {e.reason} (is the dev server running? npm --prefix control run dev)") from None
+
+    snaps = api("GET", f"/api/projects/{name}/snapshots?limit=1").get("snapshots") or []
+    if not snaps:
+        raise CliError(f"{args.project} has no autosave yet")
+    sid = snaps[0]["id"]
+    manifest = api("GET", f"/api/projects/{name}/snapshots/{sid}")
+    files = list(manifest.get("files", {}).values())
+    hashes = sorted({h for f in files for h in f.get("h", [])})
+    made = json.loads(call("POST", f"{local}/__dev/import", json.dumps({"name": args.as_name or args.project, "manifest": manifest}).encode(),
+                           {"Content-Type": "application/json"}))
+
+    def piece(h):
+        data = call("GET", f"{prod}/api/projects/{name}/blobs/{h}", headers={"Authorization": f"Bearer {token}"})
+        call("PUT", f"{local}/__dev/import/{made['id']}/{h}", data)
+
+    with ThreadPoolExecutor(8) as pool:
+        for n, _ in enumerate(pool.map(piece, hashes), 1):
+            print(f"\rtule: pulling {args.project}: {n}/{len(hashes)} pieces", end="", file=sys.stderr, flush=True)
+    size = sum(int(f.get("s", 0)) for f in files)
+    call("POST", f"{local}/__dev/import/{made['id']}/done", json.dumps({"snapshot": sid, "at": snaps[0].get("at"), "files": len(files), "bytes": size}).encode(),
+         {"Content-Type": "application/json"})
+    print(f"\r\033[Ktule: pulled {args.project} ({len(files)} files, {size / 1e6:.1f} MB) into {made['name']} at {local}", file=sys.stderr)
+    print(f"tule: open {made['viewer']} (as the dev user: {local}/auth/dev)", file=sys.stderr)
+    print(made["name"])
+
+
 def cmd_browser(args):
     from . import api, load
 
@@ -80,6 +131,11 @@ def add_commands(sub):
     sp.add_argument("--machine", help="copy this machine's autosave instead of the newest")
     sp.add_argument("--as", dest="as_name", metavar="NAME", help="the copy's name (default <owner>-<project>)")
     sp.set_defaults(fn=cmd_copy)
+    sp = s.add_parser("pull", help="a project of yours (or your copy of someone's) into a local dev server, to try changes on it")
+    sp.add_argument("project")
+    sp.add_argument("--as", dest="as_name", metavar="NAME", help="the local project's name (default the same)")
+    sp.add_argument("--to", default="http://127.0.0.1:8787", help="the dev server (default http://127.0.0.1:8787)")
+    sp.set_defaults(fn=cmd_pull)
     sp = s.add_parser("browser", help="(support) sign in a browser: open /auth/agent there, then pass the code it shows")
     sp.add_argument("code")
     sp.set_defaults(fn=cmd_browser)
