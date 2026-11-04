@@ -1076,7 +1076,7 @@ async function initShare() {
   shareReady = true;
   try {
     const me = await (await auth.api("/api/me")).json();
-    if (me.user?.guest) return;
+    if (me.user?.guest || me.user?.id === "u_support") return; // the support account's projects are users' work
     renderShare(await (await auth.api(`/api/projects/${project}/share`)).json());
     $("share").hidden = false;
   } catch {

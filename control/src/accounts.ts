@@ -24,6 +24,7 @@ const SESSION_DAYS = 30;
 export const SUPPORT_ID = "u_support";
 const SUPPORT_KEY_DAYS = 90;
 export const SUPPORT_COPY_DAYS = 14;
+const SUPPORT_SESSION_DAYS = 0.5;
 const DEVICE_MINUTES = 10;
 const HOST_KEY_MINUTES = 60;
 const LOGIN_MINUTES = 10;
@@ -76,6 +77,7 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS host_keys (hash TEXT PRIMARY KEY, user_id TEXT, expires INTEGER);
       CREATE TABLE IF NOT EXISTS shares (token TEXT PRIMARY KEY, project_id TEXT UNIQUE, created INTEGER);
       CREATE TABLE IF NOT EXISTS admin_log (at INTEGER, actor TEXT, action TEXT, owner TEXT, project TEXT, detail TEXT);
+      CREATE TABLE IF NOT EXISTS pairings (hash TEXT PRIMARY KEY, code TEXT UNIQUE, next TEXT, expires INTEGER, user_id TEXT);
       CREATE TABLE IF NOT EXISTS admin_copies (project_id TEXT PRIMARY KEY, user_id TEXT, name TEXT, source_id TEXT, snapshot TEXT, created INTEGER, expires INTEGER);
     `);
     // columns added after the first deploy
@@ -354,10 +356,37 @@ export class Accounts extends DurableObject<Env> {
     return r && r.expires > Date.now() ? { verifier: r.verifier, next: r.next } : null;
   }
 
-  async createSession(userId: string): Promise<string> {
+  async createSession(userId: string, days = SESSION_DAYS): Promise<string> {
     const token = `ts_${rand(32)}`;
-    this.sql.exec("INSERT INTO sessions VALUES (?, ?, ?, ?)", await sha256hex(token), userId, Date.now(), Date.now() + SESSION_DAYS * 86_400_000);
+    this.sql.exec("INSERT INTO sessions VALUES (?, ?, ?, ?)", await sha256hex(token), userId, Date.now(), Date.now() + days * 86_400_000);
     return token;
+  }
+
+  // ------------------------------------------------------------ browser pairing (an agent's browser, by its CLI)
+
+  /** A code for /auth/agent to show; `secret` stays in that browser's cookie, so only it can take the session. */
+  async pairStart(secret: string, next: string): Promise<{ code: string; expires: number }> {
+    this.sql.exec("DELETE FROM pairings WHERE expires < ?", Date.now());
+    const code = userCode();
+    const expires = Date.now() + DEVICE_MINUTES * 60_000;
+    this.sql.exec("INSERT INTO pairings VALUES (?, ?, ?, ?, NULL)", await sha256hex(secret), code, next, expires);
+    return { code, expires };
+  }
+
+  /** The CLI approves the code it read in its browser: that browser is signed in as `userId`. */
+  pairApprove(code: string, userId: string): boolean {
+    return this.sql.exec("UPDATE pairings SET user_id = ? WHERE code = ? AND user_id IS NULL AND expires > ?", userId, code, Date.now()).rowsWritten > 0;
+  }
+
+  /** The browser's poll: once approved, a session (short for the support account) and where to go; the pairing is used up. */
+  async pairTake(secret: string): Promise<{ state: "waiting" | "gone" } | { state: "ok"; session: string; days: number; next: string }> {
+    const hash = await sha256hex(secret);
+    const r = this.one<{ next: string; expires: number; user_id: string | null }>("SELECT next, expires, user_id FROM pairings WHERE hash = ?", hash);
+    if (!r || r.expires < Date.now()) return { state: "gone" };
+    if (!r.user_id) return { state: "waiting" };
+    this.sql.exec("DELETE FROM pairings WHERE hash = ?", hash);
+    const days = r.user_id === SUPPORT_ID ? SUPPORT_SESSION_DAYS : SESSION_DAYS;
+    return { state: "ok", session: await this.createSession(r.user_id, days), days, next: r.next };
   }
 
   async sessionUser(token: string): Promise<User | null> {
@@ -372,6 +401,7 @@ export class Accounts extends DurableObject<Env> {
   // ------------------------------------------------------------ API keys
 
   async createApiKey(userId: string, name: string, expires?: number): Promise<{ id: string; key: string }> {
+    if (userId === SUPPORT_ID && !expires) throw new Error("the support account's only key is the expiring one (supportKey)");
     const key = `tule_${rand(32)}`;
     const id = `k_${rand(9)}`;
     this.sql.exec(

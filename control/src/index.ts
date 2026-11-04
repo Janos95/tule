@@ -31,8 +31,8 @@
 //
 // MCP: /mcp, behind the OAuth provider (tokens from /authorize, or an API key).
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
-import { Accounts, SUPPORT_COPY_DAYS, type ProjectRef, type User } from "./accounts";
-import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
+import { Accounts, SUPPORT_COPY_DAYS, SUPPORT_ID, type ProjectRef, type User } from "./accounts";
+import { accounts, authorize, authRoutes, bearer, deviceApi, devicePage, role, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
@@ -466,7 +466,10 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
     }
     if (kind === "api") {
       if (req.method === "GET") return json({ keys: await a.apiKeys(user.id) });
-      if (req.method === "POST") return json(await a.createApiKey(user.id, String((await body(req)).name ?? "API key")));
+      if (req.method === "POST")
+        return user.id === SUPPORT_ID
+          ? error("the support account has one key, made by an admin (tule admin support-key)", 403)
+          : json(await a.createApiKey(user.id, String((await body(req)).name ?? "API key")));
       if (req.method === "DELETE" && id) return (await a.revokeApiKey(user.id, id)) ? json({ revoked: id }) : error(`no API key ${id}`, 404);
     }
     return error("use /api/keys/ssh or /api/keys/api", 404);
@@ -490,6 +493,7 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
     const link = (s: { token: string; created: number } | null) => ({ shared: !!s, ...(s ? { url: `${origin}/s/${s.token}`, created: s.created } : {}) });
     if (req.method === "GET") return json(link(await a.share(ref.id)));
     if (user.guest) return error("guests cannot share projects", 403, "sign in to share");
+    if (user.id === SUPPORT_ID) return error("the support account cannot share: its projects are copies of users' work", 403);
     const old = await a.share(ref.id);
     const drop = async () => old && (await env.WORKSPACES.delete(shareKey(ref.id, old.token)));
     if (req.method === "DELETE") return (await drop(), await a.unshare(ref.id), json(link(null)));
@@ -550,6 +554,9 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
     const form = await req.formData();
     const f = (k: string) => String(form.get(k) ?? "").trim();
     const action = url.pathname.slice("/settings/".length);
+    // the support account keeps one expiring key (tule admin support-key): no other keys, computers or RunPod
+    if (user.id === SUPPORT_ID && ["runpod", "keys/new", "hosts/new"].includes(action))
+      return page("Not for the support account", "<p>The support account has one key, made by an admin (tule admin support-key).</p>", 403, user);
     if (action === "runpod") {
       const key = f("key");
       const check = await runpodBalance(key);
@@ -668,12 +675,21 @@ async function route(req: Request, env: Env): Promise<Response> {
   // Admin only: GET /api/admin/users; POST /api/admin/users/delete {"email"} deletes an account with its projects,
   // snapshots, computers, keys and connector sign-ins; POST /api/admin/support-key; GET /api/admin/log.
   if (path.startsWith("/api/admin/")) {
+    // keys only (the CLI): a browser session, even an admin's, cannot be led into these by another site
+    if (!bearer(req)) return error("use the tule CLI (tule admin …)", 401);
     const actor = await who(req, env);
     const r = role(actor, env);
     if (!actor || !r) return error("admins and the support account only", 403);
     const a = accounts(env);
     if (path === "/api/admin/projects" && req.method === "GET") return reply({ projects: await a.allProjects() });
     if (path === "/api/admin/copy" && req.method === "POST") return adminCopy(env, actor, r, await body(req), origin);
+    if (path === "/api/admin/browser" && req.method === "POST") {
+      if (r !== "support") return error("only the support account signs browsers in this way", 403, "admins sign in with Google");
+      const code = String((await body(req)).code ?? "").trim().toUpperCase();
+      if (!(await a.pairApprove(code, actor.id))) return error(`the code ${JSON.stringify(code)} is wrong, used or expired`, 404, "reload /auth/agent for a new one");
+      await a.logAdmin(actor.email, "browser-sign-in", "", "", code);
+      return reply({ approved: code, signedIn: actor.email });
+    }
     if (r !== "admin") return error("admins only", 403);
     if (path === "/api/admin/users" && req.method === "GET") return reply({ users: await a.allUsers() });
     if (path === "/api/admin/log" && req.method === "GET") return reply({ log: await a.adminLog(Number(url.searchParams.get("limit")) || 100) });

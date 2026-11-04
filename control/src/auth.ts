@@ -13,6 +13,8 @@ import { esc, html, layout, page } from "./pages";
 
 export const SESSION_COOKIE = "tule_session";
 const LOGIN_COOKIE = "tule_login";
+const PAIR_COOKIE = "tule_pair";
+const rand32 = () => [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("");
 
 export const accounts = (env: Env) => stub<Accounts>(env.ACCOUNTS, "global");
 
@@ -123,6 +125,38 @@ export async function authRoutes(req: Request, env: Env, url: URL): Promise<Resp
     h.append("Set-Cookie", setCookie(req, LOGIN_COOKIE, "", 0));
     return new Response(null, { status: 302, headers: h });
   }
+  // an agent's browser (the support account's): this page shows a code, the agent approves it with its key
+  // (tule admin browser CODE), and the page, polling, gets the session. No secret is ever in a URL.
+  if (url.pathname === "/auth/agent" && req.method === "GET") {
+    const secret = rand32();
+    const next = safeNext(url.searchParams.get("next"));
+    const p = await accounts(env).pairStart(secret, next);
+    const body = html`<p>Run this where the agent's <code>tule</code> is signed in:</p>
+      <pre class="pair">tule admin browser ${p.code}</pre>
+      <p class="muted" id="pair-state">Waiting for approval. The code works for 10 minutes, in this browser only.</p>
+      <script>
+        (function poll() {
+          fetch("/auth/agent/poll", { method: "POST" }).then((r) => r.json()).then((r) => {
+            if (r.state === "ok") location.replace(r.next);
+            else if (r.state === "gone") document.getElementById("pair-state").textContent = "This code expired. Reload for a new one.";
+            else setTimeout(poll, 2000);
+          }, () => setTimeout(poll, 4000));
+        })();
+      </script>`;
+    const res = page("Sign in an agent's browser", body);
+    res.headers.append("Set-Cookie", setCookie(req, PAIR_COOKIE, secret, 600));
+    return res;
+  }
+  if (url.pathname === "/auth/agent/poll" && req.method === "POST") {
+    const secret = cookie(req, PAIR_COOKIE);
+    const r = secret ? await accounts(env).pairTake(secret) : ({ state: "gone" } as const);
+    const res = new Response(JSON.stringify(r.state === "ok" ? { state: "ok", next: r.next } : r), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+    if (r.state === "ok") {
+      res.headers.append("Set-Cookie", setCookie(req, SESSION_COOKIE, r.session, Math.round(r.days * 86400)));
+      res.headers.append("Set-Cookie", setCookie(req, PAIR_COOKIE, "", 0));
+    }
+    return res;
+  }
   if (url.pathname === "/auth/logout" && req.method === "POST") {
     const s = cookie(req, SESSION_COOKIE);
     if (s) await accounts(env).endSession(s);
@@ -186,6 +220,7 @@ export async function devicePage(req: Request, env: Env, url: URL, user: User): 
     const code = String(form.get("code") ?? "").trim().toUpperCase();
     const pending = await a.deviceInfo(code);
     if (pending?.host && user.guest) return page("Sign in first", `<p>Guests cannot add computers. <a href="/auth/login">Sign in</a>, then run <code>tule host up</code> again.</p>`, 403, user);
+    if (user.id === SUPPORT_ID) return page("Not for the support account", "<p>The support account has one key, made by an admin (tule admin support-key).</p>", 403, user);
     const ok = await a.deviceApprove(code, user.id);
     if (!ok) return page("Code not found", `<p>The code <code>${esc(code)}</code> is wrong or expired. Run the command again.</p>`, 400, user);
     return pending?.host
@@ -222,6 +257,7 @@ export async function devicePage(req: Request, env: Env, url: URL, user: User): 
 
 export async function authorize(req: Request, env: Env, url: URL, user: User | null): Promise<Response> {
   const oauth = env.OAUTH_PROVIDER;
+  if (user?.id === SUPPORT_ID) return page("Not for the support account", "<p>The support account cannot connect apps.</p>", 403, user);
   if (req.method === "GET") {
     if (!user) return new Response(null, { status: 302, headers: { Location: loginUrl(url.pathname + url.search) } });
     let request;

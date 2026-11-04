@@ -740,7 +740,12 @@ request `id`.
   touched, and support's copies are deleted after 14 days. Only admins list
   and delete accounts (`/api/admin/users`, `/api/admin/users/delete`), issue
   the support key and read the log. Every admin action is logged
-  (`tule admin log`); owners are not shown it.
+  (`tule admin log`); owners are not shown it. The agent's browser signs in
+  at `/auth/agent`: the page shows a code, `tule admin browser CODE` approves
+  it with the support key, and the page (holding a matching cookie) gets a
+  12-hour session; no secret is ever in a URL. Admin routes take keys only
+  (no browser sessions). The support account cannot share projects, make
+  other keys, approve `tule login`, connect apps, or add computers or RunPod.
 - **MCP:** `@cloudflare/workers-oauth-provider` wraps the Worker: `/mcp` takes
   its OAuth tokens (dynamic client registration, `/authorize` signs the user
   in with the site's session and asks for consent) or a Tule API key.
