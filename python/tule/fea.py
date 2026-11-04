@@ -871,8 +871,7 @@ class Result:
             {"label": "displacement", "unit": "mm", "values": disp, "origin": self.origin,
              "step": dstep, "min": 0.0, "max": float(self.max_displacement), "deform": float(deform)},
         ]
-        info = _static_info(self, f"{self.elements:,} voxels of {self.voxel:.3g} mm, {self.dofs:,} DOFs")
-        return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
+        return outputs.overlay(name, self.part, faces, arrows=arrows, fields=fields,
                                title=title or f"Static analysis: {self.part.name or name}, {self.material.name}",
                                fact=_safety(self))
 
@@ -939,28 +938,6 @@ def _balance_line(r) -> str:
         return (f"  loads {_vec(r.applied)} N, fea.move {_vec(Vec(*moved))} N, reactions {_vec(r.reaction)} N: "
                 f"balanced to {100 * r.imbalance:.2g} %")
     return f"  loads {_vec(r.applied)} N, reactions {_vec(r.reaction)} N: balanced to {100 * r.imbalance:.2g} %"
-
-
-def _static_info(r, mesh: str) -> dict:
-    """The facts under a static analysis in the viewer."""
-    warn = {f"warning {i + 1}" if len(r.warnings) > 1 else "warning": w for i, w in enumerate(r.warnings)}
-    return {
-        **warn,
-        "material": str(r.material.name),
-        "mass": f"{r.mass:.3g} g",
-        # the percentile first: it is the number to judge by (a peak at a sharp corner grows with refinement)
-        "stress, 99.5th pct": f"{r.stress_p995:.3g} MPa",
-        "safety factor": (f"{r.material.yield_strength / r.stress_p995:.3g} on the 99.5th pct"
-                          if r.stress_p995 > 0 else "∞") + f" (yield {r.material.yield_strength:g} MPa)",
-        "peak stress": f"{r.max_stress:.3g} MPa at {_pt(r.max_stress_at)}: safety factor {r.safety_factor:.3g}; "
-                       "at a sharp corner, add a fillet there or refine before trusting it",
-        "max displacement": f"{r.max_displacement:.3g} mm at {_pt(r.max_displacement_at)}",
-        "loads, total": f"{_vec(r.applied)} N" + (f" with self-weight at {r.accel.length / g:.3g} g"
-                                                  if r.accel is not None and r.accel.length else ""),
-        "reactions": "none: a free part under balanced loads (balanced=True)" if r.balanced else
-                     f"{_vec(r.reaction)} N (balance {100 * r.imbalance:.2g} %)",
-        "mesh": mesh,
-    }
 
 
 def _safety(r) -> str:
@@ -2345,15 +2322,7 @@ class TetResult:
             _surface_field(self.mesh, self.displacement, label="displacement", unit="mm", min=0.0,
                            max=float(self.max_displacement), deform=float(deform)),
         ]
-        m = self.mesh
-        info = _static_info(self, f"{self.elements:,} quadratic tetrahedra, {m.smallest:.2g} to {m.size:.2g} mm, "
-                                  f"{self.dofs:,} DOFs")
-        for (sel, _, d), fm in zip(self.moves, self.move_forces):
-            info[f"move faces {', '.join(map(str, sel.ids))}"] = f"{_vec(d)} mm takes {_vec(fm)} N"
-        if self.nonlinear:
-            info["nonlinear"] = (f"{len(self.steps)} load steps; linear theory: max displacement "
-                                 f"{self.linear_max_displacement:.3g} mm")
-        return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
+        return outputs.overlay(name, self.part, faces, arrows=arrows, fields=fields,
                                title=title or f"Static analysis: {self.part.name or name}, {self.material.name}",
                                fact=_safety(self))
 
@@ -2447,11 +2416,7 @@ class Modes:
         faces, _ = _conditions(self.supports, ())
         labels = [f"mode {i + 1}: {f:.4g} Hz" for i, f in enumerate(self.frequencies)]
         fields = _shape_fields(self.mesh, self.shapes, labels, float(np.array(self.part.size).max()), deform)
-        info = {"material": str(self.material.name), "mass": f"{self.mass:.3g} g"}
-        for i, f in enumerate(self.frequencies):
-            info[f"mode {i + 1}"] = f"{f:.4g} Hz, {_moves(self.effective_mass[i])}"
-        info["mesh"] = f"{self.elements:,} quadratic tetrahedra, {self.dofs:,} DOFs"
-        return outputs.overlay(name, self.part, faces, info=info, fields=fields,
+        return outputs.overlay(name, self.part, faces, fields=fields,
                                title=title or f"Vibration modes: {self.part.name or name}, {self.material.name}",
                                fact=f"{self.frequencies[0]:.3g} Hz" if len(self.frequencies) else None)
 
@@ -2568,12 +2533,7 @@ class Buckling:
         faces, arrows = _conditions(self.supports, self.loads)
         labels = [f"mode {i + 1}: load × {f:.3g}" for i, f in enumerate(self.factors)]
         fields = _shape_fields(self.static.mesh, self.shapes, labels, float(np.array(self.part.size).max()), deform)
-        info = {"material": str(self.material.name)}
-        for i, f in enumerate(self.factors):
-            info[f"mode {i + 1}"] = f"buckles at {f:.4g} × the loads"
-        info["static, 99.5th pct"] = f"{self.static.stress_p995:.3g} MPa (yield {self.material.yield_strength:g} MPa)"
-        info["mesh"] = f"{self.static.elements:,} quadratic tetrahedra, {self.static.dofs:,} DOFs"
-        return outputs.overlay(name, self.part, faces, arrows=arrows, info=info, fields=fields,
+        return outputs.overlay(name, self.part, faces, arrows=arrows, fields=fields,
                                title=title or f"Buckling: {self.part.name or name}, {self.material.name}",
                                fact=f"buckles ×{self.factors[0]:.2g}" if len(self.factors) else None)
 

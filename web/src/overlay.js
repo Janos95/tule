@@ -275,24 +275,9 @@ export function initOverlay({ viewer, legend, marks }) {
 
   function render(meta, isOverlay) {
     legend.textContent = "";
-    const info = meta.info && typeof meta.info === "object" && !Array.isArray(meta.info) ? Object.entries(meta.info) : [];
     const findings = isOverlay && (rows.length || arrows.length || values.length || fields.length);
-    if (!info.length && !findings) return (legend.hidden = true);
+    if (!findings) return (legend.hidden = true);
     legend.append(el("div", "legend-head", meta.title || ""));
-    if (info.length) {
-      const grid = el("dl", "legend-info");
-      // a nested value: one row per entry ("motion · status"), lists of plain values joined
-      const flat = (k, v, depth) =>
-        v !== null && typeof v === "object" && !(Array.isArray(v) && v.every((x) => x === null || typeof x !== "object")) && depth < 2
-          ? Object.entries(v).flatMap(([k2, v2]) => flat(`${k} · ${k2}`, v2, depth + 1))
-          : [[k, Array.isArray(v) ? v.map(fmt).join(", ") || "none" : v !== null && typeof v === "object" ? JSON.stringify(v) : fmt(v)]];
-      for (const [k, v] of info.flatMap(([k, v]) => flat(k, v, 0))) {
-        const item = el("div", "legend-fact");
-        item.append(el("dt", "", k), el("dd", "", v));
-        grid.append(item);
-      }
-      legend.append(grid);
-    }
     const f = isOverlay ? fields[active] : null;
     const s = f ? { label: String(f.label ?? "field"), unit: f.unit ? String(f.unit) : "", min: f.min ?? 0, max: f.max ?? 1 } : isOverlay && scale;
     if (s) {

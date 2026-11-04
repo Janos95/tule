@@ -493,6 +493,7 @@ function fact(o) {
   const kind = kindOf(o);
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   if (kind === "sequence") return o.meta?.status === "running" ? ["running", "live"] : [plural(frames(o).length, "frame"), ""];
+  if (kind === "assembly" && o.meta?.fact) return [String(o.meta.fact), ""]; // a print plate: "2 h 10 min · 31 g"
   if (kind === "assembly") return [plural(Array.isArray(o.meta?.parts) ? o.meta.parts.length : o.files.length, "part"), ""];
   if (kind === "overlay") {
     const faces = Object.values(o.meta?.faces ?? {});
@@ -938,9 +939,8 @@ async function show() {
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
     // a part's or assembly's folder may hold more than the model (an STL to print, a 3MF): offer them all, the shown ones first
     offerDownload(kind === "sequence" ? [...shownFiles, ...extras(o)] : [...shownFiles, ...o.files.filter((f) => !shownFiles.includes(f) && f.file !== "output.json"), ...extras(o)]);
-    const tris = all.reduce((n, m) => n + m.indices.length / 3, 0);
     const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";
-    $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"} · ${tris.toLocaleString()} triangles${grid}`;
+    $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"}${grid}`;
     setStatus(failed.length ? `Could not show ${failed.length} of ${shownFiles.length} files: ${failed[0]}` : "");
   } catch (e) {
     if (state.shown === key) {

@@ -248,13 +248,11 @@ Optional: without it one file is a part, numbered files a sequence, several file
  "faces": {"12": {"role": "load", "label": "500 N"}, "3": {"severity": "warning", "label": "wall 0.6 mm"},
            "7": {"value": 1.8}},
  "scale": {"label": "wall thickness", "unit": "mm", "min": 0, "max": 3},
- "arrows": [{"at": [0, 0, 18], "dir": [0, 0, -1], "label": "500 N"}],
- "info": {"material": "aluminium 6061", "mass": "20.8 g"}}
+ "arrows": [{"at": [0, 0, 18], "dir": [0, 0, -1], "label": "500 N"}]}
 ```
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid`, …) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend; stress: `tule docs fea`.
-- **Info** (any kind): flat facts, rounded (`"20.8 g"`).
 - **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", …}}` (`estimate="bambu-p1s"`, the user's printer: `tule docs outputs.plate`). Overflow: more plates; a part's `{"down": "base"}` lays that tagged face down.
 - **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 

@@ -17,7 +17,7 @@ outputs.overlay("bracket-loads", part,                # colored faces and arrows
                 arrows=[{"at": (0, 0, 18), "dir": (0, 0, -1), "label": "500 N"}])
 outputs.overlay("bracket-walls", part,                # numbers on faces, colored on a scale
                 faces={12: 1.8, 13: 0.9}, scale={"label": "wall thickness", "unit": "mm", "min": 0, "max": 3})
-outputs.part("bracket", part, info={"material": "aluminium 6061", "mass": "20.8 g"})  # facts, any kind
+outputs.part("bracket", part)
 outputs.drawing("bracket-drawing", part, info={"material": "6061"}, dxf="top")  # PDF + SVG (+ DXF)
 outputs.plate("print", [base, lid], settings={"layer_height": 0.2, "walls": 3})  # print.3mf + the plate in 3D
 ```
@@ -87,10 +87,6 @@ Fields may share one mesh. Lines are drawn where the face id changes (the
 part's edges). ``"animate": true`` (with ``deform``) swings the shape back and
 forth through the vectors: a vibration or buckling mode. The viewer's slider
 scales ``deform``.
-
-**Info** (any kind): ``"info": {"material": "aluminium 6061", "mass": "20.8 g"}``
-are facts about the output, shown as rows under the view. Values are text,
-numbers or booleans.
 """
 
 from __future__ import annotations
@@ -238,17 +234,14 @@ def _mesh_arrays(mesh) -> tuple:
     return mesh[0], mesh[1]
 
 
-def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: str | None = None,
-         info: dict | None = None) -> str:
+def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: str | None = None) -> str:
     """Write one part: ``outputs/<name>/<name>.<fmt>``. Returns the folder.
 
     ``shape`` is a Shape (STEP unless ``fmt`` says otherwise) or a ``Mesh``
-    (always STL), such as a topology optimization result. ``info``: facts
-    shown under the view (``{"mass": "20.8 g"}``).
+    (always STL), such as a topology optimization result.
     """
     if isinstance(shape, Assembly):
         raise TuleError(f"{name}: this is an assembly", op="outputs", hint=f'use outputs.assembly("{name}", …)')
-    info = _info(info)
     folder = _folder(name)
     if isinstance(shape, Mesh):
         fname = f"{_slug(name.rsplit('/', 1)[-1])}.stl"
@@ -257,8 +250,6 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
         meta: dict[str, Any] = {"kind": "part", "file": fname}
         if title:
             meta["title"] = title
-        if info:
-            meta["info"] = info
         _write_json(folder, meta)
         return folder
     fmt = fmt or "step"
@@ -271,16 +262,12 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
         meta["name"] = shape.name
     if shape.color:
         meta["color"] = shape.color
-    if info:
-        meta["info"] = info
     _write_json(folder, meta)
     return folder
 
 
-def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", title: str | None = None,
-             info: dict | None = None) -> str:
+def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", title: str | None = None) -> str:
     """Write an assembly: one file per part plus ``output.json`` listing names and colors."""
-    info = _info(info)
     asm = item if isinstance(item, Assembly) else Assembly(*item, name=name)
     for path, shp in asm.parts():
         if not shp.faces:
@@ -305,15 +292,12 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
     meta: dict[str, Any] = {"kind": "assembly", "parts": parts}
     if title or asm.name:
         meta["title"] = title or asm.name
-    if info:
-        meta["info"] = info
     _write_json(folder, meta)
     return folder
 
 
 def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
-          settings: dict | None = None, title: str | None = None, info: dict | None = None,
-          estimate: bool | str = False) -> str:
+          settings: dict | None = None, title: str | None = None, estimate: bool | str = False) -> str:
     """A print plate: ``outputs/<name>/<name>.3mf`` to open in the slicer and print, shown as an
     assembly of the parts where they sit on the bed. Returns the folder. The 3MF carries every
     part (Download also offers each part's file): no separate STLs are needed.
@@ -321,13 +305,13 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     ``parts``: Shapes, ``(name, shape)`` or ``(name, shape, settings)``, or an Assembly, each
     oriented to print (flat face down); ``("pin", pin, {"copies": 4})`` puts four on the plate.
     ``bed``, ``gap``, ``arrange`` and ``settings`` (``layer_height``, ``walls``, ``infill`` %,
-    ``supports``, ``brim`` mm, ``material``: PLA, PETG, …) as for ``export_3mf``; the settings
-    also show under the view. ``bed``: the printer's (256 × 256 × 256 mm without one); parts that don't fit on one
-    go onto more plates (``<name>-2.3mf``, …, shown side by side). ``info``: more facts.
+    ``supports``, ``brim`` mm, ``material``: PLA, PETG, …) as for ``export_3mf``. ``bed``: the
+    printer's (256 × 256 × 256 mm without one); parts that don't fit on one go onto more plates
+    (``<name>-2.3mf``, …, shown side by side).
 
     ``estimate=True`` slices the plate with PrusaSlicer's command line (``prusa-slicer``; raises
-    with the install command when it is missing) and shows the print time and filament (g, m)
-    under the view; ``output.json``'s ``"plate"`` has them and the printer for a BOM or report
+    with the install command when it is missing) and shows the print time and filament (g)
+    in the outputs list; ``output.json``'s ``"plate"`` has them and the printer for a BOM or report
     script. True is a generic i3-class printer; name the user's for its speeds, accelerations
     and bed (from its maker's default profile): ``"bambu-p1s"``, ``"bambu-x1c"``, ``"bambu-a1"``,
     ``"prusa-mk4"``, ``"prusa-core-one"``, ``"ender-3"``, ``"voron-2.4"``. What settings leave
@@ -335,7 +319,6 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     """
     from .io import _duration, _plates, _print_settings, _printer, _prusa_slicer, _slice_estimate, _write_3mf
 
-    info = _info(info)
     base = _print_settings(settings)
     printer = _printer(estimate)
     if printer:
@@ -345,20 +328,11 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
         bed = printer[1].bed if printer else (256, 256, 256)
         whose = printer[1].label if printer and printer[0] != "generic" else None
     plates = _plates(parts, bed, gap, arrange, whose, base)  # more than one when they don't fit on one
-    placed = [x for pl in plates for x in pl]
     folder = _folder(name)
     stem = _slug(name.rsplit("/", 1)[-1])
     paths = [_write_3mf(pl, os.path.join(folder, f"{stem}.3mf" if i == 0 else f"{stem}-{i + 1}.3mf"), base)
              for i, pl in enumerate(plates)]
-    shown: dict[str, Any] = {"bed": " × ".join(f"{float(b):g}" for b in tuple(bed)[:2]) + " mm"}
-    if len(plates) > 1:
-        shown["plates"] = f"{len(plates)}: " + ", ".join(os.path.basename(x) for x in paths)
-    for k, v in base.items():
-        shown[k.replace("_", " ")] = (False if k == "brim" and not v else f"{v:g} mm" if k in ("layer_height", "brim")
-                                      else f"{v:g} %" if k == "infill" else v)
-    own = list(dict.fromkeys(n for n, _, o, *_ in placed if o))
-    if own:
-        shown["own settings"] = ", ".join(own)
+    fact = None  # the outputs list's few words: the print time and filament, once sliced
     total: dict[str, int] = {}
     for pl in plates:
         for n, c in {n: copies for n, _, _, _, copies, _ in pl}.items():
@@ -375,13 +349,10 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
         summary["estimate"] = est
         for d, e in zip(summary.get("plates", []), ests):
             d["estimate"] = e
-        shown["print time"] = _duration(est["print_time_s"]) + (f" on {len(plates)} plates" if len(plates) > 1 else "")
+        fact = _duration(est["print_time_s"]) + (f" on {len(plates)} plates" if len(plates) > 1 else "")
         if "filament_g" in est:
-            g, m = est["filament_g"], est.get("filament_m")
-            shown["filament"] = f"{g:.1f} g" if g < 10 else f"{g:.0f} g"
-            if m is not None:
-                shown["filament"] += f" ({m:.2f} m)" if m < 10 else f" ({m:.1f} m)"
-        shown["estimate"] = f"{printer[1].label}, {printer[1].preset} speeds, PrusaSlicer"
+            g = est["filament_g"]
+            fact += f" · {g:.1f} g" if g < 10 else f" · {g:.0f} g"
     # the view: the plates side by side, each part's file once, its copies placed again ("pin ×4/2")
     W = float(tuple(bed)[0])
     entries, files, used, seen = [], {}, set(), {}
@@ -409,8 +380,9 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
                     lo = shp.bounds[0]
                     entry["transform"] = [1, 0, 0, round(lo.x - first.x, 5), 0, 1, 0, round(lo.y - first.y, 5), 0, 0, 1, 0, 0, 0, 0, 1]
             entries.append(entry)
-    meta: dict[str, Any] = {"kind": "assembly", "parts": entries, "title": title or name,
-                            "info": {**shown, **(info or {})}, "plate": summary}
+    meta: dict[str, Any] = {"kind": "assembly", "parts": entries, "title": title or name, "plate": summary}
+    if fact:
+        meta["fact"] = fact
     _write_json(folder, meta)
     return folder
 
@@ -420,7 +392,7 @@ class Sequence:
 
     Each ``add`` writes one frame file; ``output.json`` (``"status": "running"``) follows
     at most once a second, and ``done()`` (the end of a ``with`` block) writes it finished.
-    ``info``: facts shown under the view, as for a part. ``fps``: frames per second when the
+    ``fps``: frames per second when the
     viewer plays it (4 when left out); a motion sampled every 0.05 s plays in real time at 20.
 
     A motion: make the parts once and move them per frame (``.at``, ``.rotate``); a driven part
@@ -430,14 +402,12 @@ class Sequence:
 
     WARN_TOTAL = 50 << 20  # new geometry per sequence before the warning (and 1/50 of it per frame)
 
-    def __init__(self, name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None,
-                 fps: float | None = None):
+    def __init__(self, name: str, title: str | None = None, fmt: str | None = None, fps: float | None = None):
         if fps is not None and not 0 < float(fps) <= 60:
             raise TuleError(f"fps is frames per second when played, between 0 and 60, got {fps}", op="sequence")
         self.fps = fps
         self.name = name
         self.title = title
-        self.info = info
         self._written = self._added = 0.0
         atexit.register(lambda: self._written < self._added and self._flush())  # frames of the last second
         self.fmt = fmt
@@ -504,8 +474,6 @@ class Sequence:
                if fname is None else "add a list of parts (or an Assembly) per frame, each made once and moved, not one merged shape")
         print(f"tule: sequence {self.name!r}: {self._bytes >> 20} MB after {n} frames, about {later / (n - 1) / 2**20:.1f} MB "
               f"of new geometry per frame; {how}", file=sys.stderr, flush=True)
-        # in the viewer too, where a slow-loading motion shows it: the parts are rebuilt every frame
-        self.info = {**(self.info or {}), "warning": f"{later / (n - 1) / 2**20:.1f} MB of new parts per frame: slow to load"}
 
     def _place(self, name: str, part: Shape) -> dict:
         """A frame's entry for one part: its file (written the first time this solid appears) and placement."""
@@ -545,8 +513,6 @@ class Sequence:
             meta["fps"] = float(self.fps)
         if self.title:
             meta["title"] = self.title
-        if self.info:
-            meta["info"] = self.info
         self._written = time.monotonic()
         return _write_json(self.folder, meta)
 
@@ -569,9 +535,8 @@ def _brep_hash(shape) -> str:
     return hashlib.sha1(f.getvalue()).hexdigest()
 
 
-def sequence(name: str, title: str | None = None, fmt: str | None = None, info: dict | None = None,
-             fps: float | None = None) -> Sequence:
-    return Sequence(name, title, fmt, info, fps)
+def sequence(name: str, title: str | None = None, fmt: str | None = None, fps: float | None = None) -> Sequence:
+    return Sequence(name, title, fmt, fps)
 
 
 sequence.__doc__ = Sequence.__doc__
@@ -714,13 +679,13 @@ def _fields(fields) -> list[tuple[dict, dict]]:
 
 
 def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None = None,
-            scale: dict | None = None, info: dict | None = None, fields=(), fact: str | None = None) -> str:
+            scale: dict | None = None, fields=(), fact: str | None = None) -> str:
     """Write a part with per-face data: ``outputs/<name>/<part>.step`` plus an overlay ``output.json``.
 
     ``faces`` maps a face id or a face selection (``part.faces["load"]``) to a number, a label, or a
     dict (``severity``, ``role``, ``label``, ``value``). ``arrows`` are dicts ``{"at": point, "dir": vector, "label": text}``.
     ``scale`` names the values' color scale: ``{"label", "unit", "min", "max"}``
-    (all optional). ``info``: facts shown under the view. ``fields``: values on the surface, dicts
+    (all optional). ``fields``: values on the surface, dicts
     ``{"label", "values", "unit", "min", "max", "deform", "note", "animate"}`` with either a grid of
     nodes (values (nx, ny, nz) or (nx, ny, nz, 3), ``"origin"``, ``"step"``) or a surface ``"mesh"``:
     ``(vertices (n, 3), triangles (m, 3), B-rep face id per triangle)`` with values (n,) or (n, 3)
@@ -729,7 +694,6 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     """
     if not isinstance(part, Shape):
         raise TuleError(f"an overlay needs a Shape, got {type(part).__name__}", op="overlay")
-    info = _info(info)
     if scale is not None:
         if not isinstance(scale, dict) or set(scale) - {"label", "unit", "min", "max"}:
             raise TuleError("scale is a dict with label, unit, min and max (all optional)", op="overlay",
@@ -761,8 +725,6 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
         meta["scale"] = scale
     if grids:
         meta["fields"] = [e for e, _ in grids]
-    if info:
-        meta["info"] = info
     _write_json(folder, meta)
     return folder
 

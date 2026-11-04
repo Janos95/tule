@@ -135,7 +135,7 @@ def test_show_writes_fields_and_screenshot_draws_them(tmp_path, monkeypatch):
     g = np.load(os.path.join(folder, stress["file"]))
     assert g.dtype == np.float32 and g.ndim == 3 and g.max() == pytest.approx(r.stress.max(), rel=1e-5)
     assert np.load(os.path.join(folder, disp["file"])).shape[3] == 3
-    assert "safety factor" in meta["info"]
+    assert "info" not in meta and meta["fact"].startswith("safety ")
 
     from tule_cli.machine import scene
     from tule_cli.render import render
@@ -288,7 +288,6 @@ def test_warnings(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out.count("fea: warning:") == 1  # printed once, when solved
     assert "WARNING: the peak" in str(r)
     meta = json.load(open(os.path.join(r.show("beam-warn"), "output.json")))
-    assert list(meta["info"])[0] == "warning" and meta["info"]["warning"] == w
     hard = fea.static(b, STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1e5), at=(100, 5, 5), r=1)], voxel=2.5, verbose=False)
     assert any("past yield" in x for x in hard.warnings) and any("point load" in x for x in hard.warnings)
     assert "residual of 1.0e-03" in fea._common_warnings(1e-3, 1e-6, 0.0, 0.0)[0]

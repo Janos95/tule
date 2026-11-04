@@ -239,18 +239,15 @@ def test_overlay(outdir):
         outputs.overlay("bad", part, faces={99: "x"})
 
 
-def test_overlay_values_scale_and_info(outdir):
+def test_overlay_values_and_scale(outdir):
     part = tagged_bracket()
     outputs.overlay("walls", part, faces={0: 1.8, 1: 0.9}, title="Wall thickness",
-                    scale={"label": "wall thickness", "unit": "mm", "min": 0, "max": 3}, info={"material": "Al 6061", "mass_g": 20.8})
+                    scale={"label": "wall thickness", "unit": "mm", "min": 0, "max": 3})
     meta = json.load(open(outdir / "walls" / "output.json"))
     assert meta["faces"]["0"]["value"] == 1.8 and meta["faces"]["1"]["value"] == 0.9
     assert meta["scale"] == {"label": "wall thickness", "unit": "mm", "min": 0.0, "max": 3.0}
-    assert meta["info"] == {"material": "Al 6061", "mass_g": 20.8}
-    outputs.part("plain", part, info={"mass": "20.8 g"})
-    assert json.load(open(outdir / "plain" / "output.json"))["info"] == {"mass": "20.8 g"}
-    with pytest.raises(TuleError, match="info\\['bad'\\] is a list"):
-        outputs.part("x", part, info={"bad": [1, 2]})
+    with pytest.raises(TypeError, match="info"):  # facts under the view were removed: noise next to the model
+        outputs.part("plain", part, info={"mass": "20.8 g"})
     with pytest.raises(TuleError, match="scale is a dict"):
         outputs.overlay("y", part, faces={0: 1.0}, scale={"colour": "red"})
 
@@ -289,7 +286,7 @@ def test_sequence_warns_when_frames_rebuild_their_parts(outdir, monkeypatch, cap
     err = capsys.readouterr().err
     assert err.count("sequence 'rebuilt'") == 1 and "make each part once and move it" in err
     meta = json.load(open(outdir / "rebuilt" / "output.json"))
-    assert "new" not in meta["frames"][0]["parts"][0] and "per frame" in meta["info"]["warning"]
+    assert "new" not in meta["frames"][0]["parts"][0] and "info" not in meta
 
 
 def test_sequence_writes_a_part_made_again_each_frame_once(outdir):

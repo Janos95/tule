@@ -586,11 +586,6 @@ class Clearance:
         arrows = [a for i, (clash, _, a) in enumerate(arrows) if clash == 0 or i < self.LABELS]
         folder = outputs.folder(name)
         write_atomic(os.path.join(folder, "clearance.json"), json.dumps(self.records(), indent=1, ensure_ascii=False) + "\n")
-        worst = self.pairs[0] if self.pairs else None
-        info = {"parts": len(self._paths), "frames": len(self._frames), "found": self._summary(),
-                "shown": f"frame {frame}" + (f" ({label})" if label not in (None, "") else "")}
-        if worst:
-            info["worst"] = f"{worst.a} × {worst.b}: {worst.status}, {worst._amount()}, {worst._where()}"
         if title is None:
             n = len(self.clashes)
             title = f"Clearance: {n} clash{'es' if n != 1 else ''}" if n else "Clearance: no clashes"
@@ -598,7 +593,7 @@ class Clearance:
         gaps = [p.gap for p in self.pairs if p.status == "gap"]
         fact = (f"{n['clash']} clash{'es' if n['clash'] != 1 else ''}" if n["clash"] else
                 f"{n['touch']} touching" if n["touch"] else f"gap {min(gaps):.2g} mm" if gaps else "no clashes")
-        return outputs.overlay(name, Shape(comp, name=name), faces, arrows=arrows, title=title, info=info, fact=fact)
+        return outputs.overlay(name, Shape(comp, name=name), faces, arrows=arrows, title=title, fact=fact)
 
     def _near_faces(self, key, at, size) -> list[int]:
         """Faces of a solid at a point (within ``size`` of it: an overlap's faces)."""

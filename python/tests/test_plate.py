@@ -176,8 +176,7 @@ def test_outputs_plate(outdir):
     meta = json.load(open(f"{folder}/output.json"))
     assert meta["kind"] == "assembly"
     assert [p["file"] for p in meta["parts"]] == ["bracket.step", "lid.step", "pin.step", "pin-2.step"]
-    assert meta["info"] == {"bed": "256 × 256 mm", "layer height": "0.2 mm", "walls": 3, "infill": "15 %",
-                            "supports": False, "own settings": "pin-2"}
+    assert "info" not in meta and "fact" not in meta  # no estimate: nothing to say in the outputs list
     # the viewer's parts sit where the 3MF puts them
     step = {p["file"][:-5]: import_step(f"{folder}/{p['file']}").bounds for p in meta["parts"]}
     for name, V, _, _ in objects(f"{folder}/print.3mf"):
@@ -231,7 +230,6 @@ def test_outputs_plate_copies(outdir):
     assert {p["file"] for p in meta["parts"]} == {"cube.step", "pin.step"}  # a copy is its file placed again
     assert sorted(f.name for f in (outdir / "print").iterdir()) == ["cube.step", "output.json", "pin.step", "print.3mf"]
     assert meta["plate"] == {"file": "print.3mf", "parts": {"cube": 1, "pin": 3}}
-    assert meta["info"]["material"] == "PETG"
     # each copy where the 3MF puts it
     lo = import_step(f"{folder}/pin.step").bounds[0]
     got = sorted((round(lo.x + (p.get("transform") or [0] * 8)[3], 3), round(lo.y + (p.get("transform") or [0] * 8)[7], 3))
@@ -292,12 +290,12 @@ def test_outputs_plate_estimate(outdir, tmp_path, monkeypatch):
     meta = json.load(open(f"{folder}/output.json"))
     est = meta["plate"]["estimate"]
     assert est["print_time_s"] == 98035 and est["filament_g"] == 4.49 and "PETG" in est["profile"]
-    assert meta["info"]["print time"] == "27 h 14 min" and meta["info"]["filament"] == "4.5 g (1.51 m)"
+    assert meta["fact"] == "27 h 14 min · 4.5 g"
     used = seen.read_text()  # the plate's 3MF on a generic profile with the plate's settings
     assert "--export-gcode" in used and "print.3mf" in used
     for line in ("nozzle_diameter = 0.4", "filament_density = 1.27", "fill_density = 20%", "fill_pattern = gyroid", "perimeters = 2"):
         assert line in used
-    assert meta["plate"]["printer"] == "generic" and meta["info"]["estimate"] == "generic 0.4 mm printer, moderate speeds, PrusaSlicer"
+    assert meta["plate"]["printer"] == "generic"
 
 
 def test_outputs_plate_printer(outdir, tmp_path, monkeypatch):
@@ -311,7 +309,6 @@ def test_outputs_plate_printer(outdir, tmp_path, monkeypatch):
         times[meta["plate"]["printer"]] = meta["plate"]["estimate"]["print_time_s"]
     assert times["bambu-p1s"] < times["voron-2.4"] < times["generic"] < times["ender-3"]
     assert meta["plate"]["estimate"]["profile"].startswith("Voron 2.4 350, 0.20mm Standard speeds, 0.4 mm nozzle, PLA")
-    assert meta["info"]["estimate"] == "Voron 2.4 350, 0.20mm Standard speeds, PrusaSlicer" and meta["info"]["bed"] == "350 × 350 mm"
     with pytest.raises(TuleError, match="unknown printer 'bambu-p2x'") as e:
         outputs.plate("other", [box(20)], estimate="bambu-p2x")
     assert "bambu-p1s" in e.value.hint and "ender-3" in e.value.hint and not (outdir / "other").exists()
@@ -321,17 +318,17 @@ def test_outputs_plate_printer_bed(outdir, tmp_path, monkeypatch):
     fake_slicer(tmp_path, monkeypatch, f"open(out, 'w').write({GCODE_TAIL!r})")
     long = box(240, 20, 5).named("rail")
     folder = outputs.plate("print", [long], estimate="bambu-p1s")  # 256 mm bed: fits
-    assert json.load(open(f"{folder}/output.json"))["info"]["bed"] == "256 × 256 mm"
+    assert json.load(open(f"{folder}/output.json"))["plate"]["printer"] == "bambu-p1s"
     with pytest.raises(TuleError, match=r"part 'rail' \(240.0 × 20.0 × 5.0 mm\) does not fit the Creality Ender-3's bed \(220 × 220 × 250 mm\)") as e:
         outputs.plate("print", [long], estimate="ender-3")
     assert "larger bed" in e.value.hint
     folder = outputs.plate("tiles", [("tile", box(100, 100, 5), {"copies": 5}), box(10).named("cube")],
                            estimate="prusa-mk4")  # 4 tiles to a 250 × 210 bed: two plates
     meta = json.load(open(f"{folder}/output.json"))
-    assert meta["info"]["plates"] == "2: tiles.3mf, tiles-2.3mf" and meta["plate"]["parts"] == {"tile": 5, "cube": 1}
+    assert meta["plate"]["parts"] == {"tile": 5, "cube": 1}
     assert [p["parts"] for p in meta["plate"]["plates"]] == [{"tile": 4, "cube": 1}, {"tile": 1}]
     one = meta["plate"]["plates"][0]["estimate"]["print_time_s"]
-    assert meta["plate"]["estimate"]["print_time_s"] == 2 * one and meta["info"]["print time"].endswith("on 2 plates")
+    assert meta["plate"]["estimate"]["print_time_s"] == 2 * one and "on 2 plates" in meta["fact"]
     assert len(meta["parts"]) == 6 and (outdir / "tiles" / "tiles-2.3mf").exists()
     with pytest.raises(TuleError, match=r"5 parts do not fit on the bed \(250 × 210 mm\).*need about"):
         export_3mf([("tile", box(100, 100, 5), {"copies": 5})], str(outdir / "x.3mf"), bed=(250, 210))
