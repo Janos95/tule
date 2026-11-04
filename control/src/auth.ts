@@ -192,14 +192,20 @@ export async function devicePage(req: Request, env: Env, url: URL, user: User): 
   const code = (url.searchParams.get("code") ?? "").toUpperCase();
   const info = code ? await a.deviceInfo(code) : null;
   const host = info?.host;
+  // a guest approving would sign the CLI in as the guest, not the account the user means
+  const signIn = html`<a class="button primary" href="${loginUrl(url.pathname + url.search)}">Sign in, then approve</a>`;
   return page(
     host ? "Add a computer" : "Sign in the tule CLI",
-    html`<p>Signed in as <b>${user.email}</b>.</p>
+    html`${user.guest
+        ? html`<p class="warn">You are signed in as a guest. ${host ? "Guests cannot add computers." : "Approving signs the CLI in as this guest, whose projects are deleted after a day."}</p>`
+        : html`<p>Signed in as <b>${user.email}</b>.</p>`}
       ${code && !info ? html`<p class="warn">The code ${code} is wrong or expired.</p>` : ""}
       <form method="post" class="stack">
         <label>Code shown by <code>${host ? "tule host up" : "tule login"}</code><input name="code" value="${code}" autocomplete="off" placeholder="ABCD-EFGH" required /></label>
         ${host ? "" : info ? html`<p class="muted">Requested by: ${info.client}</p>` : ""}
-        <button class="primary">${host ? html`Add ${host}` : "Approve"}</button>
+        ${user.guest
+          ? html`<div>${signIn}${host ? "" : html` <button>Approve as guest</button>`}</div>`
+          : html`<button class="primary">${host ? html`Add ${host}` : "Approve"}</button>`}
       </form>
       <p class="muted">${
         host

@@ -47,7 +47,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
 .plist{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .pgroup{border-bottom:1px solid var(--line)}
 .prow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:16px;padding:12px 8px;color:inherit;text-decoration:none}
-.prow:hover{background:var(--hover)}.prow.sub{padding:7px 8px 7px 28px;margin-top:-4px}.prow.sub:last-child{padding-bottom:12px}
+.prow:hover{background:var(--hover)}.prow.head:hover{background:none}.prow.sub{padding:7px 8px 7px 28px;margin-top:-4px}.prow.sub:last-child{padding-bottom:12px}
 .pname{font-weight:500}.pstate{color:var(--muted);font-size:14px;white-space:nowrap}.pstate .unsaved{color:var(--warn)}.pgpu{margin-left:-1px;opacity:.75}.pgpu::before{content:"·";margin-right:6px}.pmachine{color:var(--muted);font-size:14px;display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ic{flex:none;width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.85}.pdate{color:var(--muted);font-size:13px;text-align:right}
 .newp{border-bottom:1px solid var(--line)}
@@ -202,9 +202,16 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
   );
   const body = html`<div class="plist">
         ${rows.map(
-          (p) => html`<div class="pgroup"><a class="prow" href="/p/${p.name}">
+          // with several machines there is no one state to open: each machine's copy is its own row
+          (p) => html`<div class="pgroup">${
+            p.machines.length > 1
+              ? html`<div class="prow head">
             <span class="pname">${p.name}</span>
-            <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>
+            <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></div>`
+              : html`<a class="prow" href="/p/${p.name}">
+            <span class="pname">${p.name}</span>
+            <span class="pdate">${new Date(p.created).toISOString().slice(0, 10)}</span></a>`
+          }
             ${p.machines.map(
               (m) => html`<a class="prow sub" href="/p/${p.name}?machine=${encodeURIComponent(m.id)}">
               <span class="pmachine">${machineLabel(m)}</span><span class="pstate">${machineState(m)}</span></a>`,
