@@ -239,10 +239,31 @@ export class Viewer {
       }
       this.group.add(part);
     });
+    if (this.blend) this.movePlacements(this.blend.placements, this.blend.t);
     this.group.updateMatrixWorld(true);
     this.paintFaces();
     this.setStyle(style);
     if (this.bounds && (fit === true || (fit === "auto" && this.farFromFit(this.bounds)))) this.fit();
+  }
+
+  /** Moves the drawn parts in place, without rebuilding them (a motion study while it plays):
+   * placements(mesh) gives the part's placement in two frames ([a, b], 16 numbers row-major, or null
+   * for none) and t in [0, 1] blends them: positions straight, rotations along the shortest turn. */
+  movePlacements(placements, t) {
+    this.blend = placements ? { placements, t } : null; // kept while playing: parts drawn anew move there too
+    if (!placements) return;
+    for (const part of this.group.children) {
+      const [a, b] = placements(part.userData.mesh);
+      const pa = pose(a), pb = pose(b);
+      part.matrixAutoUpdate = false;
+      part.matrix.compose(
+        _p.lerpVectors(pa.p, pb.p, t),
+        _q.slerpQuaternions(pa.q, pb.q, t),
+        _s.lerpVectors(pa.s, pb.s, t),
+      );
+    }
+    this.group.updateMatrixWorld(true);
+    this.dirty = true;
   }
 
   /** hidden: a Set of part indices not drawn (and not fitted); lit: a Set of
@@ -728,6 +749,21 @@ export class Viewer {
     this.setMeshes([]);
     this.setArrows([]);
   }
+}
+
+// A placement (16 numbers, row-major, or null) as position, rotation and scale; kept per array.
+const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
+const IDENTITY = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(1, 1, 1) };
+const poses = new WeakMap();
+function pose(m) {
+  if (!m) return IDENTITY;
+  let r = poses.get(m);
+  if (!r) {
+    r = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3() };
+    new THREE.Matrix4().set(...m).decompose(r.p, r.q, r.s);
+    poses.set(m, r);
+  }
+  return r;
 }
 
 // Reorders a mesh's triangles by B-rep face id (once), so each face is one

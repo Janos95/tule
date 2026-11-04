@@ -901,7 +901,7 @@ async function show() {
     const named = (m, f, i) => {
       const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
       const matrix = (kind === "assembly" || placed) && entry?.transform != null ? placement(entry.transform, f.file) : null;
-      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color, matrix };
+      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color, matrix, entry: i };
     };
     // a big assembly draws its parts as they come in (a few times a second), not after the last one
     const got = new Array(shownFiles.length);
@@ -952,16 +952,75 @@ async function show() {
 
 // ------------------------------------------------------------ controls
 
+// Playing: at the sequence's own pace (fps, else 4 a second). A motion study (the same parts in every frame,
+// each moved) plays smoothly: the drawn parts move between one frame's placements and the next on every
+// screen refresh, and the counter and plot step through the real frames. Paused, it shows only real frames.
 let playing = null;
 function play(on) {
-  clearInterval(playing);
-  const fps = Number(state.outputs.find((o) => o.id === state.selected)?.meta?.fps); // the sequence's own pace (real time)
-  playing = on ? setInterval(() => {
-    const max = +$("scrub").max;
-    state.frame = state.frame >= max ? 0 : state.frame + 1;
-    show();
-  }, fps > 0 && fps <= 60 ? 1000 / fps : 250) : null;
+  if (playing) {
+    clearInterval(playing.timer);
+    cancelAnimationFrame(playing.raf);
+    const blended = playing.blend;
+    playing = null;
+    if (blended) {
+      viewer.movePlacements(null);
+      state.shown = null; // draw the frame it stopped on as it is
+      show();
+    }
+  }
   $("play").classList.toggle("on", !!on);
+  if (!on) return;
+  const o = state.outputs.find((x) => x.id === state.selected);
+  const fps = Number(o?.meta?.fps); // the sequence's own pace (real time)
+  const step = fps > 0 && fps <= 60 ? 1000 / fps : 250;
+  const fr = o ? frames(o) : [];
+  const blend = smooth(fr);
+  if (!blend) {
+    playing = {
+      timer: setInterval(() => {
+        const max = +$("scrub").max;
+        state.frame = state.frame >= max ? 0 : state.frame + 1;
+        show();
+      }, step),
+    };
+    return;
+  }
+  // placements per frame, per part: read once
+  const at = fr.map((f) => f.parts.map((p) => (p.transform != null ? placement(p.transform, p.file) : null)));
+  let pos = state.frame >= fr.length - 1 ? 0 : state.frame;
+  let drawnFrame = state.frame; // whose files are drawn
+  let last = performance.now();
+  playing = { blend: true };
+  const tick = (now) => {
+    if (state.selected !== o.id || !state.shown?.startsWith(o.id + "|")) return play(false); // another output, or a page
+    pos += (now - last) / step;
+    last = now;
+    if (pos >= fr.length - 1) pos = 0; // loop: back to the first frame
+    const i = Math.floor(pos);
+    if (i !== state.frame) {
+      state.frame = i;
+      $("scrub").value = String(i);
+      plot.set(fr, i);
+      $("frame").textContent = `${i + 1} / ${fr.length}${$("plot").hidden && fr[i]?.label ? ` · ${fr[i].label}` : ""}`;
+      // a part made anew in this frame (another file): draw this frame's files
+      if (fr[i].parts.some((p, e) => p.file !== fr[drawnFrame].parts[e].file)) {
+        drawnFrame = i;
+        show();
+      }
+    }
+    // every part glides from this frame's placement to the next one's (one made anew too: its file swaps at frames)
+    viewer.movePlacements((m) => [at[i][m.entry], at[i + 1][m.entry]], pos - i);
+    playing.raf = requestAnimationFrame(tick);
+  };
+  playing.raf = requestAnimationFrame(tick);
+}
+
+/** Whether a sequence can play smoothly: a motion study (every frame lists its parts, as many each time) whose
+ * frame is drawn now. A part may be another file from frame to frame (made anew): it moves at real frames only. */
+function smooth(fr) {
+  if (!viewer || fr.length < 2 || !fr[0].parts?.length || !fr.every((f) => f.parts?.length === fr[0].parts.length)) return false;
+  const drawn = viewer.group.children;
+  return drawn.length > 0 && drawn.every((part) => Number.isInteger(part.userData.mesh?.entry));
 }
 $("play").addEventListener("click", () => play(!playing));
 $("scrub").addEventListener("input", (e) => {
