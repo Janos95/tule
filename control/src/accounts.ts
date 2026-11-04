@@ -71,6 +71,7 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS running (project_id TEXT PRIMARY KEY, user_id TEXT, guest INTEGER, since INTEGER);
       CREATE TABLE IF NOT EXISTS hosts (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, token_hash TEXT UNIQUE, created INTEGER, specs TEXT, UNIQUE(user_id, name));
       CREATE TABLE IF NOT EXISTS host_keys (hash TEXT PRIMARY KEY, user_id TEXT, expires INTEGER);
+      CREATE TABLE IF NOT EXISTS shares (token TEXT PRIMARY KEY, project_id TEXT UNIQUE, created INTEGER);
     `);
     // columns added after the first deploy
     for (const [table, col] of [["users", "guest INTEGER DEFAULT 0"], ["users", "last_seen INTEGER"], ["users", "agent_seen INTEGER"], ["devices", "kind TEXT"], ["devices", "host_name TEXT"]]) {
@@ -472,7 +473,34 @@ export class Accounts extends DurableObject<Env> {
   }
 
   deleteProject(userId: string, name: string): boolean {
+    const p = this.project(userId, name);
+    if (p) this.sql.exec("DELETE FROM shares WHERE project_id = ?", p.id);
     return this.sql.exec("DELETE FROM projects WHERE user_id = ? AND name = ?", userId, name).rowsWritten > 0;
+  }
+
+  // ------------------------------------------------------------ view-only links
+
+  /** A new view-only link for a project (the old one stops working). The token is the link, kept so the owner can copy it again. */
+  shareProject(projectId: string): { token: string; created: number } {
+    const token = `tules_${rand(18)}`;
+    const created = Date.now();
+    this.sql.exec("DELETE FROM shares WHERE project_id = ?", projectId);
+    this.sql.exec("INSERT INTO shares (token, project_id, created) VALUES (?, ?, ?)", token, projectId, created);
+    return { token, created };
+  }
+
+  share(projectId: string): { token: string; created: number } | null {
+    return this.one<{ token: string; created: number }>("SELECT token, created FROM shares WHERE project_id = ?", projectId) ?? null;
+  }
+
+  unshare(projectId: string): boolean {
+    return this.sql.exec("DELETE FROM shares WHERE project_id = ?", projectId).rowsWritten > 0;
+  }
+
+  /** The project a view-only link opens, while the project exists. */
+  shared(token: string): { id: string; name: string } | null {
+    return this.one<{ id: string; name: string }>(
+      "SELECT p.id, p.name FROM shares s JOIN projects p ON p.id = s.project_id WHERE s.token = ?", token) ?? null;
   }
 
   // ------------------------------------------------------------ RunPod

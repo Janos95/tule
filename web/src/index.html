@@ -11,7 +11,14 @@
     <main>
       <aside id="outputs" aria-label="Outputs">
         <div class="project-head">
-          <a class="back" href="/" title="Your projects"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>Projects</a>
+          <div class="head-row">
+            <a class="back" href="/" title="Your projects"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>Projects</a>
+            <span class="view-only" title="Opened from a view-only link">View only</span>
+            <div class="dl">
+              <button id="share" class="share" type="button" aria-haspopup="dialog" aria-expanded="false" title="A view-only link to this project" hidden>Share</button>
+              <div id="share-menu" class="menu share-menu" role="dialog" aria-label="Share" hidden></div>
+            </div>
+          </div>
           <div id="project-name" class="project-name"></div>
         </div>
         <div class="outputs-head">Outputs</div>

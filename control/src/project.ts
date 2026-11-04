@@ -135,6 +135,13 @@ function dirty(u: unknown) {
   return !!x && x.files + x.commits > 0;
 }
 
+/** A viewer opened from a view-only link. */
+const shared = (ws: WebSocket) => !!(ws.deserializeAttachment() as { share?: boolean } | null)?.share;
+
+/** What a view-only link may read: the files the viewer lists (outputs/, inputs/, work/), not sources or settings. */
+const viewable = (p: unknown) =>
+  typeof p === "string" && /^(outputs|inputs|work)(\/|$)/.test(p) && !p.split("/").some((s) => s === ".." || s === "." || s === "");
+
 export class Project extends DurableObject<Env> {
   state: State = {};
   outputs = new Map<string, unknown[]>(); // per slot
@@ -790,9 +797,11 @@ export class Project extends DurableObject<Env> {
       this.touch(p.slot);
     } else if (what === "view") {
       const v = crypto.randomUUID();
-      this.ctx.acceptWebSocket(server, ["view", `v:${v}`]);
-      const m = url.searchParams.get("machine");
-      server.serializeAttachment({ m: m && own(this.machines, m) ? m : undefined, v });
+      // a view-only link (index.ts sets the header): reads what the viewer shows, nothing else
+      const share = req.headers.get("X-Tule-Share") === "1";
+      this.ctx.acceptWebSocket(server, ["view", `v:${v}`, ...(share ? ["share"] : [])]);
+      const m = share ? null : url.searchParams.get("machine");
+      server.serializeAttachment({ m: m && own(this.machines, m) ? m : undefined, v, share });
       await this.sendView(server, await this.status());
     } else {
       return new Response("not found\n", { status: 404 });
@@ -800,8 +809,24 @@ export class Project extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  /** The view-only link was turned off or replaced: its open viewers go (the page then says so). */
+  closeShared() {
+    for (const ws of this.ctx.getWebSockets("share")) {
+      try {
+        ws.close(4404, "the view-only link was turned off");
+      } catch {
+        // closing
+      }
+    }
+  }
+
   async sendView(ws: WebSocket, status: Result) {
     const slot = this.viewSlot(ws);
+    if (shared(ws)) {  // the machines' names and states, not sessions, keys or unsaved work
+      const ms = (status.machines as { id: string; kind?: string; gpu?: string; computer?: string; state?: string }[] | undefined) ?? [];
+      status = { project: status.project, state: status.state, shared: true,
+                 machines: ms.map(({ id, kind, gpu, computer, state }) => ({ id, kind, gpu, computer, state })) };
+    }
     try {
       ws.send(JSON.stringify({ t: "outputs", outputs: this.outputs.get(slot ?? "") ?? [], status: { ...status, viewing: slot ?? null } }));
     } catch {
@@ -828,6 +853,11 @@ export class Project extends DurableObject<Env> {
       } catch {
         return;
       }
+      const share = shared(ws);
+      if (share && (m.t === "pick" || (m.t === "req" && (m.op !== "read" || !viewable((m.args as { path?: unknown })?.path))) || (m.t === "mesh" && !viewable(m.path)))) {
+        if (typeof m.rid === "number") ws.send(JSON.stringify({ t: m.t === "mesh" ? "mesh-error" : "res", rid: m.rid, error: "not available from a view-only link" }));
+        return;
+      }
       if (m.t === "pick") {
         const slot = typeof m.machine === "string" && own(this.machines, m.machine) ? m.machine : undefined;
         ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), m: slot });
@@ -838,7 +868,8 @@ export class Project extends DurableObject<Env> {
       const slot = this.viewSlot(ws);
       const agent = slot ? this.agent(slot) : undefined;
       const m0 = slot && own(this.machines, slot) ? this.machines[slot] : undefined;
-      const away = m0?.on ? "the machine is reconnecting; try again in a moment" : "the machine is stopped: start it (tule up)";
+      const away = m0?.on ? "the machine is reconnecting; try again in a moment"
+        : share ? "the project's machine is stopped: files open while it runs" : "the machine is stopped: start it (tule up)";
       if (m.t === "req") {
         const r = m as { rid: number; op?: unknown; args?: unknown };
         if (!agent) return ws.send(JSON.stringify({ t: "res", rid: r.rid, error: away }));
@@ -934,7 +965,7 @@ export class Project extends DurableObject<Env> {
         const { t: _t, ...rest } = m;
         const out = JSON.stringify({ ...rest, t: "event" });
         for (const v of this.ctx.getWebSockets("view")) {
-          if (this.viewSlot(v) !== slot) continue;
+          if (this.viewSlot(v) !== slot || shared(v)) continue; // annotations are for the owner and their agent
           try {
             v.send(out);
           } catch {

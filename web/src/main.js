@@ -41,7 +41,11 @@ import { initPlot } from "./plot.js";
 import { Viewer, sortByFace } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
-const project = (location.pathname.match(/^\/p\/([a-z0-9][a-z0-9-]{0,62})\/?$/) ?? [])[1];
+let project = (location.pathname.match(/^\/p\/([a-z0-9][a-z0-9-]{0,62})\/?$/) ?? [])[1];
+// /s/<token>: a view-only link; the project's name comes from the link, and nothing needs an account
+const shareToken = (location.pathname.match(/^\/s\/(tules_[A-Za-z0-9_-]{8,64})\/?$/) ?? [])[1];
+if (shareToken) document.body.classList.add("shared-view");
+const LINK_OFF = "This link was turned off, or the project was deleted. Ask for a new link.";
 
 let viewer;
 try {
@@ -100,15 +104,38 @@ function flash(text) {
 // ------------------------------------------------------------ connection
 
 async function connect(delay = 500) {
+  if (shareToken) {
+    let r;
+    try {
+      r = await fetch(`/api/share/${shareToken}`);
+    } catch {
+      return void setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay);
+    }
+    if (!r.ok) {
+      // nothing from the project stays on screen
+      state.outputs = [];
+      renderList();
+      show();
+      machine({ state: "stopped" });
+      $("machine-text").textContent = "link turned off";
+      return setStatus(LINK_OFF);
+    }
+    project = (await r.json()).project;
+  }
   if (!project) {
     setStatus("Open a project: /p/<name> (tule open -p <name>)");
     return;
   }
-  if (!(await auth.signedIn())) return;
+  if (!shareToken && !(await auth.signedIn())) return;
   $("project-name").textContent = project;
   document.title = `${project} · Tule`;
+  if (!shareToken) void initShare();
   const pickedM = new URLSearchParams(location.search).get("machine");
-  ws = new WebSocket(auth.socket(`/api/projects/${project}/view${pickedM ? `?machine=${encodeURIComponent(pickedM)}` : ""}`));
+  ws = new WebSocket(
+    shareToken
+      ? auth.socket(`/api/share/${shareToken}/view`)
+      : auth.socket(`/api/projects/${project}/view${pickedM ? `?machine=${encodeURIComponent(pickedM)}` : ""}`),
+  );
   ws.binaryType = "arraybuffer";
   ws.onopen = () => (delay = 500);
   ws.onmessage = (e) => (typeof e.data === "string" ? onText(JSON.parse(e.data)) : onMesh(e.data));
@@ -118,6 +145,7 @@ async function connect(delay = 500) {
     chunks.clear();
     machine({ state: "offline" });
     if (e.code === 1008 || e.code === 4401) return setStatus("Not authorized for this project: sign in with the account that owns it");
+    if (shareToken) return void setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay); // connect() checks the link again
     setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay);
   };
 }
@@ -999,5 +1027,75 @@ $("download").addEventListener("click", (e) => {
   $("download").setAttribute("aria-expanded", String(!menu.hidden));
 });
 document.addEventListener("click", () => ($("download-menu").hidden = true));
+
+// ------------------------------------------------------------ share: a view-only link (owner)
+
+let shareReady = false;
+/** The Share button, for a signed-in owner (not a guest): once per page. */
+async function initShare() {
+  if (shareReady) return;
+  shareReady = true;
+  try {
+    const me = await (await auth.api("/api/me")).json();
+    if (me.user?.guest) return;
+    renderShare(await (await auth.api(`/api/projects/${project}/share`)).json());
+    $("share").hidden = false;
+  } catch {
+    shareReady = false; // try again on the next connection
+  }
+}
+
+function renderShare(s, err) {
+  const menu = $("share-menu");
+  const p = (text, cls) => Object.assign(document.createElement("p"), { textContent: text, className: cls ?? "" });
+  const button = (text, cls, fn) => Object.assign(document.createElement("button"), { type: "button", textContent: text, className: cls, onclick: fn });
+  const kids = [p(`Anyone with the link sees ${s.shared ? "this project's" : "the project's"} outputs, work and inputs (not its sources) while a machine runs it.`)];
+  if (s.shared) {
+    const link = Object.assign(document.createElement("input"), { readOnly: true, value: s.url, ariaLabel: "View-only link" });
+    link.addEventListener("focus", () => link.select());
+    const copy = button("Copy link", "primary", async () => {
+      try {
+        await navigator.clipboard.writeText(s.url);
+        copy.textContent = "Copied";
+        setTimeout(() => (copy.textContent = "Copy link"), 1500);
+      } catch {
+        link.focus(); // no clipboard here: selected, to copy by hand
+      }
+    });
+    const row = document.createElement("div");
+    row.className = "row";
+    row.append(copy, button("Stop sharing", "", () => share("DELETE")));
+    kids.push(link, row);
+  } else {
+    kids.push(button("Create link", "primary", () => share("POST")));
+  }
+  if (err) kids.push(p(err, "menu-error"));
+  menu.replaceChildren(...kids);
+  $("share").textContent = s.shared ? "Shared" : "Share";
+  $("share").classList.toggle("primary", !!s.shared);
+}
+
+async function share(method) {
+  try {
+    renderShare(await (await auth.api(`/api/projects/${project}/share`, { method })).json());
+  } catch (e) {
+    renderShare({ shared: false }, e.message);
+  }
+}
+
+$("share").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const menu = $("share-menu");
+  const r = $("share").getBoundingClientRect();
+  menu.style.top = `${r.bottom + 6}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 298))}px`;
+  menu.hidden = !menu.hidden;
+  $("share").setAttribute("aria-expanded", String(!menu.hidden));
+});
+$("share-menu").addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", () => {
+  $("share-menu").hidden = true;
+  $("share").setAttribute("aria-expanded", "false");
+});
 
 connect();

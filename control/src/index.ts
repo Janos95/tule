@@ -365,6 +365,16 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
   const project = ops.projectStub(env, ref.id);
   const ws = req.headers.get("Upgrade")?.toLowerCase() === "websocket";
   if (what === "ssh" || what === "view") return ws ? project.fetch(req) : error("expected a WebSocket", 426);
+  if (what === "share") {
+    // a view-only link: GET says whether there is one, POST makes a new one (the old one stops working), DELETE ends it
+    const link = (s: { token: string; created: number } | null) => ({ shared: !!s, ...(s ? { url: `${origin}/s/${s.token}`, created: s.created } : {}) });
+    if (req.method === "GET") return json(link(await a.share(ref.id)));
+    if (user.guest) return error("guests cannot share projects", 403, "sign in to share");
+    if (req.method === "POST" || req.method === "DELETE") await project.closeShared(); // the old link's viewers
+    if (req.method === "POST") return json(link(await a.shareProject(ref.id)));
+    if (req.method === "DELETE") return (await a.unshare(ref.id), json(link(null)));
+    return error("use GET, POST or DELETE", 405);
+  }
   if (what === "snapshots") return snapshotsRoute(req, env, ref.id, rest, "", url);
   if (what === "blobs") return blobs(req, env, ref.id, rest, false);
   if (what === "outputs") return reply(await ops.outputs(env, user, name, origin));
@@ -490,6 +500,18 @@ async function route(req: Request, env: Env): Promise<Response> {
   const auth = await authRoutes(req, env, url);
   if (auth) return auth;
   if (path === "/api/device/code" || path === "/api/device/token") return deviceApi(req, env, path.split("/").pop()!);
+  // a view-only link (/s/<token>): GET /api/share/<token> names the project, WSS /api/share/<token>/view is a read-only viewer
+  const share = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})(\/view)?$/);
+  if (share) {
+    const p = await accounts(env).shared(share[1]);
+    if (!p) return error("this link was turned off or the project deleted", 404, "ask for a new link");
+    if (!share[2]) return json({ project: p.name });
+    if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error("expected a WebSocket", 426);
+    // the Durable Object reads the share from this header, which only this route sets
+    const headers = new Headers(req.headers);
+    headers.set("X-Tule-Share", "1");
+    return ops.projectStub(env, p.id).fetch(new Request(`${url.origin}/view`, { headers }));
+  }
   // a computer joins with the one-time key from Settings (install.sh runs `tule host up --key`)
   if (path === "/api/hosts/pair" && req.method === "POST") {
     const b = (await req.json().catch(() => ({}))) as { key?: unknown; name?: unknown; token?: unknown };
