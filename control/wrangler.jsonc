@@ -27,6 +27,8 @@
   "vars": {
     "PUBLIC_URL": "https://tule.janosmeny.com",
     "ALLOWED_EMAILS": "janos.meny@googlemail.com",
+    // ADMIN_EMAILS: people with admin rights (support access to every project, deleting accounts)
+    "ADMIN_EMAILS": "janos.meny@googlemail.com",
     "CPU_HOURS_MONTH": "100",
     // guests (no sign-in): projects each, machine minutes a day each, guest
     // machines running at once site-wide, days kept after the last visit

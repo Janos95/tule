@@ -728,11 +728,19 @@ request `id`.
   code, the user approves it at `/device`, and the CLI receives an API key.
   `tule login --code tulel_…` redeems a device code the connector's
   `connect_info` approved in advance, so agents sign in without the user.
-  API keys (`tule_…`) are also made in Settings. `DEV_TOKEN` remains as an
-  admin credential acting as a "dev" user, for tests, and is the only key to
-  `GET /api/admin/users` (every account, with project and computer counts) and
-  `POST /api/admin/users/delete {"email"}` (an account with its projects,
-  snapshots, computers, keys and connector sign-ins).
+  API keys (`tule_…`) are also made in Settings. `DEV_TOKEN` acts as a "dev"
+  user, for tests only.
+- **Admin and support:** admins are the accounts in `ADMIN_EMAILS` (signed in,
+  or their own CLI key). The support account is not a person: its key
+  (`tule admin support-key`, 90 days, one at a time) goes on a dev machine, so
+  an agent there can debug any project without anyone's credentials. Both may
+  list every project and `tule admin copy OWNER PROJECT`: the newest autosave
+  becomes a project in their own account, where the usual commands work
+  (`tule up`, build, screenshot); the original and its machines are never
+  touched, and support's copies are deleted after 14 days. Only admins list
+  and delete accounts (`/api/admin/users`, `/api/admin/users/delete`), issue
+  the support key and read the log. Every admin action is logged
+  (`tule admin log`); owners are not shown it.
 - **MCP:** `@cloudflare/workers-oauth-provider` wraps the Worker: `/mcp` takes
   its OAuth tokens (dynamic client registration, `/authorize` signs the user
   in with the site's session and asks for consent) or a Tule API key.

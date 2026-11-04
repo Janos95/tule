@@ -609,6 +609,19 @@ export class Project extends DurableObject<Env> {
     return { snapshot: sid, at: now ?? rec?.at ?? Date.now(), outputs: this.outputs.get(slot) ?? [] };
   }
 
+  /** For an admin copy: the newest autosave (or `machine`'s), without asking any machine. */
+  async adminSnapshot(machine?: string): Promise<{ id: string; at: number; machine?: string } | { error: string; hint?: string }> {
+    const id = machine ? this.machines[machine]?.snapshot : await this.ctx.storage.get<string>("latestSnapshot");
+    if (!id) return machine ? { error: `no machine ${machine} with an autosave`, hint: `machines: ${Object.keys(this.machines).join(", ") || "none"}` } : { error: "this project has no autosave yet" };
+    const rec = await this.ctx.storage.get<Snapshot>(`snap:${id}`);
+    return { id, at: rec?.at ?? 0, machine: rec?.machine };
+  }
+
+  /** An admin copy's snapshot, once its files are all here: a machine started on the copy restores it. */
+  async importSnapshot(id: string, rec: { at: number; files: number; bytes: number; reason: string }): Promise<void> {
+    await this.ctx.storage.put({ [`snap:${id}`]: { id, ...rec }, latestSnapshot: id });
+  }
+
   async latestSnapshot(): Promise<string | undefined> {
     return this.ctx.storage.get<string>("latestSnapshot");
   }

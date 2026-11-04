@@ -7,7 +7,7 @@
 //   tests, admin    DEV_TOKEN, which acts as the "dev" user
 //
 // ALLOWED_EMAILS (comma-separated, "*" for anyone) says who may sign up.
-import type { Accounts, User } from "./accounts";
+import { SUPPORT_ID, type Accounts, type User } from "./accounts";
 import { stub } from "./rpc";
 import { esc, html, layout, page } from "./pages";
 
@@ -137,10 +137,13 @@ export function safeNext(next: string | null): string {
 }
 
 /** Forms post only from our own pages. */
-/** The admin credential: DEV_TOKEN as a Bearer header. */
-export function isAdmin(req: Request, env: Env): boolean {
-  const h = req.headers.get("Authorization") ?? "";
-  return !!env.DEV_TOKEN && h.startsWith("Bearer ") && same(h.slice(7), env.DEV_TOKEN);
+/** "admin": a person's account listed in ADMIN_EMAILS (signed in, or their own CLI key). "support": the support
+    account (an agent's key on a dev machine; it may copy any project into its own account). Else null. */
+export function role(user: User | null, env: Env): "admin" | "support" | null {
+  if (!user || user.guest) return null;
+  if (user.id === SUPPORT_ID) return "support";
+  const admins = (env.ADMIN_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return admins.includes(user.email.toLowerCase()) ? "admin" : null;
 }
 
 export function sameOrigin(req: Request, url: URL): boolean {

@@ -31,8 +31,8 @@
 //
 // MCP: /mcp, behind the OAuth provider (tokens from /authorize, or an API key).
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
-import { Accounts, type User } from "./accounts";
-import { accounts, authorize, authRoutes, deviceApi, isAdmin, devicePage, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
+import { Accounts, SUPPORT_COPY_DAYS, type ProjectRef, type User } from "./accounts";
+import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
@@ -165,6 +165,70 @@ async function shareRoute(env: Env, token: string, file: boolean, url: URL): Pro
     await writable.close();
   })();
   return new Response(readable, { headers });
+}
+
+// ------------------------------------------------------------ admin copies
+
+const COPY_BLOBS = 48; // per request: each is up to MAX_CHUNK
+
+/** POST /api/admin/copy: start a copy ({owner, project} or {project: "p_…"}), or go on with one ({copy, cursor}). */
+async function adminCopy(env: Env, actor: User, r: "admin" | "support", b: Record<string, unknown>, origin: string): Promise<Response> {
+  const a = accounts(env);
+  let dest: ProjectRef | null;
+  if (typeof b.copy === "string") {
+    dest = await a.project(actor.id, b.copy);
+  } else {
+    const pid = typeof b.project === "string" && PID.test(b.project) ? b.project : "";
+    let src: (ProjectRef & { userId: string }) | null = null;
+    if (pid) src = await a.projectById(pid);
+    else if (typeof b.owner === "string" && typeof b.project === "string") {
+      const owner = await a.userByEmail(b.owner.trim().toLowerCase());
+      const p = owner && (await a.project(owner.id, b.project));
+      src = p && owner ? { ...p, userId: owner.id } : null;
+    } else return error("expected {owner: email, project: name}, or {project: \"p_…\"} (tule admin ls shows both)", 400);
+    if (!src) return error("no such project", 404, "tule admin ls lists every project");
+    const owner = (await a.user(src.userId))?.email ?? "?";
+    const snap = await ops.projectStub(env, src.id).adminSnapshot(typeof b.machine === "string" && b.machine ? b.machine : undefined);
+    if ("error" in snap) return reply(snap);
+    const man = await env.WORKSPACES.get(snapshotKey(src.id, snap.id));
+    if (!man) return error("that autosave's manifest is missing", 500);
+    const base = typeof b.as === "string" && b.as ? b.as : `${owner.split("@")[0]}-${src.name}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+/, "").slice(0, 56);
+    let name = base;
+    for (let n = 2; await a.project(actor.id, name); n++) name = `${base}-${n}`;
+    const made = await ops.createProject(env, actor, name, origin);
+    if ("error" in made) return reply(made);
+    dest = await a.project(actor.id, name);
+    if (!dest) return error("the copy was not created", 500);
+    await env.WORKSPACES.put(snapshotKey(dest.id, snap.id), man.body, { httpMetadata: { contentType: "application/json" } });
+    await a.trackCopy({ projectId: dest.id, userId: actor.id, name, sourceId: src.id, snapshot: snap.id, expires: r === "support" ? Date.now() + SUPPORT_COPY_DAYS * 86_400_000 : null });
+    await a.logAdmin(actor.email, "copy", owner, src.name, `autosave ${snap.id}${snap.machine ? ` (${snap.machine})` : ""} -> ${actor.email}/${name}`);
+  }
+  const job = dest && (await a.copyOf(dest.id));
+  if (!dest || !job || job.user_id !== actor.id) return error(`no copy ${JSON.stringify(b.copy)} in your account`, 404);
+  const man = (await (await env.WORKSPACES.get(snapshotKey(dest.id, job.snapshot)))?.json()) as Manifest | undefined;
+  if (!man) return error("the copy's manifest is missing", 500);
+  const files = Object.values(man.files ?? {});
+  const hashes = [...new Set(files.flatMap((f) => f.h))].sort();
+  const from = Math.max(0, Math.floor(Number(b.cursor) || 0));
+  const batch = hashes.slice(from, from + COPY_BLOBS);
+  let missing = 0;
+  for (let i = 0; i < batch.length; i += 4)
+    await Promise.all(
+      batch.slice(i, i + 4).map(async (h) => {
+        const o = await env.WORKSPACES.get(blobKey(job.source_id, h));
+        if (!o) return void missing++;
+        await env.WORKSPACES.put(blobKey(dest.id, h), await o.arrayBuffer());
+      }),
+    );
+  const next = from + batch.length;
+  if (next < hashes.length) return json({ copy: dest.name, cursor: next, total: hashes.length, missing, done: false });
+  const bytes = files.reduce((n, f) => n + (Number(f.s) || 0), 0);
+  await ops.projectStub(env, dest.id).importSnapshot(job.snapshot, { at: Date.now(), files: files.length, bytes, reason: "copied for debugging" });
+  return json({
+    copy: dest.name, done: true, total: hashes.length, missing, files: files.length, bytes,
+    expires: job.expires ? new Date(job.expires).toISOString() : null,
+    viewer: ops.viewerUrl(origin, dest.name), next: `tule up -p ${dest.name}`,
+  });
 }
 
 async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[], machine: string, url: URL): Promise<Response> {
@@ -597,12 +661,27 @@ async function route(req: Request, env: Env): Promise<Response> {
     return env.HOST.getByName(host.id).fetch(fwd);
   }
 
-  // admin, with DEV_TOKEN only: GET /api/admin/users; POST /api/admin/users/delete {"email"} deletes an account
-  // with its projects, snapshots, computers, keys and connector sign-ins
+  // admin: a person in ADMIN_EMAILS (signed in, or their CLI key); support: the support account's key (an agent on a
+  // dev machine). Both: GET /api/admin/projects (every account's); POST /api/admin/copy {owner, project, machine?, as?}
+  // copies a project's newest autosave into your own account (repeat with {copy, cursor} until done: true). The
+  // original and its machines are never touched; support's copies are deleted after SUPPORT_COPY_DAYS.
+  // Admin only: GET /api/admin/users; POST /api/admin/users/delete {"email"} deletes an account with its projects,
+  // snapshots, computers, keys and connector sign-ins; POST /api/admin/support-key; GET /api/admin/log.
   if (path.startsWith("/api/admin/")) {
-    if (!isAdmin(req, env)) return error("admin only", 403);
+    const actor = await who(req, env);
+    const r = role(actor, env);
+    if (!actor || !r) return error("admins and the support account only", 403);
     const a = accounts(env);
+    if (path === "/api/admin/projects" && req.method === "GET") return reply({ projects: await a.allProjects() });
+    if (path === "/api/admin/copy" && req.method === "POST") return adminCopy(env, actor, r, await body(req), origin);
+    if (r !== "admin") return error("admins only", 403);
     if (path === "/api/admin/users" && req.method === "GET") return reply({ users: await a.allUsers() });
+    if (path === "/api/admin/log" && req.method === "GET") return reply({ log: await a.adminLog(Number(url.searchParams.get("limit")) || 100) });
+    if (path === "/api/admin/support-key" && req.method === "POST") {
+      const k = await a.supportKey();
+      await a.logAdmin(actor.email, "support-key", "", "", `expires ${new Date(k.expires).toISOString()}`);
+      return reply({ key: k.key, expires: new Date(k.expires).toISOString(), use: `on the dev machine: tule login --url ${origin} --token <key>` });
+    }
     if (path === "/api/admin/users/delete" && req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { email?: unknown };
       const u = (await a.allUsers()).find((x) => !x.guest && x.email === b.email);
@@ -610,8 +689,9 @@ async function route(req: Request, env: Env): Promise<Response> {
       for (const h of await a.hosts(u.id)) await stub<Host>(env.HOST, h.id).forget();
       const grants = await env.OAUTH_PROVIDER.listUserGrants(u.id);
       for (const g of grants.items) await env.OAUTH_PROVIDER.revokeGrant(g.id, u.id);
-      const r = await a.removeAccount(u.id);
-      return reply({ deleted: !r.failed.length, email: u.email, projects: r.projects, failed: r.failed, connectorSignIns: grants.items.length });
+      const res = await a.removeAccount(u.id);
+      await a.logAdmin(actor.email, "delete-account", u.email ?? "", "", `${res.projects.length} projects`);
+      return reply({ deleted: !res.failed.length, email: u.email, projects: res.projects, failed: res.failed, connectorSignIns: grants.items.length });
     }
     return error("unknown admin route", 404);
   }

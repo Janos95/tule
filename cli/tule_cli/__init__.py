@@ -814,6 +814,9 @@ def main(argv=None):
     from . import host
 
     host.add_commands(sub)
+    from . import admin
+
+    admin.add_commands(sub)
 
     args = ap.parse_args(argv)
     if args.cmd in ("inspect", "docs") and hasattr(signal, "SIGPIPE"):  # `tule inspect … | head` ends quietly

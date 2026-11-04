@@ -21,6 +21,9 @@ export type ProjectRef = { id: string; name: string; created: number };
 type Result = Record<string, unknown>;
 
 const SESSION_DAYS = 30;
+export const SUPPORT_ID = "u_support";
+const SUPPORT_KEY_DAYS = 90;
+export const SUPPORT_COPY_DAYS = 14;
 const DEVICE_MINUTES = 10;
 const HOST_KEY_MINUTES = 60;
 const LOGIN_MINUTES = 10;
@@ -72,9 +75,11 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS hosts (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, token_hash TEXT UNIQUE, created INTEGER, specs TEXT, UNIQUE(user_id, name));
       CREATE TABLE IF NOT EXISTS host_keys (hash TEXT PRIMARY KEY, user_id TEXT, expires INTEGER);
       CREATE TABLE IF NOT EXISTS shares (token TEXT PRIMARY KEY, project_id TEXT UNIQUE, created INTEGER);
+      CREATE TABLE IF NOT EXISTS admin_log (at INTEGER, actor TEXT, action TEXT, owner TEXT, project TEXT, detail TEXT);
+      CREATE TABLE IF NOT EXISTS admin_copies (project_id TEXT PRIMARY KEY, user_id TEXT, name TEXT, source_id TEXT, snapshot TEXT, created INTEGER, expires INTEGER);
     `);
     // columns added after the first deploy
-    for (const [table, col] of [["users", "guest INTEGER DEFAULT 0"], ["users", "last_seen INTEGER"], ["users", "agent_seen INTEGER"], ["devices", "kind TEXT"], ["devices", "host_name TEXT"]]) {
+    for (const [table, col] of [["users", "guest INTEGER DEFAULT 0"], ["users", "last_seen INTEGER"], ["users", "agent_seen INTEGER"], ["devices", "kind TEXT"], ["devices", "host_name TEXT"], ["api_keys", "expires INTEGER"]]) {
       try {
         this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`);
       } catch {
@@ -247,12 +252,84 @@ export class Accounts extends DurableObject<Env> {
       }
       this.deleteUser(id);
     }
+    // support copies past their days (the copy, its machines and files; the original is not touched)
+    for (const c of this.all<{ project_id: string; user_id: string; name: string }>("SELECT project_id, user_id, name FROM admin_copies WHERE expires IS NOT NULL AND expires < ? LIMIT 20", Date.now())) {
+      try {
+        if (this.projectById(c.project_id)) await (this.env.PROJECT.getByName(c.project_id) as unknown as { destroyProject(): Promise<unknown> }).destroyProject();
+        this.deleteProject(c.user_id, c.name);
+        this.sql.exec("DELETE FROM admin_copies WHERE project_id = ?", c.project_id);
+        console.log(JSON.stringify({ event: "support-copy-expired", project: c.project_id }));
+      } catch (e) {
+        console.log(JSON.stringify({ event: "support-copy-expired", project: c.project_id, error: String(e) }));
+      }
+    }
     // running rows a crashed machine never cleared (guests cannot run longer than their minutes)
     this.sql.exec("DELETE FROM running WHERE guest = 1 AND since < ?", Date.now() - 2 * 3_600_000);
     if (old.length) console.log(JSON.stringify({ event: "guest-sweep", deleted: old.length }));
     const any = this.one<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE guest = 1")?.n ?? 0;
-    if (any) await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
+    const copies = this.one<{ n: number }>("SELECT COUNT(*) AS n FROM admin_copies WHERE expires IS NOT NULL")?.n ?? 0;
+    if (any || copies) await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
     return old.length;
+  }
+
+  // ------------------------------------------------------------ admin: support access
+
+  /** The support account: not a person (no Google sign-in). Its key, on a dev machine, lets an agent copy
+      any project into this account to debug it; it cannot touch the original, other accounts or anyone's machines. */
+  supportUser(): User {
+    const u = this.user(SUPPORT_ID);
+    if (u) return u;
+    this.sql.exec("INSERT INTO users (id, google_sub, email, name, created) VALUES (?, NULL, 'support@tule.local', 'Support', ?)", SUPPORT_ID, Date.now());
+    return { id: SUPPORT_ID, email: "support@tule.local", name: "Support" };
+  }
+
+  /** A new key for the support account, valid SUPPORT_KEY_DAYS; the old ones stop working. */
+  async supportKey(): Promise<{ key: string; expires: number }> {
+    this.supportUser();
+    this.sql.exec("DELETE FROM api_keys WHERE user_id = ?", SUPPORT_ID);
+    const expires = Date.now() + SUPPORT_KEY_DAYS * 86_400_000;
+    const { key } = await this.createApiKey(SUPPORT_ID, "support", expires);
+    return { key, expires };
+  }
+
+  userByEmail(email: string): User | null {
+    return this.one<User>("SELECT id, email, name FROM users WHERE email = ? AND guest = 0", email) ?? null;
+  }
+
+  /** Every account's projects (guests' too), newest first. */
+  allProjects() {
+    return this.all<{ id: string; name: string; created: number; owner: string | null; guest: number }>(
+      "SELECT p.id, p.name, p.created, u.email AS owner, u.guest FROM projects p JOIN users u ON u.id = p.user_id ORDER BY p.created DESC",
+    ).map((p) => ({ id: p.id, name: p.name, owner: p.guest ? `guest:${p.id}` : p.owner, created: new Date(p.created).toISOString() }));
+  }
+
+  /** The project with this id, and whose it is. */
+  projectById(id: string): (ProjectRef & { userId: string }) | null {
+    return this.one<ProjectRef & { userId: string }>("SELECT id, name, created, user_id AS userId FROM projects WHERE id = ?", id) ?? null;
+  }
+
+  /** What admins and the support account did: kept, never shown to the project's owner. */
+  logAdmin(actor: string, action: string, owner: string, project: string, detail = "") {
+    this.sql.exec("INSERT INTO admin_log VALUES (?, ?, ?, ?, ?, ?)", Date.now(), actor, action, owner, project, detail.slice(0, 500));
+    console.log(JSON.stringify({ event: "admin", actor, action, owner, project, detail }));
+  }
+
+  adminLog(limit = 100) {
+    return this.all<{ at: number; actor: string; action: string; owner: string; project: string; detail: string }>(
+      "SELECT * FROM admin_log ORDER BY at DESC LIMIT ?", Math.min(Math.max(limit, 1), 1000),
+    ).map((r) => ({ ...r, at: new Date(r.at).toISOString() }));
+  }
+
+  /** A copy being made (or made): `expires` for the support account's, which the sweep deletes. */
+  async trackCopy(c: { projectId: string; userId: string; name: string; sourceId: string; snapshot: string; expires: number | null }) {
+    this.sql.exec("INSERT OR REPLACE INTO admin_copies VALUES (?, ?, ?, ?, ?, ?, ?)", c.projectId, c.userId, c.name, c.sourceId, c.snapshot, Date.now(), c.expires);
+    if (c.expires && !(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
+  }
+
+  copyOf(projectId: string) {
+    return this.one<{ project_id: string; user_id: string; name: string; source_id: string; snapshot: string; expires: number | null }>(
+      "SELECT * FROM admin_copies WHERE project_id = ?", projectId,
+    ) ?? null;
   }
 
   /** The dev token's user (until accounts are the only way in). */
@@ -294,17 +371,20 @@ export class Accounts extends DurableObject<Env> {
 
   // ------------------------------------------------------------ API keys
 
-  async createApiKey(userId: string, name: string): Promise<{ id: string; key: string }> {
+  async createApiKey(userId: string, name: string, expires?: number): Promise<{ id: string; key: string }> {
     const key = `tule_${rand(32)}`;
     const id = `k_${rand(9)}`;
-    this.sql.exec("INSERT INTO api_keys VALUES (?, ?, ?, ?, ?, ?, NULL)", await sha256hex(key), id, userId, name.slice(0, 80), key.slice(0, 9), Date.now());
+    this.sql.exec(
+      "INSERT INTO api_keys (hash, id, user_id, name, prefix, created, last_used, expires) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+      await sha256hex(key), id, userId, name.slice(0, 80), key.slice(0, 9), Date.now(), expires ?? null,
+    );
     return { id, key };
   }
 
   async apiKeyUser(key: string): Promise<User | null> {
     const hash = await sha256hex(key);
-    const r = this.one<{ user_id: string; last_used: number | null }>("SELECT user_id, last_used FROM api_keys WHERE hash = ?", hash);
-    if (!r) return null;
+    const r = this.one<{ user_id: string; last_used: number | null; expires: number | null }>("SELECT user_id, last_used, expires FROM api_keys WHERE hash = ?", hash);
+    if (!r || (r.expires && r.expires < Date.now())) return null;
     if (!r.last_used || Date.now() - r.last_used > 3_600_000) this.sql.exec("UPDATE api_keys SET last_used = ? WHERE hash = ?", Date.now(), hash);
     return this.user(r.user_id);
   }
@@ -475,6 +555,7 @@ export class Accounts extends DurableObject<Env> {
   deleteProject(userId: string, name: string): boolean {
     const p = this.project(userId, name);
     if (p) this.sql.exec("DELETE FROM shares WHERE project_id = ?", p.id);
+    if (p) this.sql.exec("DELETE FROM admin_copies WHERE project_id = ?", p.id);
     return this.sql.exec("DELETE FROM projects WHERE user_id = ? AND name = ?", userId, name).rowsWritten > 0;
   }
 
