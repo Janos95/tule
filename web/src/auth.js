@@ -27,6 +27,12 @@ export const auth = {
       return true; // offline: the WebSocket retries and says so
     }
     if (r.status !== 401) return true;
+    if (token) {
+      // a stale test token would hide a good sign-in (the cookie): drop it and try again
+      store.removeItem("tule/token");
+      location.reload();
+      return false;
+    }
     location.href = `/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`;
     return false;
   },
