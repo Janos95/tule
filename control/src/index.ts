@@ -21,6 +21,8 @@
 //   GET  /api/projects/<name>/outputs         the outputs index
 //   WSS  /api/projects/<name>/ssh             one SSH session (`tule proxy`)
 //   WSS  /api/projects/<name>/view            the viewer
+//   GET/POST/DELETE /api/projects/<name>/share  a view-only link to a frozen autosave (POST replaces it)
+//   GET  /api/share/<token>[/file?path=]      what a link shows: the outputs list, or one file (no sign-in)
 //   GET/POST /api/keys/ssh, DELETE /api/keys/ssh/<id>; GET/POST /api/keys/api, DELETE /api/keys/api/<id>
 //   POST /api/device/code, /api/device/token  `tule login` (device code; no auth)
 //
@@ -112,6 +114,59 @@ async function blobs(req: Request, env: Env, id: string, rest: string[], machine
 }
 
 /** `machine`: the slot of the machine asking (by its join token), or "" for the user. */
+// ------------------------------------------------------------ view-only links
+
+type Manifest = { files?: Record<string, { h: string[]; s: number }> };
+const shareKey = (id: string, token: string) => `projects/${id}/shares/${token}.json`;
+
+/** What a view-only link may read: the files the viewer lists (outputs/, inputs/, work/), not sources or settings. */
+const viewable = (p: unknown): p is string =>
+  typeof p === "string" && /^(outputs|inputs|work)\//.test(p) && !p.split("/").some((s) => s === ".." || s === "." || s === "");
+
+/** The outputs list as frozen for a link: only files that are in its snapshot. */
+function frozen(outputs: unknown[], man: Manifest): unknown[] {
+  const has = (f: { path?: string }) => !!f?.path && !!man.files?.[f.path];
+  return (outputs as { files?: { path?: string }[]; meta?: { framesFile?: { path?: string } } }[])
+    .map((o) => ({ ...o, files: (o.files ?? []).filter(has), building: undefined }))
+    .filter((o) => o.files.length || (o.meta?.framesFile && has(o.meta.framesFile)));
+}
+
+const manifests = new Map<string, Manifest>(); // a snapshot never changes: a few kept per isolate
+
+async function shareRoute(env: Env, token: string, file: boolean, url: URL): Promise<Response> {
+  const p = await accounts(env).shared(token);
+  const o = p && (await env.WORKSPACES.get(shareKey(p.id, token)));
+  if (!p || !o) return error("this link was turned off or the project deleted", 404, "ask for a new link");
+  const s = (await o.json()) as { project: string; snapshot: string; at: number; outputs: unknown[] };
+  if (!file) return json({ project: s.project, at: s.at, outputs: s.outputs });
+  const rel = url.searchParams.get("path");
+  if (!viewable(rel)) return error("a view-only link reads files under outputs/, inputs/ and work/", 403);
+  let man = manifests.get(s.snapshot);
+  if (!man) {
+    man = (await (await env.WORKSPACES.get(snapshotKey(p.id, s.snapshot)))?.json()) as Manifest | undefined;
+    if (!man) return error("the link's snapshot is gone", 404, "ask for a new link");
+    if (manifests.size > 20) manifests.delete(manifests.keys().next().value!);
+    manifests.set(s.snapshot, man);
+  }
+  const f = man.files?.[rel];
+  if (!f) return error(`${rel} is not in this link's snapshot`, 404);
+  const headers = { "Content-Type": "application/octet-stream", "Content-Length": String(f.s), "Cache-Control": "private, max-age=86400" };
+  if (f.h.length === 1) {
+    const b = await env.WORKSPACES.get(blobKey(p.id, f.h[0]));
+    return b ? new Response(b.body, { headers }) : error("a part of the file is missing", 500);
+  }
+  const { readable, writable } = new FixedLengthStream(f.s);
+  (async () => {
+    for (const h of f.h) {
+      const b = await env.WORKSPACES.get(blobKey(p.id, h));
+      if (!b) return writable.abort(new Error("a part of the file is missing"));
+      await b.body.pipeTo(writable, { preventClose: true });
+    }
+    await writable.close();
+  })();
+  return new Response(readable, { headers });
+}
+
 async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[], machine: string, url: URL): Promise<Response> {
   const project = ops.projectStub(env, id);
   if (machine && req.method === "POST" && rest.length === 0) {
@@ -366,14 +421,24 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
   const ws = req.headers.get("Upgrade")?.toLowerCase() === "websocket";
   if (what === "ssh" || what === "view") return ws ? project.fetch(req) : error("expected a WebSocket", 426);
   if (what === "share") {
-    // a view-only link: GET says whether there is one, POST makes a new one (the old one stops working), DELETE ends it
+    // a view-only link to this copy as it is now: GET says whether there is one, POST makes a new one
+    // (the old one stops working), DELETE ends it. Opening it reads the frozen snapshot, never a machine.
     const link = (s: { token: string; created: number } | null) => ({ shared: !!s, ...(s ? { url: `${origin}/s/${s.token}`, created: s.created } : {}) });
     if (req.method === "GET") return json(link(await a.share(ref.id)));
     if (user.guest) return error("guests cannot share projects", 403, "sign in to share");
-    if (req.method === "POST" || req.method === "DELETE") await project.closeShared(); // the old link's viewers
-    if (req.method === "POST") return json(link(await a.shareProject(ref.id)));
-    if (req.method === "DELETE") return (await a.unshare(ref.id), json(link(null)));
-    return error("use GET, POST or DELETE", 405);
+    const old = await a.share(ref.id);
+    const drop = async () => old && (await env.WORKSPACES.delete(shareKey(ref.id, old.token)));
+    if (req.method === "DELETE") return (await drop(), await a.unshare(ref.id), json(link(null)));
+    if (req.method !== "POST") return error("use GET, POST or DELETE", 405);
+    const b = await body(req);
+    const f = await project.freezeShare(typeof b.machine === "string" ? b.machine : undefined);
+    if ("error" in f) return reply(f);
+    const man = (await (await env.WORKSPACES.get(snapshotKey(ref.id, f.snapshot)))?.json()) as Manifest | undefined;
+    if (!man) return error("the autosave for the link is missing", 500, "try again");
+    await drop();
+    const s = await a.shareProject(ref.id);
+    await env.WORKSPACES.put(shareKey(ref.id, s.token), JSON.stringify({ project: ref.name, snapshot: f.snapshot, at: f.at, outputs: frozen(f.outputs, man) }));
+    return json(link(s));
   }
   if (what === "snapshots") return snapshotsRoute(req, env, ref.id, rest, "", url);
   if (what === "blobs") return blobs(req, env, ref.id, rest, false);
@@ -500,18 +565,10 @@ async function route(req: Request, env: Env): Promise<Response> {
   const auth = await authRoutes(req, env, url);
   if (auth) return auth;
   if (path === "/api/device/code" || path === "/api/device/token") return deviceApi(req, env, path.split("/").pop()!);
-  // a view-only link (/s/<token>): GET /api/share/<token> names the project, WSS /api/share/<token>/view is a read-only viewer
-  const share = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})(\/view)?$/);
-  if (share) {
-    const p = await accounts(env).shared(share[1]);
-    if (!p) return error("this link was turned off or the project deleted", 404, "ask for a new link");
-    if (!share[2]) return json({ project: p.name });
-    if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error("expected a WebSocket", 426);
-    // the Durable Object reads the share from this header, which only this route sets
-    const headers = new Headers(req.headers);
-    headers.set("X-Tule-Share", "1");
-    return ops.projectStub(env, p.id).fetch(new Request(`${url.origin}/view`, { headers }));
-  }
+  // a view-only link (/s/<token>): GET /api/share/<token> is the frozen outputs list, /api/share/<token>/file?path= a file
+  // of its snapshot. Only storage is read: the viewer turns models into meshes in the visitor's browser.
+  const share = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})(\/file)?$/);
+  if (share && req.method === "GET") return shareRoute(env, share[1], !!share[2], url);
   // a computer joins with the one-time key from Settings (install.sh runs `tule host up --key`)
   if (path === "/api/hosts/pair" && req.method === "POST") {
     const b = (await req.json().catch(() => ({}))) as { key?: unknown; name?: unknown; token?: unknown };

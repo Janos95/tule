@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "markdown-it": "15.0.3",
+    "occt-import-js": "0.0.23",
     "three": "0.186.1",
     "vega": "6.4.0",
     "vega-interpreter": "2.3.2",

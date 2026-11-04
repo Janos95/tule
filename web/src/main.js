@@ -104,38 +104,17 @@ function flash(text) {
 // ------------------------------------------------------------ connection
 
 async function connect(delay = 500) {
-  if (shareToken) {
-    let r;
-    try {
-      r = await fetch(`/api/share/${shareToken}`);
-    } catch {
-      return void setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay);
-    }
-    if (!r.ok) {
-      // nothing from the project stays on screen
-      state.outputs = [];
-      renderList();
-      show();
-      machine({ state: "stopped" });
-      $("machine-text").textContent = "link turned off";
-      return setStatus(LINK_OFF);
-    }
-    project = (await r.json()).project;
-  }
+  if (shareToken) return openShared(delay);
   if (!project) {
     setStatus("Open a project: /p/<name> (tule open -p <name>)");
     return;
   }
-  if (!shareToken && !(await auth.signedIn())) return;
+  if (!(await auth.signedIn())) return;
   $("project-name").textContent = project;
   document.title = `${project} · Tule`;
-  if (!shareToken) void initShare();
+  void initShare();
   const pickedM = new URLSearchParams(location.search).get("machine");
-  ws = new WebSocket(
-    shareToken
-      ? auth.socket(`/api/share/${shareToken}/view`)
-      : auth.socket(`/api/projects/${project}/view${pickedM ? `?machine=${encodeURIComponent(pickedM)}` : ""}`),
-  );
+  ws = new WebSocket(auth.socket(`/api/projects/${project}/view${pickedM ? `?machine=${encodeURIComponent(pickedM)}` : ""}`));
   ws.binaryType = "arraybuffer";
   ws.onopen = () => (delay = 500);
   ws.onmessage = (e) => (typeof e.data === "string" ? onText(JSON.parse(e.data)) : onMesh(e.data));
@@ -145,9 +124,68 @@ async function connect(delay = 500) {
     chunks.clear();
     machine({ state: "offline" });
     if (e.code === 1008 || e.code === 4401) return setStatus("Not authorized for this project: sign in with the account that owns it");
-    if (shareToken) return void setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay); // connect() checks the link again
     setTimeout(() => connect(Math.min(delay * 2, 10_000)), delay);
   };
+}
+
+/** A view-only link: the outputs list and files as frozen when it was made, from storage; models are
+ * meshed in this browser (stepmesh.js). No machine and no account. */
+async function openShared(delay) {
+  let r;
+  try {
+    r = await fetch(`/api/share/${shareToken}`);
+  } catch {
+    return void setTimeout(() => openShared(Math.min(delay * 2, 10_000)), delay);
+  }
+  if (!r.ok) {
+    $("machine-text").textContent = "link turned off";
+    return setStatus(LINK_OFF);
+  }
+  const s = await r.json();
+  project = s.project;
+  $("project-name").textContent = project;
+  document.title = `${project} · Tule`;
+  $("machine").dataset.state = "shared";
+  $("machine-text").textContent = `as of ${new Date(s.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`;
+  $("machine").title = "A view-only copy, frozen when the link was made";
+  onText({ t: "outputs", outputs: s.outputs });
+}
+
+/** A file of the shared snapshot, as an ArrayBuffer (the first `max` bytes). */
+async function sharedFile(path, max) {
+  const r = await fetch(`/api/share/${shareToken}/file?path=${encodeURIComponent(path)}`);
+  if (!r.ok) {
+    let msg = `${r.status}`;
+    try {
+      msg = (await r.json()).error ?? msg;
+    } catch {
+      // not JSON
+    }
+    throw new Error(msg);
+  }
+  const buf = await r.arrayBuffer();
+  return max && buf.byteLength > max ? buf.slice(0, max) : buf;
+}
+
+let stepWorker;
+const stepJobs = new Map();
+/** A model of the shared snapshot as the machine's mesh message would decode, meshed in a worker. */
+async function sharedMesh(file) {
+  const bytes = await sharedFile(file.path ?? file.wire);
+  if (!stepWorker) {
+    stepWorker = new Worker(new URL("./stepmesh.js", import.meta.url));
+    stepWorker.onmessage = ({ data }) => {
+      const job = stepJobs.get(data.id);
+      stepJobs.delete(data.id);
+      if (data.error) job?.reject(new Error(data.error));
+      else job?.resolve(decode(data.buf, 0));
+    };
+  }
+  const id = ++rid;
+  return new Promise((resolve, reject) => {
+    stepJobs.set(id, { resolve, reject });
+    stepWorker.postMessage({ id, name: file.path ?? file.wire, bytes }, [bytes]);
+  });
 }
 
 function onText(m) {
@@ -171,6 +209,7 @@ function onText(m) {
 /** A request to the machine's agent (REQUESTS in runtime/tule_agent.py):
  * resolves to its answer (an object, or an ArrayBuffer for bytes). */
 function req(op, args = {}, timeoutMs = 120_000) {
+  if (shareToken) return op === "read" ? sharedFile(args.path, args.max) : Promise.reject(new Error("not available from a view-only link"));
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected to the project"));
     const id = ++rid;
@@ -234,7 +273,7 @@ function decode(buf, at) {
 
 function request(file) {
   if (!meshes.has(file.hash)) {
-    const promise = new Promise((resolve, reject) => {
+    const promise = shareToken ? sharedMesh(file) : new Promise((resolve, reject) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected"));
       const id = ++rid;
       // the machine gives up after 15 minutes; past that the answer was lost on the way
@@ -1045,11 +1084,19 @@ async function initShare() {
   }
 }
 
-function renderShare(s, err) {
+function renderShare(s, err, busy = false) {
   const menu = $("share-menu");
   const p = (text, cls) => Object.assign(document.createElement("p"), { textContent: text, className: cls ?? "" });
   const button = (text, cls, fn) => Object.assign(document.createElement("button"), { type: "button", textContent: text, className: cls, onclick: fn });
-  const kids = [p(`Anyone with the link sees ${s.shared ? "this project's" : "the project's"} outputs, work and inputs (not its sources) while a machine runs it.`)];
+  shareState = s;
+  const when = s.created ? new Date(s.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+  const kids = [
+    p(
+      s.shared
+        ? `Anyone with the link sees outputs, work and inputs as of ${when}, in their own browser. Your machines are not used.`
+        : "Saves this copy and makes a link to it as it is now. Anyone with the link sees its outputs, work and inputs (not sources) in their own browser.",
+    ),
+  ];
   if (s.shared) {
     const link = Object.assign(document.createElement("input"), { readOnly: true, value: s.url, ariaLabel: "View-only link" });
     link.addEventListener("focus", () => link.select());
@@ -1064,22 +1111,29 @@ function renderShare(s, err) {
     });
     const row = document.createElement("div");
     row.className = "row";
-    row.append(copy, button("Stop sharing", "", () => share("DELETE")));
+    row.append(copy, button("New link", "", () => share("POST")), button("Stop", "", () => share("DELETE")));
     kids.push(link, row);
   } else {
     kids.push(button("Create link", "primary", () => share("POST")));
   }
-  if (err) kids.push(p(err, "menu-error"));
+  if (s.shared) {
+    kids.push(p("New link shows later changes; the old link stops working.", "menu-note"));
+  }
+  if (err) kids.push(p(err, busy ? "menu-note" : "menu-error"));
   menu.replaceChildren(...kids);
   $("share").textContent = s.shared ? "Shared" : "Share";
   $("share").classList.toggle("primary", !!s.shared);
 }
 
+let shareState = { shared: false };
 async function share(method) {
+  const before = shareState;
+  if (method === "POST") renderShare(before, "Saving a copy for the link…", true);
   try {
-    renderShare(await (await auth.api(`/api/projects/${project}/share`, { method })).json());
+    const init = method === "POST" ? { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ machine: state.viewing ?? undefined }) } : { method };
+    renderShare(await (await auth.api(`/api/projects/${project}/share`, init)).json());
   } catch (e) {
-    renderShare({ shared: false }, e.message);
+    renderShare(before, e.message);
   }
 }
 

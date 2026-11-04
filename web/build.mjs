@@ -19,6 +19,7 @@ const dist = path.join(web, "dist");
 const watching = process.argv.includes("--watch");
 const dev = watching || process.argv.includes("--dev");
 const out = path.join(dist, dev ? "assets-dev" : ".next");
+const OCCT = `occt-${JSON.parse(await fs.readFile(path.join(web, "node_modules", "occt-import-js", "package.json"), "utf8")).version}`;
 
 // the dev page reloads when /__dev/version changes (control/src/dev.ts)
 const RELOAD = `<script>(()=>{let v;setInterval(async()=>{try{const r=await fetch("/__dev/version",{cache:"no-store"});const t=await r.text();if(v&&t!==v)location.reload();v=t}catch{}},700)})()</script>`;
@@ -27,6 +28,13 @@ async function finish() {
   // the palette's variables first, then the viewer's rules that use them
   const css = await Promise.all(["palette.css", "style.css"].map((f) => fs.readFile(path.join(web, "src", f), "utf8")));
   await fs.writeFile(path.join(out, "style.css"), css.join("\n"));
+  // a view-only link meshes models in the visitor's browser: a worker and OpenCascade as WebAssembly (loaded only there)
+  const worker = await fs.readFile(path.join(web, "src", "stepmesh.js"), "utf8");
+  await fs.writeFile(path.join(out, "stepmesh.js"), worker.replaceAll("__OCCT__", `/${OCCT}/`));
+  const occt = path.join(dist, OCCT);
+  await fs.mkdir(occt, { recursive: true });
+  for (const f of ["occt-import-js.js", "occt-import-js.wasm", "license.occt.txt", "license.occt-import-js.txt"])
+    await fs.copyFile(path.join(web, "node_modules", "occt-import-js", "dist", f), path.join(occt, f));
   let v = "assets-dev";
   if (!dev) {
     const h = crypto.createHash("sha256");

@@ -1326,6 +1326,7 @@ main {
 .share-menu input { width: 100%; font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
 .share-menu .row { display: flex; gap: 8px; }
 .share-menu .menu-error { color: var(--danger); }
+.share-menu .menu-note { color: var(--muted); font-size: 12px; }
 .view-only { display: none; font-size: 12px; color: var(--muted); }
 /* opened from a view-only link: nothing that changes the project or needs an account */
 .shared-view .project-head .back, .shared-view #annotate-toggle, .shared-view #save-now,
