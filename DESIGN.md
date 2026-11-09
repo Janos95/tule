@@ -891,6 +891,22 @@ the same names (pages only for now; the viewer opts out). The logo uses navy,
 reed-light and stem-light on its tile; reed and stem without it
 (`tools/logo.py`).
 
+### Text
+
+Four sizes, by role, in `web/src/palette.css`; no other pixel sizes for interface text, no half pixels.
+
+| Role | Variable | Viewer | Pages | Weight | For |
+| --- | --- | --- | --- | --- | --- |
+| Title | `--fs-title` | 16 | 18 | 600 | a project's name, a page's heading |
+| Body | `--fs-body` | 13 | 14 | 400; 500 for emphasis | rows, buttons, menus, inputs; emphasis: the selected row, names, primary buttons |
+| Small | `--fs-small` | 12 | 13 | 400 | secondary, usually `--muted`: counts, dates, notes, status |
+| Label | `--fs-label` | 11 | 11 | 500 | section labels (uppercase), axis ticks |
+
+The pages (projects, settings, sign-in) are read, so they sit one step larger (`control/src/pages.ts`
+sets the variables). `--muted` means secondary; `--faint` only disabled things and placeholders.
+Outside the roles: the logo, the landing page's headline, glyph buttons (×), monospace (12 or 13),
+and a rendered document (`.page-doc`: content, its own reading scale).
+
 ## Python API (`tule`)
 
 A thin, opinionated layer over OCP (no build123d dependency; build123d's

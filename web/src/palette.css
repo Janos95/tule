@@ -11,6 +11,12 @@
   --stem: #4f8a3c;
   --stem-light: #8fc46a;
 
+  /* text: four sizes, by role (DESIGN.md "Text"). Weights: 400, 500 for emphasis, 600 for titles only. */
+  --fs-title: 16px; /* a project's name, a page's heading */
+  --fs-body: 13px; /* rows, buttons, menus, inputs */
+  --fs-small: 12px; /* secondary: counts, dates, notes, status (usually muted) */
+  --fs-label: 11px; /* section labels (uppercase), axis ticks */
+
   /* surfaces and lines */
   --bg: #fffefb;
   --panel: #faf8f3;
