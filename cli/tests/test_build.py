@@ -420,7 +420,7 @@ def test_an_opencascade_error_says_where_in_the_project(project):
         "from OCP.BRep import BRep_Builder\nfrom OCP.BRepAdaptor import BRepAdaptor_Curve\nfrom OCP.TopoDS import TopoDS_Edge\n"
         "e = TopoDS_Edge()\nBRep_Builder().MakeEdge(e)\nBRepAdaptor_Curve(e)\n")
     code, err = build(project, "edge")
-    assert code and "OpenCascade failed at src/edge.py:6 (Standard_Failure: BRepAdaptor_Curve::No geometry)" in err
+    assert code and "OpenCascade failed at src/edge.py:6 (Standard_NullObject: BRepAdaptor_Curve::No geometry)" in err
 
 
 def test_a_module_imported_from_its_cache_is_still_read(project):

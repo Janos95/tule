@@ -901,7 +901,7 @@ async function show() {
     const named = (m, f, i) => {
       const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
       const matrix = (kind === "assembly" || placed) && entry?.transform != null ? placement(entry.transform, f.file) : null;
-      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? m.color, matrix, entry: i };
+      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? (kind === "part" ? o.meta?.color : null) ?? m.color, matrix, entry: i };
     };
     // a big assembly draws its parts as they come in (a few times a second), not after the last one
     const got = new Array(shownFiles.length);
@@ -1181,7 +1181,7 @@ function renderShare(s, err, busy = false) {
   if (err) kids.push(p(err, busy ? "menu-note" : "menu-error"));
   menu.replaceChildren(...kids);
   $("share").textContent = s.shared ? "Shared" : "Share";
-  $("share").classList.toggle("primary", !!s.shared);
+  $("share").classList.toggle("linked", !!s.shared); // a quiet dot: a link exists
 }
 
 let shareState = { shared: false };
