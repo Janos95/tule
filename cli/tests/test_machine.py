@@ -74,6 +74,26 @@ def test_render_report_and_views(outputs):
     assert "f11" in rep["labeled"] and "f12" in rep["hidden"]
 
 
+def test_a_see_through_part_shows_what_is_behind_it():
+    from tule import box
+    from tule_cli.machine import _rgb
+    from tule_cli.render import Part
+
+    def part(shape, color):
+        m = shape.tessellate()
+        return Part(shape.name, m.positions, m.normals, m.indices, m.face_ids, _rgb(color), {}, 6)
+
+    assert _rgb("#8da0aa66") == pytest.approx((0x8d / 255, 0xa0 / 255, 0xaa / 255, 0.4)) and len(_rgb("#8da0aaff")) == 3
+    red = part(box(20, 20, 2).named("floor"), "#dd2222")
+    centre = lambda img: np.asarray(img, dtype=float)[img.height // 2, img.width // 2, :3] / 255
+    solid, _ = render([red, part(box(10, 10, 2).at(5, 5, 10).named("pane"), "#2244dd")], "top", 300)
+    glass, _ = render([red, part(box(10, 10, 2).at(5, 5, 10).named("pane"), "#2244dd66")], "top", 300)
+    alone, _ = render([red], "top", 300)
+    s, g, a = centre(solid), centre(glass), centre(alone)
+    assert s[2] > s[0] + 0.3  # the solid pane hides the red floor
+    assert g[0] > s[0] + 0.2 and g[2] > a[2] + 0.1  # through the glass: the floor's red, tinted blue
+
+
 def test_screenshot_overlay(outputs, tmp_path, capsys):
     d = outputs / "loads"
     d.mkdir()

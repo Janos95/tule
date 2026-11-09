@@ -19,7 +19,7 @@ from OCP.BRep import BRep_Tool
 from OCP.BRepLib import BRepLib_ToolTriangulatedShape
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.IFSelect import IFSelect_RetDone
-from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+from OCP.Quantity import Quantity_Color, Quantity_ColorRGBA, Quantity_TOC_RGB
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer
 from OCP.STEPControl import STEPControl_AsIs
 from OCP.TCollection import TCollection_ExtendedString, TCollection_HAsciiString
@@ -81,26 +81,38 @@ _NAMED = {
 }
 
 
-def parse_color(c: str | Iterable[float] | None) -> tuple[float, float, float] | None:
-    """``"#4a8"``, ``"#44aa88"``, a few names, or an ``(r, g, b)`` tuple in 0..1."""
+def parse_rgba(c: str | Iterable[float] | None) -> tuple[float, float, float, float] | None:
+    """``"#4a8"``, ``"#44aa88"``, a few names, or ``(r, g, b)`` in 0..1; with opacity: ``"#4a86"``,
+    ``"#44aa8866"`` or ``(r, g, b, a)`` (``a`` 1 is solid, 0 invisible: glass about 0.3-0.4)."""
     if c is None:
         return None
     if not isinstance(c, str):
-        r, g, b = list(c)[:3]
-        return float(r), float(g), float(b)
+        v = [float(x) for x in c]
+        if len(v) not in (3, 4) or not all(0 <= x <= 1 for x in v):
+            raise TuleError(f"cannot read color {c!r}", hint="a tuple is (r, g, b) or (r, g, b, a), each 0..1")
+        return (v[0], v[1], v[2], v[3] if len(v) == 4 else 1.0)
     c = _NAMED.get(c.lower(), c)
     h = c.lstrip("#")
-    if len(h) == 3:
+    if len(h) in (3, 4):
         h = "".join(ch * 2 for ch in h)
-    if len(h) != 6:
-        raise TuleError(f"cannot read color {c!r}", hint='use "#rgb", "#rrggbb" or (r, g, b) in 0..1')
-    return tuple(int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
+    if len(h) not in (6, 8) or any(ch not in "0123456789abcdefABCDEF" for ch in h):
+        raise TuleError(f"cannot read color {c!r}", hint='use "#rgb", "#rrggbb", a name, or with opacity "#rrggbbaa" ("#8da0aa66": glass)')
+    v = [int(h[i : i + 2], 16) / 255.0 for i in range(0, len(h), 2)]
+    return (v[0], v[1], v[2], v[3] if len(v) == 4 else 1.0)
 
 
-def color_hex(rgb: tuple[float, float, float] | None) -> str | None:
+def parse_color(c: str | Iterable[float] | None) -> tuple[float, float, float] | None:
+    """The color without its opacity (see parse_rgba)."""
+    rgba = parse_rgba(c)
+    return rgba[:3] if rgba else None
+
+
+def color_hex(rgb: tuple[float, ...] | None) -> str | None:
+    """``"#rrggbb"``, or ``"#rrggbbaa"`` for a see-through color (an ``a`` below 1)."""
     if rgb is None:
         return None
-    return "#" + "".join(f"{max(0, min(255, round(v * 255))):02x}" for v in rgb)
+    v = list(rgb[:3]) + ([rgb[3]] if len(rgb) > 3 and rgb[3] < 1 else [])
+    return "#" + "".join(f"{max(0, min(255, round(x * 255))):02x}" for x in v)
 
 
 # ---------------------------------------------------------------- atomic files
@@ -184,9 +196,9 @@ def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False
     if instances is not None:
         instances.append((proto, name, label))
     _set_name(label, name)
-    rgb = parse_color(shape.color)
-    if rgb:
-        ct.SetColor(label, Quantity_Color(*rgb, Quantity_TOC_RGB), XCAFDoc_ColorGen)
+    rgba = parse_rgba(shape.color)
+    if rgba:
+        ct.SetColor(label, Quantity_ColorRGBA(Quantity_Color(*rgba[:3], Quantity_TOC_RGB), rgba[3]), XCAFDoc_ColorGen)
     # tags: one named sub-shape label per tagged face/edge
     seen = ShapeSet()
     names_of: list[list[str]] = []
@@ -300,10 +312,11 @@ def import_step(path: str):
     ST, CT = type(st), type(ct)
 
     def color_of(label):
-        c = Quantity_Color()
+        c = Quantity_ColorRGBA()
         for t in (XCAFDoc_ColorGen, XCAFDoc_ColorSurf):
             if static(CT, "GetColor")(label, t, c):
-                return color_hex((c.Red(), c.Green(), c.Blue()))
+                rgb = c.GetRGB()
+                return color_hex((rgb.Red(), rgb.Green(), rgb.Blue(), c.Alpha()))
         return None
 
     def part_from(label, loc=None, color=None) -> Shape:
@@ -519,8 +532,9 @@ def export_gltf(item: Union["Shape", "Assembly"], path: str, tolerance: float = 
             {"bufferView": iv, "componentType": 5125, "count": int(m.indices.size), "type": "SCALAR"},
         ]
         a0 = len(accessors) - 3
-        rgb = parse_color(part.color) or (0.62, 0.66, 0.70)
-        materials.append({"name": name, "pbrMetallicRoughness": {"baseColorFactor": [*rgb, 1.0], "metallicFactor": 0.1, "roughnessFactor": 0.6}})
+        rgba = parse_rgba(part.color) or (0.62, 0.66, 0.70, 1.0)
+        materials.append({"name": name, "pbrMetallicRoughness": {"baseColorFactor": list(rgba), "metallicFactor": 0.1, "roughnessFactor": 0.6},
+                          **({"alphaMode": "BLEND", "doubleSided": True} if rgba[3] < 1 else {})})
         meshes.append({"name": name, "primitives": [{"attributes": {"POSITION": a0, "NORMAL": a0 + 1}, "indices": a0 + 2, "material": len(materials) - 1}]})
         nodes.append({"name": name, "mesh": len(meshes) - 1})
     gltf = {

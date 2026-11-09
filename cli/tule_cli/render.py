@@ -245,14 +245,23 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     Ws, Hs = W * SS, H * SS
     X = (S[:, 0] - c[0]) * scale * SS + Ws / 2
     Y = Hs / 2 - (S[:, 1] - c[1]) * scale * SS
-    zbuf, tbuf, b0, b1 = rasterize(X, Y, S[:, 2], T, Ws, Hs)
+    # see-through parts (a color with opacity, (r, g, b, a)): drawn over what is behind them, the nearest layer only
+    alpha = np.array([p.color[3] if p.color is not None and len(p.color) > 3 else 1.0 for p in parts])
+    see = alpha[tri_part] < 1
+    solid = np.nonzero(~see)[0]
+    zbuf, tbuf, b0, b1 = rasterize(X, Y, S[:, 2], T[solid], Ws, Hs)
+    tbuf = np.where(tbuf >= 0, solid[np.maximum(tbuf, 0)], -1)
+    if see.any():
+        clear = np.nonzero(see)[0]
+        zg, tg, g0, g1 = rasterize(X, Y, S[:, 2], T[clear], Ws, Hs)
+        tg = np.where((tg >= 0) & (zg > zbuf), clear[np.maximum(tg, 0)], -1)
     fg = tbuf >= 0
     t = tbuf[fg]
 
     # colors per triangle
     base = np.empty((len(parts), 3))
     for i, p in enumerate(parts):
-        base[i] = p.color or DEFAULT_COLOR
+        base[i] = p.color[:3] if p.color else DEFAULT_COLOR
     tri_color = base[tri_part]
     if overlay is not None:
         tri_color[:] = DIM_COLOR
@@ -260,17 +269,21 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
             tri_color[(tri_part == pi) & (tri_face == fid)] = spec["color"]
 
     # smooth shading from interpolated surface normals, lit in camera space
-    w0, w1 = b0[fg], b1[fg]
-    i0, i1, i2 = T[t, 0], T[t, 1], T[t, 2]
-    n = w0[:, None] * Nw[i0] + w1[:, None] * Nw[i1] + (1 - w0 - w1)[:, None] * Nw[i2]
-    n = n @ R.T
-    n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
-    n[n[:, 2] < 0] *= -1  # two-sided
     key = _unit((-0.45, 0.65, 0.62))
     fill = _unit((0.7, -0.25, 0.45))
     half = _unit(key + np.array([0, 0, 1.0]))
-    shade = 0.30 + 0.62 * np.clip(n @ key, 0, 1) + 0.20 * np.clip(n @ fill, 0, 1)
-    spec = 0.10 * np.clip(n @ half, 0, 1) ** 40
+
+    def lit(t, w0, w1):
+        i0, i1, i2 = T[t, 0], T[t, 1], T[t, 2]
+        n = w0[:, None] * Nw[i0] + w1[:, None] * Nw[i1] + (1 - w0 - w1)[:, None] * Nw[i2]
+        n = n @ R.T
+        n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
+        n[n[:, 2] < 0] *= -1  # two-sided
+        return n, 0.30 + 0.62 * np.clip(n @ key, 0, 1) + 0.20 * np.clip(n @ fill, 0, 1), 0.10 * np.clip(n @ half, 0, 1) ** 40
+
+    w0, w1 = b0[fg], b1[fg]
+    i0, i1, i2 = T[t, 0], T[t, 1], T[t, 2]
+    n, shade, spec = lit(t, w0, w1)
     color = tri_color[t]
     if any(p.colors is not None for p in parts):  # a field: colors per vertex, interpolated in each triangle
         C = np.concatenate([p.colors if p.colors is not None else np.full((len(p.positions), 3), np.nan) for p in parts])
@@ -312,6 +325,27 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
         line = _dilate(line)
     img = img.reshape(Hs, Ws, 3)
     img[line] = LINE
+    if see.any():  # the glass over it: its color by its opacity, brighter where it turns away (a rim), its outline faint
+        gf = tg >= 0
+        if gf.any():
+            gt = tg[gf]
+            gn, gshade, gspec = lit(gt, g0[gf], g1[gf])
+            a = alpha[tri_part[gt]]
+            a = np.clip(a * (0.8 + 1.6 * (1 - np.abs(gn[:, 2])) ** 2), 0, 0.92)[:, None]
+            flat = img.reshape(-1, 3)
+            flat[gf] = (1 - a) * flat[gf] + a * np.clip(tri_color[gt] * gshade[:, None] + 3 * gspec[:, None], 0, 1)
+            gk = np.full(Ws * Hs, -1, dtype=np.int64)
+            gk[gf] = tri_part[gt] * (1 << 32) + tri_face[gt]
+            gk = gk.reshape(Hs, Ws)
+            edge = np.zeros((Hs, Ws), dtype=bool)
+            for a2, b2 in (((slice(None), slice(1, None)), (slice(None), slice(None, -1))),
+                           ((slice(1, None), slice(None)), (slice(None, -1), slice(None)))):
+                diff = gk[a2] != gk[b2]
+                edge[a2] |= diff
+                edge[b2] |= diff
+            if SS > 1:
+                edge = _dilate(edge)
+            img[edge] = 0.55 * img[edge] + 0.45 * np.asarray(LINE)
 
     big = Image.fromarray((img * 255 + 0.5).astype(np.uint8))
     # arrows, drawn on top so they are never hidden

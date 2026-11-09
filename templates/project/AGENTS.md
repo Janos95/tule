@@ -253,6 +253,7 @@ Optional: without it one file is a part, numbered files a sequence, several file
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid`, …) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend; stress: `tule docs fea`.
+- **See-through** parts (glass, covers): a color with opacity, `.named("window", "#8da0aa66")`.
 - **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", …}}` (`estimate="bambu-p1s"`, the user's printer: `tule docs outputs.plate`). Overflow: more plates; a part's `{"down": "base"}` lays that tagged face down.
 - **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 

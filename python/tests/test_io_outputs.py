@@ -169,11 +169,34 @@ def test_stl_and_gltf(tmp_path):
     assert [m["name"] for m in js["meshes"]] == ["a", "b"]
 
 
+def test_a_color_with_opacity_is_kept(tmp_path, outdir):
+    from tule.io import color_hex, parse_color, parse_rgba
+    assert parse_rgba("#8da0aa66") == pytest.approx((0x8d / 255, 0xa0 / 255, 0xaa / 255, 0.4))
+    assert parse_rgba("#4a86")[3] == pytest.approx(0.4) and parse_rgba("steel")[3] == 1 and parse_rgba((0.1, 0.2, 0.3, 0.5))[3] == 0.5
+    assert parse_color("#8da0aa66") == pytest.approx((0x8d / 255, 0xa0 / 255, 0xaa / 255))  # without it
+    assert color_hex((1, 0, 0)) == "#ff0000" and color_hex((1, 0, 0, 1)) == "#ff0000" and color_hex((1, 0, 0, 0.4)) == "#ff000066"
+    for bad in ("#12345", "#gggggg", "glassy", (1, 2, 3)):
+        with pytest.raises(TuleError, match="cannot read color"):
+            box(1).named("a", bad)  # when the part is named, not when it is written
+    pane = box(40, 2, 30).named("window", "#8da0aa66")
+    path = str(tmp_path / "w.step")
+    pane.export_step(path)
+    assert import_step(path).color == "#8da0aa66"
+    folder = outputs.assembly("car", Assembly(pane, box(1).named("body", "steel").at(0, 5, 0), name="car"))
+    parts = json.load(open(os.path.join(folder, "output.json")))["parts"]
+    assert [p.get("color") for p in parts] == ["#8da0aa66", "#8a9aa8"]  # as the viewer reads them
+    glb = str(tmp_path / "w.glb")
+    pane.export_gltf(glb)
+    head = open(glb, "rb").read()
+    mat = json.loads(head[20:20 + int.from_bytes(head[12:16], "little")])["materials"][0]
+    assert mat["alphaMode"] == "BLEND" and mat["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.4)
+
+
 def test_outputs_part_assembly_sequence(outdir):
     part = tagged_bracket()
     folder = outputs.part("bracket", part)
     meta = json.load(open(os.path.join(folder, "output.json")))
-    assert meta == {"version": 1, "kind": "part", "file": "bracket.step", "name": "bracket", "color": "#4a8"}
+    assert meta == {"version": 1, "kind": "part", "file": "bracket.step", "name": "bracket", "color": "#44aa88"}
 
     asm = Assembly(box(1).named("a", "#f00"), box(1).named("b").at(3, 0, 0), name="pair")
     folder = outputs.assembly("pair", asm)
@@ -203,7 +226,7 @@ def test_outputs_part_assembly_sequence(outdir):
     assert sorted(f for f in os.listdir(outdir / "move") if f.endswith(".step")) == ["arm.step", "arm_2.step", "base.step"]
     f0, f2, f3 = meta["frames"][0], meta["frames"][2], meta["frames"][3]
     assert [p["file"] for p in f0["parts"]] == ["base.step", "arm.step"] and "transform" not in f0["parts"][0]
-    assert f0["parts"][1]["color"] == "#d33" and f0["parts"][1]["transform"][3] == pytest.approx(10)
+    assert f0["parts"][1]["color"] == "#dd3333" and f0["parts"][1]["transform"][3] == pytest.approx(10)
     t = f2["parts"][1]["transform"]  # 60° about y: x' = cos·x + sin·z
     assert t[0] == pytest.approx(0.5) and t[2] == pytest.approx(3 ** 0.5 / 2) and t[12:] == [0, 0, 0, 1]
     assert f3["parts"][1]["file"] == "arm_2.step" and f2["values"] == {"angle": 60.0}

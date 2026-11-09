@@ -188,17 +188,20 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
 
 
 def _rgb(c):
+    """(r, g, b), or (r, g, b, a) for a see-through color ("#rrggbbaa")."""
     if not c:
         return None
     if isinstance(c, (list, tuple)):
-        return tuple(float(v) for v in c[:3])
+        v = tuple(float(x) for x in c[:4])
+        return v if len(v) == 4 and v[3] < 1 else v[:3]
     h = c.lstrip("#")
-    if len(h) == 3:
+    if len(h) in (3, 4):
         h = "".join(ch * 2 for ch in h)
     try:
-        return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        v = tuple(int(h[i:i + 2], 16) / 255 for i in range(0, len(h), 2))
     except ValueError:
         return None
+    return v if len(v) == 4 and v[3] < 1 else v[:3] if len(v) in (3, 4) else None
 
 
 def _numbered(files: list[str]) -> bool:

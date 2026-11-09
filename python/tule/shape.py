@@ -181,13 +181,17 @@ class Shape:
         )
 
     def named(self, name: str, color: str | None = None) -> "Shape":
-        """The same shape with a part name and (optionally) a color like ``"#4a8"``."""
+        """The same shape with a part name and (optionally) a color like ``"#4a8"``; with opacity
+        (``"#rrggbbaa"``, ``"#8da0aa66"``) it is drawn see-through: glass, covers, housings."""
         return self._renamed(name, color or self.color)
 
     def colored(self, color: str) -> "Shape":
         return self._renamed(self.name, color)
 
     def _renamed(self, name, color) -> "Shape":
+        if color is not None:
+            from .io import parse_rgba
+            parse_rgba(color)  # a wrong color fails here, not when the part is written
         out = Shape(self._s, self._g, self._alias, name, color, self._sm)
         out._cache = self._cache  # the same solid: its faces, bounds, flat pattern
         return out

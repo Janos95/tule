@@ -77,6 +77,7 @@ export class Viewer {
     this.materials = new Map();
     // the CAD edges: the palette's navy (--navy in palette.css), a constant since the 3D view stays light
     this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x23344a, transparent: true, opacity: 0.75 });
+    this.edgeClear = new THREE.LineBasicMaterial({ color: 0x23344a, transparent: true, opacity: 0.3 }); // a see-through part's
     this.depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, ...BEHIND });
     // a field is colored per pixel: its grid is a 3D texture sampled at the undeformed point ("rest"),
     // so a coarse mesh (a flat face is two triangles) still shows the field as it is
@@ -141,10 +142,24 @@ export class Viewer {
     this.dirty = true;
   }
 
+  // a part's color: "#rrggbb", or "#rrggbbaa" for a see-through part (glass, a cover): drawn after the solid
+  // ones, not hiding what is behind it, a little denser where the surface turns away
   material(color) {
     let m = this.materials.get(color);
     if (!m) {
-      m = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide, ...BEHIND });
+      const [rgb, a] = opacityOf(color);
+      if (a < 1) {
+        m = new THREE.MeshStandardMaterial({ color: new THREE.Color(rgb), roughness: 0.25, transparent: true, opacity: a, depthWrite: false, side: THREE.DoubleSide, ...BEHIND });
+        m.onBeforeCompile = (shader) => {
+          shader.fragmentShader = shader.fragmentShader.replace(
+            "#include <dithering_fragment>",
+            `#include <dithering_fragment>
+            float rim = 1.0 - abs(dot(normal, normalize(vViewPosition)));
+            gl_FragColor.a = min(0.92, gl_FragColor.a * (0.8 + 1.6 * rim * rim));`,
+          );
+        };
+        m.customProgramCacheKey = () => "tule-clear";
+      } else m = new THREE.MeshStandardMaterial({ color: new THREE.Color(rgb), roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide, ...BEHIND });
       this.materials.set(color, m);
     }
     return m;
@@ -156,7 +171,7 @@ export class Viewer {
     const key = `${color}/hatch`;
     let m = this.materials.get(key);
     if (!m) {
-      m = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.62, side: THREE.DoubleSide, ...BEHIND });
+      m = new THREE.MeshStandardMaterial({ color: new THREE.Color(opacityOf(color)[0]), roughness: 0.62, side: THREE.DoubleSide, ...BEHIND });
       m.onBeforeCompile = (shader) => {
         shader.fragmentShader = shader.fragmentShader.replace(
           "#include <dithering_fragment>",
@@ -175,7 +190,7 @@ export class Viewer {
     const key = `${color}/${opacity}`;
     let m = this.materials.get(key);
     if (!m) {
-      m = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.5, transparent: true, opacity, depthWrite: false, ...BEHIND });
+      m = new THREE.MeshStandardMaterial({ color: new THREE.Color(opacityOf(color)[0]), roughness: 0.5, transparent: true, opacity, depthWrite: false, ...BEHIND });
       m.onBeforeCompile = (shader) => {
         shader.fragmentShader = shader.fragmentShader.replace(
           "#include <dithering_fragment>",
@@ -228,12 +243,15 @@ export class Viewer {
       }
       const color = m.color || "#8a96a3";
       part.userData = { index, color, geometry: g, mesh: m };
-      part.add(new THREE.Mesh(g, this.material(color)));
+      const clear = opacityOf(color)[1] < 1;
+      const solid = new THREE.Mesh(g, this.material(color));
+      if (clear) solid.renderOrder = 1; // after the solid parts
+      part.add(solid);
       if (m.edges?.length) {
         const lg = new THREE.BufferGeometry();
         lg.setAttribute("position", new THREE.BufferAttribute(m.edges, 3));
         part.userData.lines = lg;
-        const lines = new THREE.LineSegments(lg, this.edgeMaterial);
+        const lines = new THREE.LineSegments(lg, clear ? this.edgeClear : this.edgeMaterial);
         lines.userData.edges = true;
         part.add(lines);
       }
@@ -749,6 +767,14 @@ export class Viewer {
     this.setMeshes([]);
     this.setArrows([]);
   }
+}
+
+// A color and its opacity: "#rrggbbaa" or "#rgba" -> ["#rrggbb", 0..1]; any other color is solid.
+export function opacityOf(color) {
+  const m = typeof color === "string" && /^#([0-9a-f]{8}|[0-9a-f]{4})$/i.exec(color);
+  if (!m) return [color, 1];
+  const h = m[1].length === 4 ? [...m[1]].map((c) => c + c).join("") : m[1];
+  return [`#${h.slice(0, 6)}`, parseInt(h.slice(6), 16) / 255];
 }
 
 // A placement (16 numbers, row-major, or null) as position, rotation and scale; kept per array.

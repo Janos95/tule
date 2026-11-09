@@ -112,6 +112,12 @@ from .shape import Shape
 VERSION = 1
 
 
+
+def _color(c) -> str:
+    """A part's color as the viewer reads it: "#rrggbb", or "#rrggbbaa" when see-through."""
+    from .io import color_hex, parse_rgba
+    return color_hex(parse_rgba(c))
+
 def root() -> str:
     """The outputs folder: ``$TULE_OUTPUTS``, else ``/workspace/outputs`` if ``/workspace`` exists, else ``./outputs``."""
     env = os.environ.get("TULE_OUTPUTS")
@@ -261,7 +267,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
     if shape.name:
         meta["name"] = shape.name
     if shape.color:
-        meta["color"] = shape.color
+        meta["color"] = _color(shape.color)
     _write_json(folder, meta)
     return folder
 
@@ -287,7 +293,7 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
         _write_geometry(os.path.join(folder, fname), shp)
         entry = {"file": fname, "name": path}
         if shp.color:
-            entry["color"] = shp.color
+            entry["color"] = _color(shp.color)
         parts.append(entry)
     meta: dict[str, Any] = {"kind": "assembly", "parts": parts}
     if title or asm.name:
@@ -373,7 +379,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
             fname, first = files[n]
             entry: dict[str, Any] = {"file": fname, "name": f"{name}/{n}" if copies == 1 else f"{name}/{n} ×{copies}/{k}"}
             if shp.color:
-                entry["color"] = shp.color
+                entry["color"] = _color(shp.color)
             if copies > 1:
                 entry["copies"] = copies
                 if k > 1:
@@ -497,7 +503,7 @@ class Sequence:
         else:
             entry = {"file": fname, "name": name}
         if part.color:
-            entry["color"] = part.color
+            entry["color"] = _color(part.color)
         if not loc.IsIdentity():
             t = loc.Transformation()
             entry["transform"] = [round(t.Value(r, c), 7 if c < 4 else 5) for r in (1, 2, 3) for c in (1, 2, 3, 4)] + [0, 0, 0, 1]
