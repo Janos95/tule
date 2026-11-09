@@ -1,6 +1,6 @@
 // The parts panel: the shown frame's parts (show() names) as a small tree.
 // Paths ("gripper/left jaw/finger") make the groups; a root that every
-// part shares is the panel's title. Rows: a color swatch and the name; the
+// part shares is the panel's title. Rows: the name; the
 // eye hides the part (or group), "only" (or Alt-click) shows just it, and
 // hovering or tapping a row highlights it in the view (the other parts turn
 // translucent). Unnamed shapes are "shape 1", "shape 2", ...; references
@@ -186,7 +186,7 @@ export function initParts({ viewer, project }) {
     const lead =
       node.kind === "group"
         ? `<button class="caret" type="button" aria-label="Expand">${CARET}</button>`
-        : `<span class="swatch" style="--c: ${node.color}"></span>`;
+        : '<span class="lead"></span>'; // names line up under a group's
     el.innerHTML = `${lead}<span class="name"></span>${node.kind === "reference" ? "" : '<button class="only" type="button" title="Show only this (Alt-click)">only</button>'}<button class="eye" type="button"></button>`;
     el.querySelector(".name").textContent = node.label;
     el.title = node.kind === "reference" ? "Reference shapes (show(reference=...)), drawn translucent" : node.keys.length === 1 ? node.keys[0] : `${node.label}: ${node.keys.length} parts`;

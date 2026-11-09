@@ -648,24 +648,12 @@ body.resizing.v * {
   background: var(--selected);
 }
 
-.part .swatch {
-  flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
-  background: var(--c);
-  box-shadow: inset 0 0 0 1px var(--shadow);
-}
+.part .lead { flex: none; width: 10px; }
 
 .parts-sep {
   height: 1px;
   margin: 4px 6px;
   background: var(--line);
-}
-
-.part.reference .swatch {
-  background: color-mix(in srgb, var(--c) 30%, transparent);
-  box-shadow: inset 0 0 0 1.5px var(--c);
 }
 
 .part .name {
@@ -678,10 +666,6 @@ body.resizing.v * {
 
 .part.off .name {
   color: var(--faint);
-}
-
-.part.off .swatch {
-  opacity: 0.35;
 }
 
 #parts .caret {
