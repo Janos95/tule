@@ -1180,8 +1180,11 @@ function renderShare(s, err, busy = false) {
   }
   if (err) kids.push(p(err, busy ? "menu-note" : "menu-error"));
   menu.replaceChildren(...kids);
-  $("share").textContent = s.shared ? "Shared" : "Share";
-  $("share").classList.toggle("linked", !!s.shared); // a quiet dot: a link exists
+  // a link exists: a grey link icon and "Shared" (a fact, not a status: no color)
+  $("share").innerHTML = s.shared
+    ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.8 9.2a2.6 2.6 0 0 0 3.7 0l2.1-2.1a2.6 2.6 0 0 0-3.7-3.7l-.8.8M9.2 6.8a2.6 2.6 0 0 0-3.7 0L3.4 8.9a2.6 2.6 0 0 0 3.7 3.7l.8-.8"/></svg>Shared'
+    : "Share";
+  $("share").classList.toggle("linked", !!s.shared);
 }
 
 let shareState = { shared: false };
