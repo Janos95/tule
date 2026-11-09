@@ -1143,70 +1143,82 @@ async function initShare() {
   }
 }
 
-function renderShare(s, err, busy = false) {
-  const menu = $("share-menu");
-  const p = (text, cls) => Object.assign(document.createElement("p"), { textContent: text, className: cls ?? "" });
-  const button = (text, cls, fn) => Object.assign(document.createElement("button"), { type: "button", textContent: text, className: cls, onclick: fn });
-  shareState = s;
-  const when = s.created ? new Date(s.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
-  const kids = [
-    p(
-      s.shared
-        ? `Anyone with the link sees outputs, work and inputs as of ${when}, in their own browser. Your machines are not used.`
-        : "Saves this copy and makes a link to it as it is now. Anyone with the link sees its outputs, work and inputs (not sources) in their own browser.",
-    ),
-  ];
-  if (s.shared) {
-    const link = Object.assign(document.createElement("input"), { readOnly: true, value: s.url, ariaLabel: "View-only link" });
-    link.addEventListener("focus", () => link.select());
-    const copy = button("Copy link", "primary", async () => {
-      try {
-        await navigator.clipboard.writeText(s.url);
-        copy.textContent = "Copied";
-        setTimeout(() => (copy.textContent = "Copy link"), 1500);
-      } catch {
-        link.focus(); // no clipboard here: selected, to copy by hand
-      }
-    });
-    const row = document.createElement("div");
-    row.className = "row";
-    row.append(copy, button("New link", "", () => share("POST")), button("Stop", "", () => share("DELETE")));
-    kids.push(link, row);
-  } else {
-    kids.push(button("Create link", "primary", () => share("POST")));
-  }
-  if (s.shared) {
-    kids.push(p("New link shows later changes; the old link stops working.", "menu-note"));
-  }
-  if (err) kids.push(p(err, busy ? "menu-note" : "menu-error"));
-  menu.replaceChildren(...kids);
-  // a link exists: a grey link icon and "Shared" (a fact, not a status: no color)
-  $("share").innerHTML = s.shared
-    ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.8 9.2a2.6 2.6 0 0 0 3.7 0l2.1-2.1a2.6 2.6 0 0 0-3.7-3.7l-.8.8M9.2 6.8a2.6 2.6 0 0 0-3.7 0L3.4 8.9a2.6 2.6 0 0 0 3.7 3.7l.8-.8"/></svg>Shared'
-    : "Share";
-  $("share").classList.toggle("linked", !!s.shared);
-}
-
+// Share: one click makes the view-only link and copies it. Once a link exists the button reads "Shared" and
+// opens a small menu: copy it, update it (a new link to the project as it is now; the old one stops), stop.
+const LINK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.8 9.2a2.6 2.6 0 0 0 3.7 0l2.1-2.1a2.6 2.6 0 0 0-3.7-3.7l-.8.8M9.2 6.8a2.6 2.6 0 0 0-3.7 0L3.4 8.9a2.6 2.6 0 0 0 3.7 3.7l.8-.8"/></svg>';
 let shareState = { shared: false };
+let shareFlash = null;
+function shareLabel(text) { // the button, or a passing word on it ("Link copied")
+  clearTimeout(shareFlash);
+  const s = shareState;
+  $("share").innerHTML = text ? (s.shared ? LINK_ICON : "") + text : s.shared ? LINK_ICON + "Shared" : "Share";
+  $("share").classList.toggle("linked", !!s.shared);
+  $("share").title = s.shared ? "A view-only link to this project exists" : "Copy a view-only link to this project as it is now: its outputs, work and inputs, not sources";
+  if (text && !text.endsWith("…")) shareFlash = setTimeout(() => shareLabel(), 1600);
+}
+function shareMenu(open) {
+  const menu = $("share-menu");
+  const r = $("share").getBoundingClientRect();
+  menu.style.top = `${r.bottom + 6}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 208))}px`;
+  menu.hidden = !open;
+  $("share").setAttribute("aria-expanded", String(open));
+}
+function renderShare(s, err) {
+  shareState = s;
+  const menu = $("share-menu");
+  const p = (text, cls) => Object.assign(document.createElement("p"), { textContent: text, className: cls });
+  const item = (text, fn) => Object.assign(document.createElement("button"), { type: "button", textContent: text, onclick: fn });
+  const kids = [];
+  if (s.shared) {
+    const when = new Date(s.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    kids.push(
+      p(`View only · as of ${when}`, "menu-note"),
+      item("Copy link", () => copyShare(s.url)),
+      item("Update link", () => share("POST")),
+      item("Stop sharing", () => share("DELETE")),
+    );
+  }
+  if (err) kids.push(p(err, "menu-error"));
+  menu.replaceChildren(...kids);
+  if (!kids.length) shareMenu(false);
+  shareLabel();
+}
+async function copyShare(url) {
+  try {
+    await navigator.clipboard.writeText(url);
+    shareMenu(false);
+    shareLabel("Link copied");
+  } catch {
+    prompt("The view-only link:", url); // no clipboard here: to copy by hand
+  }
+}
 async function share(method) {
   const before = shareState;
-  if (method === "POST") renderShare(before, "Saving a copy for the link…", true);
+  shareMenu(false);
+  if (method === "POST") shareLabel(before.shared ? "Updating…" : "Sharing…");
+  const init = method === "POST" ? { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ machine: state.viewing ?? undefined }) } : { method };
+  const made = auth.api(`/api/projects/${project}/share`, init).then((r) => r.json());
+  // the copy is asked for now, within the click, and gets the link once it is made (a browser may refuse a later one)
+  const copied = method === "POST" && window.ClipboardItem
+    ? navigator.clipboard.write([new ClipboardItem({ "text/plain": made.then((s) => new Blob([s.url ?? ""], { type: "text/plain" })) })]).then(() => true, () => false)
+    : Promise.resolve(false);
   try {
-    const init = method === "POST" ? { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ machine: state.viewing ?? undefined }) } : { method };
-    renderShare(await (await auth.api(`/api/projects/${project}/share`, init)).json());
+    const s = await made;
+    renderShare(s);
+    if (method !== "POST" || !s.shared) return;
+    if (await copied) shareLabel("Link copied");
+    else shareMenu(true); // not copied: the menu's Copy link
   } catch (e) {
     renderShare(before, e.message);
+    shareMenu(true);
   }
 }
 
 $("share").addEventListener("click", (e) => {
   e.stopPropagation();
-  const menu = $("share-menu");
-  const r = $("share").getBoundingClientRect();
-  menu.style.top = `${r.bottom + 6}px`;
-  menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 298))}px`;
-  menu.hidden = !menu.hidden;
-  $("share").setAttribute("aria-expanded", String(!menu.hidden));
+  if (!shareState.shared) return void share("POST");
+  shareMenu($("share-menu").hidden);
 });
 $("share-menu").addEventListener("click", (e) => e.stopPropagation());
 document.addEventListener("click", () => {
