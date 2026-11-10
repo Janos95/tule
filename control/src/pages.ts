@@ -59,6 +59,9 @@ label{display:flex;flex-direction:column;gap:4px;font-size:var(--fs-body)}
 .newp-form input,.newp-form input:focus,.newp-form input:focus-visible{flex:1;min-width:0;border:0;border-radius:0;padding:0;font:inherit;line-height:inherit;background:transparent;outline:none;box-shadow:none;caret-color:var(--accent)}
 .newp-form input::placeholder{color:var(--faint)}
 .newp-note{margin:0;padding:0 8px 12px 28px;color:var(--muted);font-size:var(--fs-small)}
+.ex{margin-top:32px}.ex h2{margin:0 0 2px}.ex-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-top:10px}
+.ex-card{display:block;color:inherit;text-decoration:none;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg)}.ex-card:hover{border-color:var(--line-strong)}
+.ex-card img{display:block;width:100%;aspect-ratio:1200/630;object-fit:cover;background:var(--view-mid)}.ex-card b{display:block;padding:9px 12px 0;font-weight:600}.ex-card span{display:block;padding:1px 12px 11px;color:var(--muted);font-size:var(--fs-small)}
 .sect{margin-top:28px}.sect h2{margin:0 0 2px}.hint{color:var(--muted);font-size:var(--fs-small);margin:0 0 8px}
 .list{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .item{display:grid;grid-template-columns:minmax(120px,auto) 1fr auto;align-items:center;gap:16px;padding:10px 8px;border-bottom:1px solid var(--line);min-height:44px}
@@ -113,8 +116,18 @@ export function page(title: string, body: Html | string, status = 200, user?: Us
 
 const GOOGLE = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.9 6.1C12.4 13.7 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 7l7.4 5.7c4.3-4 6.9-9.9 6.9-17.2z"/><path fill="#FBBC05" d="M10.5 28.6A14.5 14.5 0 0 1 9.5 24c0-1.6.3-3.2.8-4.6l-7.9-6.1A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.3 0-11.6-4.2-13.5-10l-7.9 6.1C6.6 42.6 14.6 48 24 48z"/></svg>`;
 
+/** A project made with Tule, shown to newcomers: a view-only link, its title and one line. */
+export type Example = { token: string; title: string; text: string };
+
+/** "Made with Tule": the examples' links, each with its preview picture. */
+function examples(list: Example[]): Html | string {
+  if (!list.length) return "";
+  return html`<section class="ex"><h2>Made with Tule</h2><p class="hint">Projects built by coding agents on Tule machines. Open one to look around in 3D.</p>
+    <div class="ex-grid">${list.map((e) => html`<a class="ex-card" href="/s/${e.token}"><img src="/api/share/${e.token}/preview.png" alt="" loading="lazy" /><b>${e.title}</b><span>${e.text}</span></a>`)}</div></section>`;
+}
+
 /** The signed-out front page: the name and one way in. */
-export function landing(_origin: string, note = ""): Response {
+export function landing(_origin: string, note = "", shown: Example[] = []): Response {
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}
@@ -122,7 +135,8 @@ export function landing(_origin: string, note = ""): Response {
 .mark{display:flex;align-items:center;gap:12px;font-size:30px;font-weight:700;letter-spacing:.2px}
 .google{display:inline-flex;align-items:center;gap:10px;padding:10px 18px;font-size:var(--fs-body);border-radius:9px}</style></head>
 <body><div class="center"><div class="mark">${LOGO.replace(/width="22" height="22"/, 'width="40" height="40"')}tule</div>
-<a class="button google" href="/auth/login">${GOOGLE}Sign in with Google</a>${note ? `<p class="muted" style="max-width:360px;text-align:center">${esc(note)}</p>` : ""}</div></body></html>`,
+<a class="button google" href="/auth/login">${GOOGLE}Sign in with Google</a>${note ? `<p class="muted" style="max-width:360px;text-align:center">${esc(note)}</p>` : ""}
+<div style="width:100%;max-width:760px">${examples(shown)}</div></div></body></html>`,
     { headers: { "Content-Type": "text/html; charset=utf-8" } },
   );
 }
@@ -187,7 +201,7 @@ function machineState(m: MachineRow): Html {
   return html`<span class="dot ${m.state}"></span>${m.state}${tail}`;
 }
 
-export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string): Response {
+export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, shown: Example[] = []): Response {
   const create = addRow(
     "New project",
     "/projects/new",
@@ -213,7 +227,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
             )}</div>`,
         )}
         ${create}
-      </div>`;
+      </div>${user.guest || !rows.length ? examples(shown) : ""}`;
   return page("Projects", body, 200, user, user.agent ? "" : agentStrip(origin));
 }
 

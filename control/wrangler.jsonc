@@ -36,6 +36,9 @@
     "GUEST_MINUTES_DAY": "30",
     "GUEST_MACHINES": "2",
     "GUEST_DAYS": "1",
+    // SHOWCASE: examples for newcomers on the projects page, JSON [{"token": "tules_…", "title", "text"}]
+    // (view-only links; each shows the preview picture saved when it was shared)
+    "SHOWCASE": "[]",
     // GPU machines run this image on RunPod (built by .github/workflows/runtime.yml)
     "GPU_IMAGE": "ghcr.io/janos95/tule-runtime:cuda"
   },

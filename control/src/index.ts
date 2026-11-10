@@ -42,7 +42,7 @@ import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl,
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
-import { landing, page, projectsPage, settingsPage, type MachineRow, type ProjectRow } from "./pages";
+import { landing, page, projectsPage, settingsPage, type Example, type MachineRow, type ProjectRow } from "./pages";
 import { Host } from "./host";
 import { gitKey, lfsKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
@@ -118,7 +118,19 @@ async function blobs(req: Request, env: Env, id: string, rest: string[], machine
 // ------------------------------------------------------------ view-only links
 
 type Manifest = { files?: Record<string, { h: string[]; s: number }> };
+/** SHOWCASE (wrangler.jsonc vars): JSON [{token, title, text}], examples for newcomers on the projects page. */
+function showcase(env: Env): Example[] {
+  try {
+    const v = JSON.parse((env as unknown as { SHOWCASE?: string }).SHOWCASE || "[]");
+    return Array.isArray(v) ? v.filter((e) => typeof e?.token === "string" && /^tules_[A-Za-z0-9_-]{8,64}$/.test(e.token)).map((e) => ({ token: e.token, title: String(e.title ?? ""), text: String(e.text ?? "") })) : [];
+  } catch {
+    return [];
+  }
+}
+
 const shareKey = (id: string, token: string) => `projects/${id}/shares/${token}.json`;
+const previewKey = (id: string, token: string) => `projects/${id}/shares/${token}.png`;
+const MAX_PREVIEW = 2 << 20;
 
 /** What a view-only link may read: the files the viewer lists (outputs/, inputs/, work/), not sources or settings. */
 const viewable = (p: unknown): p is string =>
@@ -134,6 +146,28 @@ function frozen(outputs: unknown[], man: Manifest): unknown[] {
 }
 
 const manifests = new Map<string, Manifest>(); // a snapshot never changes: a few kept per isolate
+
+/** /s/<token>: the viewer's page, with the link's title and preview picture for sites that show posted links. */
+async function sharePage(req: Request, env: Env, token: string, url: URL): Promise<Response> {
+  const page = await env.ASSETS.fetch(req);
+  const p = await accounts(env).shared(token);
+  const o = p && (await env.WORKSPACES.get(shareKey(p.id, token)));
+  if (!p || !o || !page.ok || !page.headers.get("Content-Type")?.includes("text/html")) return page;
+  const { project } = (await o.json()) as { project: string };
+  const pic = await env.WORKSPACES.head(previewKey(p.id, token));
+  const attr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  const title = `${project} · Tule`;
+  const meta = [
+    ["og:title", title], ["og:type", "website"], ["og:url", `${url.origin}/s/${token}`],
+    ["og:description", "A model made with Tule: open it in 3D in your browser."],
+    ...(pic ? [["og:image", `${url.origin}/api/share/${token}/preview.png`], ["og:image:width", "1200"], ["og:image:height", "630"]] : []),
+  ].map(([k, v]) => `<meta property="${k}" content="${attr(v)}">`);
+  meta.push(`<meta name="twitter:card" content="${pic ? "summary_large_image" : "summary"}">`);
+  return new HTMLRewriter()
+    .on("head", { element: (e) => void e.append(meta.join(""), { html: true }) })
+    .on("title", { element: (e) => void e.setInnerContent(title) })
+    .transform(page);
+}
 
 async function shareRoute(env: Env, token: string, file: boolean, url: URL): Promise<Response> {
   const p = await accounts(env).shared(token);
@@ -537,7 +571,18 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
     if (user.guest) return error("guests cannot share projects", 403, "sign in to share");
     if (user.id === SUPPORT_ID) return error("the support account cannot share: its projects are copies of users' work", 403);
     const old = await a.share(ref.id);
-    const drop = async () => old && (await env.WORKSPACES.delete(shareKey(ref.id, old.token)));
+    const drop = async () => old && (await env.WORKSPACES.delete([shareKey(ref.id, old.token), previewKey(ref.id, old.token)]));
+    if (rest[0] === "preview") {
+      // the picture a posted link shows (the viewer sends its 3D view when the link is made)
+      if (req.method !== "PUT") return error("use PUT with a PNG", 405);
+      if (!old) return error("this project has no link to preview", 404, "share it first");
+      const png = await req.arrayBuffer();
+      const magic = new Uint8Array(png.slice(0, 8));
+      if (png.byteLength > MAX_PREVIEW || ![137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => magic[i] === b))
+        return error(`expected a PNG of at most ${MAX_PREVIEW >> 20} MB`, 400);
+      await env.WORKSPACES.put(previewKey(ref.id, old.token), png, { httpMetadata: { contentType: "image/png" } });
+      return json({ preview: `${origin}/api/share/${old.token}/preview.png` });
+    }
     if (req.method === "DELETE") return (await drop(), await a.unshare(ref.id), json(link(null)));
     if (req.method !== "POST") return error("use GET, POST or DELETE", 405);
     const b = await body(req);
@@ -690,6 +735,16 @@ async function route(req: Request, env: Env): Promise<Response> {
   // of its snapshot. Only storage is read: the viewer turns models into meshes in the visitor's browser.
   const share = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})(\/file)?$/);
   if (share && req.method === "GET") return shareRoute(env, share[1], !!share[2], url);
+  const preview = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})\/preview\.png$/);
+  if (preview && req.method === "GET") {
+    const p = await accounts(env).shared(preview[1]);
+    const o = p && (await env.WORKSPACES.get(previewKey(p.id, preview[1])));
+    if (!o) return error("this link has no preview", 404);
+    return new Response(o.body, { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=300", ETag: o.httpEtag } });
+  }
+  // the viewer for a link, with what a site needs to show it when it is posted (title, picture)
+  const shared = path.match(/^\/s\/(tules_[A-Za-z0-9_-]{8,64})\/?$/);
+  if (shared && req.method === "GET") return sharePage(req, env, shared[1], url);
   // a computer joins with the one-time key from Settings (install.sh runs `tule host up --key`)
   if (path === "/api/hosts/pair" && req.method === "POST") {
     const b = (await req.json().catch(() => ({}))) as { key?: unknown; name?: unknown; token?: unknown };
@@ -778,11 +833,11 @@ async function route(req: Request, env: Env): Promise<Response> {
     return userApi(req, env, url, user, origin);
   }
   if (path === "/") {
-    if (user) return projectsPage(user, await projectRows(env, user), origin);
+    if (user) return projectsPage(user, await projectRows(env, user), origin, undefined, showcase(env));
     // a first visit: a guest account, so Tule can be tried without signing in
     const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
-    if ("error" in g) return landing(origin, g.error);
-    const res = projectsPage(g.user, [], origin);
+    if ("error" in g) return landing(origin, g.error, showcase(env));
+    const res = projectsPage(g.user, [], origin, undefined, showcase(env));
     res.headers.append("Set-Cookie", setCookie(req, SESSION_COOKIE, g.session, 30 * 86400));
     return res;
   }
@@ -791,7 +846,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403, user);
     const name = String((await req.formData()).get("name") ?? "").trim();
     const r = await ops.createProject(env, user, name, origin);
-    if (r.error) return projectsPage(user, await projectRows(env, user), origin, `${r.error}${r.hint ? ` (${r.hint})` : ""}`);
+    if (r.error) return projectsPage(user, await projectRows(env, user), origin, `${r.error}${r.hint ? ` (${r.hint})` : ""}`, showcase(env));
     return new Response(null, { status: 303, headers: { Location: `/p/${name}` } });
   }
   if (path === "/settings" || path.startsWith("/settings/")) {
