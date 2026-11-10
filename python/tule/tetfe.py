@@ -252,11 +252,33 @@ QUALITY = ["Mesh.Algorithm3D = 10;", "Mesh.Optimize = 1;"]
 
 
 def mesh(part, size: float, face_sizes: dict | None = None, smallest: float | None = None,
-         curvature: int = 16, threads: int = 0, timeout: float = 1800, keep: str | None = None,
+         curvature: int = 16, threads: int = 1, timeout: float = 1800, keep: str | None = None,
          balls=()) -> TetMesh:
     """Quadratic tetrahedra for ``part``: elements up to ``size`` mm, ``face_sizes`` ``{face id:
     size}`` on chosen faces (thin walls), ``balls`` ``[(center, radius, size)]`` (load patches),
-    ``curvature`` elements per full turn on curved faces, none smaller than ``smallest``."""
+    ``curvature`` elements per full turn on curved faces, none smaller than ``smallest``.
+
+    ``threads``: gmsh's. One by default: the same part gives the same mesh every time, and the
+    threaded mesher now and then leaves a flat element (zero volume) that fails the analysis; it is
+    only 10-30 % faster. A mesh with a flat element is made again at a slightly smaller size."""
+    m = _mesh(part, size, face_sizes, smallest, curvature, threads, timeout, keep, balls)
+    if _flat(m):
+        retry = _mesh(part, size * 0.97, face_sizes, smallest, curvature, threads, timeout, keep, balls)
+        if not _flat(retry):
+            retry.notes.append("gmsh left a flat element at the first size: meshed again 3 % finer")
+            m = retry
+    _fix_curved(m)
+    return m
+
+
+def _flat(m: TetMesh) -> bool:
+    """Whether a tetrahedron's corners are (nearly) in one plane: gmsh's mesh is unusable."""
+    v = m.nodes[m.tets[:, :4]]
+    vol = np.einsum("ij,ij->i", np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]), v[:, 3] - v[:, 0]) / 6
+    return bool((vol <= 1e-9 * m.size ** 3).any())
+
+
+def _mesh(part, size, face_sizes, smallest, curvature, threads, timeout, keep, balls) -> TetMesh:
     gmsh = find_gmsh()
     if not gmsh:
         raise TuleError("tetrahedral meshing needs gmsh", op="fea",
@@ -369,7 +391,6 @@ def mesh(part, size: float, face_sizes: dict | None = None, smallest: float | No
         xyz, tets, tris = xyz[used], new[tets], new[tris]
     m = TetMesh(xyz, tets, tris, tri_face, float(size), smallest, time.time() - t0, notes)
     _orient(m)
-    _fix_curved(m)
     return m
 
 
