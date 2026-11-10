@@ -505,15 +505,20 @@ def _face_samples(shape: Shape, face_ids: Iterable[int], spacing: float) -> np.n
     m = shape.tessellate(min(0.05, spacing / 4), 0.2)
     sel = np.isin(m.face_ids, list(face_ids))
     V = m.positions.astype(np.float64)[m.indices[sel].astype(np.int64)]
+    if not len(V):
+        return np.zeros((0, 3))
+    a, b, c = V[:, 0], V[:, 1], V[:, 2]
+    L = np.max([np.linalg.norm(b - a, axis=1), np.linalg.norm(c - b, axis=1), np.linalg.norm(a - c, axis=1)], axis=0)
+    N = np.maximum(1, np.ceil(L / spacing)).astype(np.int64)
     pts = []
-    for a, b, c in V:
-        L = max(np.linalg.norm(b - a), np.linalg.norm(c - b), np.linalg.norm(a - c))
-        n = max(1, int(math.ceil(L / spacing)))
+    for n in np.unique(N):  # a lattice of (n + 1)(n + 2) / 2 points per triangle, for all triangles of that n at once
         i, j = np.meshgrid(np.arange(n + 1), np.arange(n + 1), indexing="ij")
         ok = i + j <= n
         u, v = i[ok] / n, j[ok] / n
-        pts.append(a + np.outer(u, b - a) + np.outer(v, c - a))
-    return np.concatenate(pts) if pts else np.zeros((0, 3))
+        k = N == n
+        A = a[k]
+        pts.append((A[:, None] + u[None, :, None] * (b[k] - A)[:, None] + v[None, :, None] * (c[k] - A)[:, None]).reshape(-1, 3))
+    return np.concatenate(pts)
 
 
 def _face_nodes(shape: Shape, faces: Faces, origin: Vec, h: float, node_active: np.ndarray) -> np.ndarray:

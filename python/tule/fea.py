@@ -1366,6 +1366,9 @@ def _static(part, material, *, fixed, loads, accel, balanced, voxel, dofs, mesh,
         raise TuleError("voxel must be positive", op="fea")
     dims0 = np.maximum(1, np.ceil(size / h - 1e-9)).astype(int)
     levels = _levels_for(tuple(dims0), min_coarse_elements=2)
+    coarse = 3 * np.prod(np.ceil(dims0 / 2 ** (levels - 1)) + 1)
+    if coarse > 30_000:  # a thin plate (1-2 voxels thick): coarser levels one voxel thick beat a direct solve of it all
+        levels = max(levels, _levels_for(tuple(dims0), min_coarse_elements=1))
     mult = 2 ** (levels - 1)
     dims = tuple(int(math.ceil(d / mult) * mult) for d in dims0)
     say(f"fea: {part.name or 'part'} in {mat.name}: voxels of {h:.3g} mm, {dims0[0]}×{dims0[1]}×{dims0[2]} grid, "

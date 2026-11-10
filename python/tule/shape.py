@@ -345,7 +345,12 @@ class Shape:
         return sub[i] if i >= 0 else None
 
     def _tags_of(self, s) -> list[str]:
-        return sorted(n for n, k in self._alias.items() if k.startswith("tag:") and s in ShapeSet(self._groups.get(k, ())))
+        """The tags on sub-shape ``s`` (the tag sets are built once per shape: info() asks per face)."""
+        sets = self._cache.get(("tagsets", id(self._groups)))
+        if sets is None:
+            sets = [(n, ShapeSet(self._groups.get(k, ()))) for n, k in self._alias.items() if k.startswith("tag:")]
+            self._cache[("tagsets", id(self._groups))] = sets
+        return sorted(n for n, members in sets if s in members)
 
     def tag(self, name: str, selection: Selection) -> "Shape":
         """Tag faces or edges with a name that survives later operations.

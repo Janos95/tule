@@ -193,9 +193,10 @@ class Profile:
     # ------------------------------------------------------------ corners
     def _corners(self, face):
         """Vertices of a face where two edges meet at a real corner (not tangent)."""
+        ends = [(e, subshapes(e, "vertex")) for e in subshapes(face, "edge")]  # each edge's vertices, once
         out = []
         for v in subshapes(face, "vertex"):
-            edges = [e for e in subshapes(face, "edge") if v in subshapes(e, "vertex")]
+            edges = [e for e, vs in ends if any(v.IsSame(x) for x in vs)]
             if len(edges) != 2:
                 continue
             if all(edge_type(e) == "line" for e in edges):
@@ -214,8 +215,21 @@ class Profile:
     def _corner_op(self, size, op: str, points: Sequence[Point2] | None = None) -> "Profile":
         faces = []
         for face in self.faces:
+            wires = subshapes(face, "wire")
+            if len(wires) > 1:
+                # OpenCascade's 2D fillet leaves a face with holes invalid: the outline and each hole are
+                # done on their own (a hole's corners round as its own outline's), then the holes cut out
+                outer = static(BRepTools, "OuterWire")(face)
+                parts = [Profile(BRepBuilderAPI_MakeFace(w, True).Face())._corner_op(size, op, points)
+                         for w in [outer] + [w for w in wires if not w.IsSame(outer)]]
+                done = parts[0]
+                for hole in parts[1:]:
+                    done = done - hole
+                faces += [f for f in done.faces]
+                continue
             mk = BRepFilletAPI_MakeFillet2d(face)
             bad = False
+            added = 0
             corners = self._corners(face)
             for v in corners:
                 p = from_pnt(static(BRep_Tool, "Pnt")(v))
@@ -228,6 +242,7 @@ class Profile:
                             break
                 if r <= 0:
                     continue
+                added += 1
                 try:
                     if op == "round":
                         mk.AddFillet(v, float(r))
@@ -237,6 +252,9 @@ class Profile:
                     bad = bad or mk.Status() != ChFi2d_IsDone  # a corner it could not do: not skipped quietly
                 except OCC_ERRORS:
                     bad = True
+            if not added:  # no corner here (a round hole): the face as it is
+                faces.append(face)
+                continue
             try:
                 mk.Build()
                 ok = not bad and mk.IsDone() and BRepCheck_Analyzer(mk.Shape()).IsValid()

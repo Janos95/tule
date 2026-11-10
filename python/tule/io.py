@@ -326,21 +326,33 @@ def import_step(path: str):
         sh = Shape(s, name=_get_name(label), color=color_of(label) or color)
         subs = TDF_LabelSequence()
         static(ST, "GetSubShapes")(label, subs)
+        from .selection import SELECTION_TYPES
+
+        found: dict[str, list] = {}  # tag -> its sub-shapes of this part, in file order
+        index: dict[str, ShapeSet] = {}  # the part's faces (edges, …) by hash: one lookup per tagged sub-shape
         for i in range(1, subs.Length() + 1):
             lab = subs.Value(i)
             n = _get_name(lab) or ""
             if not n.startswith("tag:"):
                 continue
             sub = static(ST, "GetShape")(lab)
-            from .selection import SELECTION_TYPES
-
             kind = kind_of(sub)
             if kind not in SELECTION_TYPES:
                 continue
+            if kind not in index:
+                index[kind] = ShapeSet(sh._sub(kind))
+            at = index[kind].index(sub)
+            if at < 0:
+                continue
             for tag in n[4:].split(","):
-                sel = SELECTION_TYPES[kind](sh, [x for x in sh._sub(kind) if x.IsSame(sub)])
-                if sel.items:
-                    sh = sh.tag(tag, sel)
+                found.setdefault(tag, []).append(index[kind]._items[at])
+        if found:  # every tag at once (tagging one at a time copies the groups each time)
+            groups, alias = dict(sh._groups), dict(sh._alias)
+            for tag, items in found.items():
+                key = f"tag:{tag}"
+                groups[key] = tuple(ShapeSet(list(groups.get(key, ())) + items))
+                alias[tag] = key
+            sh = Shape(sh._s, groups, alias, sh.name, sh.color, sh._sm)
         if loc is not None and not loc.IsIdentity():
             # a placement, as Shape.at does: the same solid moved, its tags moved when read
             sh = Shape(sh.wrapped.Moved(loc), _Moved(sh._g, loc), sh._alias, sh.name, sh.color)

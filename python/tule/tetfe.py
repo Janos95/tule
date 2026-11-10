@@ -93,7 +93,19 @@ def thickness(part, per_face: int = 12, reach: float | None = None) -> Thickness
     """Each face's wall thickness and gap width from rays along its normals at up to
     ``per_face`` points (centers of its largest triangles): into the material to the far side,
     and out of it to the next face. A wall ends where the ray leaves; a ray that grazes an
-    edge is dropped (ambiguous). ``reach`` caps the rays (default: a fifth of the part's size)."""
+    edge is dropped (ambiguous). ``reach`` caps the rays (default: a fifth of the part's size).
+    Kept with the part: an analysis asks twice (to choose the mesh, then to size it)."""
+    cache = getattr(part, "_cache", None)
+    key = ("thickness", per_face, reach)
+    if cache is not None and key in cache:
+        return cache[key]
+    th = _thickness(part, per_face, reach)
+    if cache is not None:
+        cache[key] = th
+    return th
+
+
+def _thickness(part, per_face: int, reach: float | None) -> Thickness:
     from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
     from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
 
