@@ -436,3 +436,19 @@ def test_a_script_named_like_a_stdlib_module_does_not_shadow_it(project):
     code, err = build(project)
     assert code == 0, err
     assert (project / "outputs" / "numbers" / "n.txt").exists() and (project / "outputs" / "plate").exists()
+
+
+def test_hash_cache_survives_a_restore_that_keeps_mtimes_in_ms(tmp_path, monkeypatch):
+    from tule_cli import build as B
+
+    (tmp_path / "outputs" / B.STATE).mkdir(parents=True)
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    os.utime(f, ns=(1_700_000_000_123_456_789, 1_700_000_000_123_456_789))
+    h = B.Hashes(str(tmp_path))
+    first = h.of("a.py")
+    h.save()
+    os.utime(f, ns=(1_700_000_000_123_000_000, 1_700_000_000_123_000_000))  # what a snapshot restores
+    again = B.Hashes(str(tmp_path))
+    monkeypatch.setattr(B.hashlib, "sha256", lambda *a: (_ for _ in ()).throw(AssertionError("hashed again")))
+    assert again.of("a.py") == first

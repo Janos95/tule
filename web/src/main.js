@@ -57,6 +57,7 @@ const parts = viewer ? initParts({ viewer, project: () => project ?? "" }) : nul
 const plot = initPlot($("plot"), (i) => {
   play(false);
   state.frame = i;
+  state.pinned = false;
   remember();
   show();
 });
@@ -69,6 +70,7 @@ const state = {
   view: new URLSearchParams(location.search).get("f"), // which of its views: "3d", a file name, "log" (null: the first)
   shown: null, // the key of what is drawn (output name and file hashes)
   frame: Math.max(0, (parseInt(new URLSearchParams(location.search).get("frame") ?? "", 10) || 1) - 1), // a sequence's frame (the link counts from 1)
+  pinned: new URLSearchParams(location.search).has("frame"), // a frame asked for (a link, an annotation): a running sequence stays on it
   meshes: [], // what is drawn
   record: null, // what is drawn, for an annotation: {name, kind, title, files, frame}
 };
@@ -85,7 +87,7 @@ const annotate = viewer
       machine: () => state.machine,
       output: () => state.record,
       meshes: () => state.meshes,
-      select: (name) => select(name),
+      select: (name, frame) => select(name, { frame, view: null }),
       on: (f) => listeners.add(f),
     })
   : null;
@@ -711,13 +713,19 @@ function studyBox(o, files, loaded) {
   return lo[0] <= hi[0] ? { min: lo, max: hi } : null;
 }
 
-/** Shows an output (or input) by id; resolves once it is drawn. */
-function select(id) {
-  if (state.selected === id && state.shown) return Promise.resolve();
+/** Shows an output (or input) by id; resolves once it is drawn. ``at``: {frame, view} to show (an
+ * annotation's: its frame in the 3D view), even when the output is already the one shown. */
+function select(id, at) {
+  const frame = Number.isInteger(at?.frame) ? at.frame : null;
+  if (state.selected === id && state.shown && !at) return Promise.resolve();
+  if (at && state.selected === id && state.view == null && (frame == null || frame === state.frame)) return Promise.resolve();
   play(false);
+  const g = groupOf(state.outputs.find((x) => x.id === id) ?? { root: "", name: "" });
+  if (g) groupOpen.set(g, true); // a link or an annotation opening a member of a folded group unfolds it
   state.wanted = id;
   state.view = null;
-  state.frame = 0;
+  state.frame = frame ?? 0;
+  state.pinned = frame != null;
   $("scrub").max = "0";
   remember();
   renderList();
@@ -875,7 +883,7 @@ async function show() {
   if (kind === "sequence") {
     const fr = frames(o);
     // a running sequence: stay on the newest frame while it grows; a finished one opens on its first
-    const following = o.meta?.status === "running" && state.frame >= +$("scrub").max;
+    const following = o.meta?.status === "running" && !state.pinned && state.frame >= +$("scrub").max;
     $("scrub").max = String(Math.max(0, fr.length - 1));
     if (following) state.frame = fr.length - 1;
     if (fr.length) state.frame = Math.max(0, Math.min(state.frame, fr.length - 1)); // none yet: a long study's frames are still loading, keep the link's
@@ -897,7 +905,9 @@ async function show() {
   if (entries?.length && !placed) shownFiles = entries.map((p) => o.files.find((f) => f.file === p.file));
   // what is drawn: the files and, but for a growing sequence, output.json (overlay faces, placements)
   const key = o.id + "|" + [...shownFiles, ...o.fields].map((f) => f.hash).join(",") + (kind === "sequence" ? (placed ? "|" + JSON.stringify(placed.map((p) => p.transform ?? null)) : "") : "|" + JSON.stringify(o.meta ?? null));
-  if (key === state.shown) return;
+  // a part's or assembly's folder may hold more than the model (an STL to print, a 3MF): offer them all, the shown ones first
+  const offerFiles = () => offerDownload(kind === "sequence" ? [...shownFiles, ...extras(o)] : [...shownFiles, ...o.files.filter((f) => !shownFiles.includes(f) && f.file !== "output.json"), ...extras(o)]);
+  if (key === state.shown) return offerFiles(); // the drawing is as it was; the folder's other files may not be
   const first = !state.shown || !state.shown.startsWith(o.id + "|");
   state.shown = key;
   if (first) annotate?.reset();
@@ -949,8 +959,7 @@ async function show() {
     $("strip").hidden = $("legend").hidden;
     state.meshes = all;
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
-    // a part's or assembly's folder may hold more than the model (an STL to print, a 3MF): offer them all, the shown ones first
-    offerDownload(kind === "sequence" ? [...shownFiles, ...extras(o)] : [...shownFiles, ...o.files.filter((f) => !shownFiles.includes(f) && f.file !== "output.json"), ...extras(o)]);
+    offerFiles();
     const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";
     $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"}${grid}`;
     setStatus(failed.length ? `Could not show ${failed.length} of ${shownFiles.length} files: ${failed[0]}` : "");
@@ -984,6 +993,7 @@ function play(on) {
   }
   $("play").classList.toggle("on", !!on);
   if (!on) return;
+  state.pinned = false;
   const o = state.outputs.find((x) => x.id === state.selected);
   const fps = Number(o?.meta?.fps); // the sequence's own pace (real time)
   const step = fps > 0 && fps <= 60 ? 1000 / fps : 250;
@@ -1040,6 +1050,7 @@ $("play").addEventListener("click", () => play(!playing));
 $("scrub").addEventListener("input", (e) => {
   play(false);
   state.frame = +e.target.value;
+  state.pinned = false; // back at the end, a running sequence is followed again
   remember(); // a link to this frame
   show();
 });
@@ -1111,9 +1122,11 @@ const sheetSvg = (o, f) => /\.svg$/i.test(f.file) && o.docs.some((d) => d.type =
 const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.stl$/i.test(f.file) ? 1 : 2);
 /** The Download button offers the shown output's geometry files, or the file shown. */
 function offerDownload(list) {
-  downloads = [...list].sort((a, b) => printable(a) - printable(b));
+  const next = [...list].sort((a, b) => printable(a) - printable(b));
+  const same = next.length === downloads.length && next.every((f, i) => f.path === downloads[i].path && f.hash === downloads[i].hash);
+  downloads = next;
   $("download").hidden = !list.length;
-  closeDownload();
+  if (!same) closeDownload(); // an open menu stays while its files stay the same
 }
 async function download(f) {
   closeDownload();

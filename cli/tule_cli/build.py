@@ -178,7 +178,8 @@ class Hashes:
             return "dir:" + hashlib.sha256("\n".join(names).encode()).hexdigest()[:24]
         if not stat.S_ISREG(st.st_mode):
             return "missing"
-        key = [st.st_size, st.st_mtime_ns]
+        # mtime in ms, as snapshots keep it: a restored /workspace (every boot) still matches the cache
+        key = [st.st_size, st.st_mtime_ns // 1_000_000]
         hit = self.cache.get(rel)
         if hit and hit[0] == key:
             return hit[1]

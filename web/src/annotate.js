@@ -396,7 +396,8 @@ export function initAnnotate(ctx) {
     try {
       const buf = await ctx.req("read", { path: `${a.path}/annotation.json`, max: 16 << 20 });
       const rec = JSON.parse(new TextDecoder().decode(buf));
-      if (rec.output?.name) await ctx.select(rec.output.name);
+      // its output, at its frame, in the 3D view (the marks were drawn on that)
+      if (rec.output?.name) await ctx.select(rec.output.name, Number.isInteger(rec.output.frame) ? rec.output.frame : null);
       const meshes = ctx.meshes();
       const index = (part) => Math.max(0, meshes.findIndex((m) => (m.name ?? "") === part));
       ghost = {
