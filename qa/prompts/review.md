@@ -23,4 +23,4 @@ Look for, among anything else you notice:
 Report only what you can point to in the files. For each finding say who should fix it: "docs" (skills, agent instructions), "cli", "control" (control plane, connector), "viewer", "machine" (runtime), or "agent" (the agent's own judgment; nothing Tule can change).
 
 Answer with one JSON array and nothing else (empty if the run was clean):
-[{"title": "<short, specific>", "severity": "high|medium|low", "owner": "docs|cli|control|viewer|machine|agent", "evidence": "<file and what it shows, quoted briefly>", "fix": "<what Tule could change, in one sentence>"}]
+[{"title": "<short, specific>", "severity": "high|medium|low", "owner": "docs|cli|control|viewer|machine|library|agent", "evidence": "<file and what it shows, quoted briefly>", "fix": "<what Tule could change, in one sentence>"}]

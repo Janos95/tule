@@ -34,6 +34,7 @@ except ImportError:  # Windows
     pwd = None
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -116,14 +117,16 @@ def project_of(args, cfg) -> str:
 # ---------------------------------------------------------------- HTTP
 
 
-def api(method: str, path: str, body: dict | None = None) -> dict:
+def api(method: str, path: str, body: dict | None = None, timeout: float = 60) -> dict:
+    """One call to the control plane. ``timeout``: the server waits up to 10 minutes for a machine to snapshot
+    or restore, so those calls pass a longer one."""
     url, token = need(load())
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url + path, data=data, method=method, headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "tule-cli/0.1",
     })
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         try:
@@ -136,6 +139,8 @@ def api(method: str, path: str, body: dict | None = None) -> dict:
         raise CliError(f"{method} {path}: {msg}") from None
     except urllib.error.URLError as e:
         raise CliError(f"cannot reach {url}: {e.reason}") from None
+    except (TimeoutError, ConnectionError) as e:  # a slow answer is a TimeoutError, not a URLError
+        raise CliError(f"{method} {path}: no answer from {url} within {timeout:g} s ({e or type(e).__name__}); it may still finish: tule status") from None
 
 
 def status(p: str) -> dict:
@@ -217,7 +222,7 @@ def ensure_access(p: str, s: dict):
     pub = open(ensure_key() + ".pub").read().strip()
     cfg = load()
     if cfg.get("keyAdded") != cfg.get("url"):
-        api("POST", "/api/keys/ssh", {"key": pub, "name": f"tule CLI ({os.uname().nodename})"})
+        api("POST", "/api/keys/ssh", {"key": pub, "name": f"tule CLI ({socket.gethostname()})"})
         store(keyAdded=cfg.get("url"))
     host = HOST_PREFIX + p
     line = f"{host} {s['hostKey'].strip()}\n"
@@ -382,7 +387,7 @@ def cmd_login(args):
         store(url=url, token=t["apiKey"], keyAdded=None)
         print(f"tule: logged in to {url} as {t['email']}", file=sys.stderr)
         return
-    req = urllib.request.Request(f"{url}/api/device/code", data=json.dumps({"client": f"tule CLI on {os.uname().nodename}"}).encode(),
+    req = urllib.request.Request(f"{url}/api/device/code", data=json.dumps({"client": f"tule CLI on {socket.gethostname()}"}).encode(),
                                  method="POST", headers={"Content-Type": "application/json", "User-Agent": "tule-cli/0.1"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
@@ -458,7 +463,7 @@ def cmd_gpus(args):
 
 def cmd_down(args):
     p = project_of(args, load())
-    api("POST", f"/api/projects/{p}/down", {"machine": args.machine} if args.machine else {})
+    api("POST", f"/api/projects/{p}/down", {"machine": args.machine} if args.machine else {}, timeout=150)
     print(f"tule: {p} stopped" + (f" on {args.machine}" if args.machine else ""), file=sys.stderr)
 
 
@@ -502,13 +507,14 @@ def _check(root: str, names: list[str] | None = None):
     def cached(name: str) -> str | None:
         nonlocal cache
         try:
-            return build.cached_on(root, name, cache) if cache else None
+            return build.cached_on(root, name, cache, hashes) if cache else None
         except Exception:  # offline: --check still answers
             cache = None
             return None
 
+    hashes = build.Hashes(root)  # one for the whole check: each file hashed once
     now = build.running(root)
-    for r in build.status(root):
+    for r in build.status(root, hashes):
         if only is not None and r["name"] not in only:
             continue
         took = f"last run {r['seconds']:g} s" if r.get("seconds") is not None else ""
@@ -523,7 +529,7 @@ def _check(root: str, names: list[str] | None = None):
             lines.append((r["name"], "out of date", r["why"] + (f" (the cache has a matching build from {where}: tule build fetches it)" if where else ""), took))
     for n in [] if only is not None else build.orphans(root):
         lines.append((n, "no script", f"src/{n}.py is gone: delete outputs/{n} if it is not needed", ""))
-    for w in [] if only is not None else build.based_on_status(root):
+    for w in [] if only is not None else build.based_on_status(root, hashes):
         if w["changed"]:
             lines.append((w["path"], "check again", f"{', '.join(w['changed'])} changed", ""))
     if not lines:
@@ -599,7 +605,8 @@ def _build_detached(root: str, argv: list[str]):
                 break
             if not chunk:
                 time.sleep(0.2)
-    sys.exit(child.returncode)
+    rc = child.returncode
+    sys.exit(128 - rc if rc < 0 else rc)  # stopped by a signal: 128 + its number, as a shell reports it
 
 
 def cmd_based_on(args):
@@ -634,7 +641,12 @@ def cmd_save(args):
             with urllib.request.urlopen(req, timeout=900) as res:
                 r = json.load(res)
         except urllib.error.HTTPError as e:
-            r = json.load(e)
+            try:
+                r = json.load(e)
+            except ValueError:
+                raise CliError(f"save: {e.reason}") from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            raise CliError(f"save: cannot reach {url} ({getattr(e, 'reason', None) or e or type(e).__name__}); it may still finish: tule status") from None
     r = r.get("result", r)
     if r.get("error"):
         files = "".join(f"\n  {f}" for f in r.get("conflicts") or [])
@@ -709,7 +721,7 @@ def cmd_snapshot(args):
         if machine.on_machine():
             return machine.snapshot_here()
     p = project_of(args, cfg)
-    r = api("POST", f"/api/projects/{p}/snapshot", {"machine": args.machine} if args.machine else {})
+    r = api("POST", f"/api/projects/{p}/snapshot", {"machine": args.machine} if args.machine else {}, timeout=650)
     print(f"tule: {p}: snapshot {r['snapshot']}" + ("" if r.get("changed", True) else " (nothing changed since)"))
 
 
@@ -724,7 +736,7 @@ def cmd_snapshots(args):
 
 def cmd_restore(args):
     p = project_of(args, load())
-    r = api("POST", f"/api/projects/{p}/restore", {"id": args.id, **({"machine": args.machine} if args.machine else {})})
+    r = api("POST", f"/api/projects/{p}/restore", {"id": args.id, **({"machine": args.machine} if args.machine else {})}, timeout=650)
     print(f"tule: {p}: /workspace is now snapshot {r['snapshot']} ({r['files']} files written; the state before is saved too)")
 
 
@@ -735,7 +747,10 @@ def cmd_keys(args):
         return
     if not args.file:
         raise CliError("tule keys add <file.pub>")
-    key = open(os.path.expanduser(args.file)).read()
+    try:
+        key = open(os.path.expanduser(args.file)).read()
+    except OSError as e:
+        raise CliError(f"{args.file}: {e.strerror}") from None
     r = api("POST", "/api/keys/ssh", {"key": key})
     print(f"tule: SSH key {r['id']} {'added' if r.get('added') else 'was already there'}; it works on every project's machine")
 

@@ -22,7 +22,7 @@ import sys
 
 GEOMETRY = (".step", ".stp", ".stl")
 SOCKET = os.environ.get("TULE_AGENT_SOCKET", "/run/tule/agent.sock")
-DOC_ORDER = ["index", "setup", "loop", "modeling", "outputs", "drawings", "sheetmetal", "occt", "annotations", "topopt", "golden-paths"]
+DOC_ORDER = ["index", "setup", "loop", "modeling", "outputs", "drawings", "sheetmetal", "occt", "annotations", "fea", "topopt", "golden-paths"]
 
 
 from . import CliError
@@ -593,7 +593,9 @@ def cmd_screenshot(args):
     parts, overlay, caption = scene(target, args.frame, args.field)
     import numpy as np
 
-    P = np.concatenate([p.positions for p in parts])
+    if not any(len(p.indices) for p in parts):
+        raise CliError(f"{args.output or args.file or target}: nothing to draw (no shape with faces)")
+    P = np.concatenate([p.positions for p in parts if len(p.positions)])
     size = P.max(0) - P.min(0)
     caption += " · size " + " x ".join(_g(v) for v in size)
     img, rep = render(parts, args.view, args.size, args.labels, overlay, caption)

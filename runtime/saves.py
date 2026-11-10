@@ -124,7 +124,8 @@ def unsaved(root: str) -> dict:
     """Changed files (git status) and commits that are not in the latest save this copy knows of."""
     if not os.path.isdir(os.path.join(root, ".git")):
         return {"files": 0, "commits": 0}
-    st = git(root, "status", "--porcelain", timeout=60)
+    # no index refresh: it would take .git/index.lock under a git command the agent runs at that moment
+    st = git(root, "--no-optional-locks", "status", "--porcelain", timeout=60)
     files = len([x for x in st.stdout.splitlines() if x.strip()]) if st.returncode == 0 else 0
     b = branch(root)
     base = b if _has_remote(root, b) else "main"
@@ -144,7 +145,7 @@ def save(root: str, message: str = "", who: str = "") -> dict:
         raise RuntimeError("/workspace is not a git repository")
     configure(root)
     # a merge from an earlier save: go on once no file has conflict markers left
-    unmerged = git(root, "diff", "--name-only", "--diff-filter=U").stdout.split()
+    unmerged = [f for f in git(root, "diff", "--name-only", "-z", "--diff-filter=U").stdout.split("\0") if f]
     if any(_markers(root, f) for f in unmerged):
         return _conflict(root)
     _track_large(root)
@@ -225,7 +226,7 @@ def _markers(root: str, path: str) -> bool:
 
 
 def _conflict(root: str) -> dict:
-    files = git(root, "diff", "--name-only", "--diff-filter=U").stdout.split()
+    files = [f for f in git(root, "diff", "--name-only", "-z", "--diff-filter=U").stdout.split("\0") if f]
     return {
         "error": "merge conflict with the latest save",
         "conflicts": files,

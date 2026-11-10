@@ -84,7 +84,7 @@ def start_control(night: Path) -> subprocess.Popen:
     """A wrangler dev of a frozen copy of control/ on PORT with the night's own state; machines
     reach it from Docker. `run.py serve --restart` takes up Tule's changes (it drops live sessions)."""
     app = freeze(night)
-    out = open(night / "control.log", "w")
+    out = open(night / "control.log", "a")  # a restart goes on in the same log: runs remember offsets into it
     p = subprocess.Popen(
         ["npx", "wrangler", "dev", "--port", str(PORT), "--ip", "127.0.0.1", "--inspector-port", str(PORT + 1000),
          "--enable-containers=false", "--persist-to", str(night / "state"), "--local-upstream", f"127.0.0.1:{PORT}",
@@ -328,7 +328,7 @@ def helper_works(name: str) -> bool:
             r = subprocess.run(["claude", "-p", "Answer with the word ok.", "--output-format", "json"], capture_output=True, text=True, timeout=120,
                                env={k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")})
             return not json.loads(r.stdout).get("is_error")
-        r = subprocess.run(["codex", "exec", "--skip-git-repo-check", "--ignore-user-config", "--disable", "apps", "Answer with the word ok."],
+        r = subprocess.run([CODEX, "exec", "--skip-git-repo-check", "--ignore-user-config", "--disable", "apps", "Answer with the word ok."],
                            capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
         return r.returncode == 0
     except Exception:
@@ -339,7 +339,7 @@ def ask(prompt: str, cwd: Path, images=(), write=False, timeout=900, add_dirs=()
     """One answer from the helper model, which may read files (and with write, write in cwd)."""
     if HELPER == "codex":
         last = Path(tempfile.mkstemp(suffix=".txt")[1])
-        cmd = ["codex", "exec", "--skip-git-repo-check", "--ignore-user-config", "--disable", "apps",
+        cmd = [CODEX, "exec", "--skip-git-repo-check", "--ignore-user-config", "--disable", "apps",
                "-c", f'sandbox_mode="{"workspace-write" if write else "read-only"}"', "-o", str(last)]
         for i in images:
             cmd += ["-i", str(i)]
@@ -779,7 +779,7 @@ def auto():
         scenarios = [s for s in scenarios if s["name"] in want]
     agents = [x for x in a.agents.split(",") if x]
     for x in agents:
-        if x not in AGENTS or not shutil.which(x):
+        if x not in AGENTS or not shutil.which(CODEX if x == "codex" else x):
             raise SystemExit(f"unknown or missing agent {x!r} (have: {', '.join(AGENTS)})")
     global HELPER
     HELPER = next((h for h in ([a.helper] if a.helper else ["claude", "codex"]) if helper_works(h)), None)

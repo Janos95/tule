@@ -74,15 +74,14 @@ def annotate(agent, args: dict) -> dict:
         if not os.path.exists(os.path.join(root, sid)):
             break
         sid = time.strftime("%Y%m%d-%H%M%S", now) + f"-{n}"
-    folder = os.path.join(root, sid)
-    os.makedirs(folder)
-
     png = args.get("png") or ""
     if png.startswith("data:"):
         png = png.split(",", 1)[-1]
     data = base64.b64decode(png) if png else b""
     if len(data) > MAX_PNG:
         raise ValueError(f"the picture is {len(data) >> 20} MiB; at most {MAX_PNG >> 20} MiB")
+    folder = os.path.join(root, sid)  # made once the picture is known to be good: no empty folder left
+    os.makedirs(folder)
     if data:
         _write(os.path.join(folder, "annotation.png"), data)
 

@@ -175,6 +175,7 @@ class Workspace:
         """Uploads new chunks and records a snapshot; None when nothing changed."""
         t0 = time.time()
         m = self.manifest()
+        self.cache = {rel: v for rel, v in self.cache.items() if rel in m["files"]}  # not of files that are gone
         if not force and self.last is not None and _same(m, self.last):
             return None
         where = {}  # chunk -> every (file, index) that has it

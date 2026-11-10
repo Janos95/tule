@@ -105,10 +105,11 @@ class Outputs:
         """(path, size, mtime) of the regular files under top, without hidden ones unless keep(rel)."""
         for d, dirs, files in os.walk(os.path.join(self.root, top)):
             rd = os.path.relpath(d, self.root)
-            dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "__pycache__" or keep(os.path.join(rd, x)))
+            inside = any(x.startswith(".") and x != "." for x in rd.split(os.sep))  # in a hidden folder: only what keep names
+            dirs[:] = sorted(x for x in dirs if (not inside and not x.startswith(".") and x != "__pycache__") or keep(os.path.join(rd, x)))
             for f in sorted(files):
                 rel = os.path.join(rd, f)
-                if (f.startswith(".") and not keep(rel)) or ".tmp" in f:
+                if ((inside or f.startswith(".")) and not keep(rel)) or ".tmp" in f:
                     continue
                 try:
                     st = os.stat(os.path.join(self.root, rel))
@@ -172,7 +173,8 @@ class Outputs:
             sections = {f for f in os.listdir(src) if not f.startswith((".", "_")) and os.path.isdir(os.path.join(src, f))}
         except OSError:
             sections = set()
-        for rel, size, mtime in self.stamp or ():
+        stamp = self.stamp or ()  # read once: changed() replaces it from another thread
+        for rel, size, mtime in stamp:
             root, _, rest = rel.partition(os.sep)
             if root not in self.ROOTS:
                 continue
@@ -213,7 +215,7 @@ class Outputs:
         for (_, name), g in staged.items():  # shown instead of the last built one once it has something to show
             if any(f["file"].lower().endswith(GEOMETRY) for f in g["files"]):
                 groups[("outputs", name)] = {**g, "building": True}
-        self.hashes = {r: self.hashes[r] for r, _, _ in self.stamp or () if r in self.hashes}  # of files there are now
+        self.hashes = {r: self.hashes[r] for r, _, _ in stamp if r in self.hashes}  # of files there are now
         self._freshness(groups, set(running.values()))
         return [g for g in groups.values() if g["files"] or g.get("error") or g.get("build")]
 
@@ -283,7 +285,7 @@ class Outputs:
         data = make()
         self.meshes[key] = data
         while len(self.meshes) > 1 and sum(map(len, self.meshes.values())) > MESH_CACHE:
-            self.meshes.pop(next(iter(self.meshes)))
+            self.meshes.pop(next(iter(self.meshes)), None)
         return data
 
 
@@ -572,7 +574,7 @@ class Agent:
                     finally:
                         for t in tasks:
                             t.cancel()
-            except (OSError, websockets.WebSocketException, asyncio.TimeoutError) as e:
+            except Exception as e:  # also a boot that failed (storage, git): reconnect and try again, not exit
                 log("connection lost:", repr(e))
             self.ws = None
             for w in self.streams.values():
@@ -609,7 +611,6 @@ class Agent:
             new = await asyncio.to_thread(self.sshd.configure, m.get("keys", []), m.get("hostKey"))
             if new:
                 await self.send({"t": "hostkey", **new})
-            self.outputs.stamp = None  # resend the index
             await self.send(self.booted)
             self.reported = None
             await self.report()

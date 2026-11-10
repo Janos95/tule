@@ -62,8 +62,8 @@ def find_root(start: str | None = None) -> str | None:
     up from here with tule.toml and src/ (any repo has a src/, so that alone is not enough)."""
     env = os.environ.get("TULE_WORKSPACE")
     if env and os.path.isdir(os.path.join(env, "src")):
-        return os.path.abspath(env)
-    d = os.path.abspath(start or os.getcwd())
+        return os.path.realpath(env)  # as a script's cwd reports it: through a symlink, reads would not be tracked
+    d = os.path.realpath(start or os.getcwd())
     while True:
         if os.path.isfile(os.path.join(d, "tule.toml")) and os.path.isdir(os.path.join(d, "src")):
             return d
@@ -561,6 +561,8 @@ def stop(root: str) -> list[int]:
         try:
             env = open(f"/proc/{d}/environ", "rb").read().split(b"\0")
             if b"TULE_BUILD_CHILD=1" not in env or os.path.realpath(f"/proc/{d}/cwd") != os.path.realpath(root):
+                continue
+            if os.getsid(int(d)) != int(d):  # a script the build runs, or its workers: its group is signalled once
                 continue
             os.killpg(os.getpgid(int(d)), signal.SIGTERM)
             out.append(int(d))

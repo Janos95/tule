@@ -230,14 +230,38 @@ def large_blobs(new: str, exclude: list[str]) -> list[tuple[str, int]]:
 
 
 def credential(argv=None):
-    """git-credential-tule get: the same token, as Basic auth (user "tule")."""
+    """git-credential-tule get: the same token, as Basic auth (user "tule"), for Tule's own host only:
+    the helper is installed for every URL, and any other server that asks (GitHub, on a private or
+    mistyped repository) must not be sent the machine's token."""
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] != "get":
         return  # store / erase: nothing to keep
+    asked = {}
     for line in sys.stdin:  # the request ends with a blank line (git may keep the pipe open)
         if not line.strip():
             break
+        k, _, v = line.strip().partition("=")
+        asked[k] = v
+    if asked.get("host", "").lower() != _tule_host():
+        return
     sys.stdout.write(f"username=tule\npassword={token()}\n")
+
+
+def _tule_host() -> str:
+    """host[:port] of the Tule server this machine (or this CLI) belongs to; "" when unknown."""
+    import urllib.parse
+
+    url = ""
+    try:
+        with open(MACHINE) as f:
+            url = json.load(f).get("url") or ""
+    except (OSError, ValueError):
+        pass
+    if not url:
+        from . import load
+
+        url = load().get("url") or ""
+    return urllib.parse.urlsplit(url).netloc.lower()
 
 
 if __name__ == "__main__":

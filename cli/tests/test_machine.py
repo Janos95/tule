@@ -226,3 +226,17 @@ def test_the_default_view_shows_a_wall_plate_from_its_arms_side():
     arms = b(10, 40, 10).at(-30, 22, 60) + b(10, 40, 10).at(30, 22, 60)  # reaching out to +y
     for item, side in ((plate + arms, 1), (plate + arms.mirror(0, 1, 0), -1)):
         assert best_iso(items_to_parts([("holder", item)]))[1] * side > 0
+
+
+def test_the_git_credential_helper_answers_only_for_tule(tmp_path, monkeypatch, capsys):
+    import io
+
+    from tule_cli import gitremote
+
+    m = tmp_path / "machine.json"
+    m.write_text(json.dumps({"url": "https://tule.example.com", "token": "join-secret"}))
+    monkeypatch.setattr(gitremote, "MACHINE", str(m))
+    for host, wanted in (("tule.example.com", True), ("github.com", False), ("", False)):
+        monkeypatch.setattr(sys, "stdin", io.StringIO(f"protocol=https\nhost={host}\n\n"))
+        gitremote.credential(["get"])
+        assert ("join-secret" in capsys.readouterr().out) is wanted, host  # any other server asking gets nothing
