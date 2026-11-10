@@ -17,7 +17,7 @@
 //   POST /api/projects/<name>/save            {"machine", "message"}: commit, merge other saves, push
 //   POST /api/projects/<name>/forget          {"machine"}: drop a stopped copy and its unsaved work
 //   GET  /api/projects/<name>/snapshots       newest first; /snapshots/<id> is a manifest
-//   GET  /api/projects/<name>/blobs/<sha256>  a chunk of a snapshot (the viewer's history)
+//   GET  /api/projects/<name>/blobs/<sha256>  a chunk of a snapshot (tule admin pull)
 //   GET  /api/projects/<name>/outputs         the outputs index
 //   WSS  /api/projects/<name>/ssh             one SSH session (`tule proxy`)
 //   WSS  /api/projects/<name>/view            the viewer
@@ -127,7 +127,8 @@ const viewable = (p: unknown): p is string =>
 function frozen(outputs: unknown[], man: Manifest): unknown[] {
   const has = (f: { path?: string }) => !!f?.path && !!man.files?.[f.path];
   return (outputs as { files?: { path?: string }[]; meta?: { framesFile?: { path?: string } } }[])
-    .map((o) => ({ ...o, files: (o.files ?? []).filter(has), building: undefined }))
+    // not the build's log, error or script: a traceback quotes sources, which a link does not show
+    .map((o) => ({ ...o, files: (o.files ?? []).filter(has), building: undefined, build: (o as { build?: { state?: string } }).build?.state === "failed" ? { state: "failed" } : undefined }))
     .filter((o) => o.files.length || (o.meta?.framesFile && has(o.meta.framesFile)));
 }
 
@@ -555,6 +556,8 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
     const f = (k: string) => String(form.get(k) ?? "").trim();
     const action = url.pathname.slice("/settings/".length);
     // the support account keeps one expiring key (tule admin support-key): no other keys, computers or RunPod
+    if (user.guest && ["runpod", "hosts/new"].includes(action)) // the page hides these from guests; a direct POST is refused too
+      return page("Sign in first", "<p>Sign in with Google to add your own computers or a RunPod key.</p>", 403, user);
     if (user.id === SUPPORT_ID && ["runpod", "keys/new", "hosts/new"].includes(action))
       return page("Not for the support account", "<p>The support account has one key, made by an admin (tule admin support-key).</p>", 403, user);
     if (action === "runpod") {

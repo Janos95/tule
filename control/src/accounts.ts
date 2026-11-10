@@ -145,7 +145,8 @@ export class Accounts extends DurableObject<Env> {
     this.sql.exec("DELETE FROM guest_ips WHERE day < ?", d);
     const id = `u_g${rand(12)}`;
     this.sql.exec("INSERT INTO users (id, google_sub, email, name, created, guest, last_seen) VALUES (?, NULL, NULL, NULL, ?, 1, ?)", id, Date.now(), Date.now());
-    await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
+    // not a new alarm per guest: with one arriving every hour the sweep would never run
+    if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
     return { user: { id, email: "guest", name: "Guest", guest: true }, session: await this.createSession(id) };
   }
 
@@ -244,21 +245,24 @@ export class Accounts extends DurableObject<Env> {
     const cutoff = Date.now() - this.limits().days * 86_400_000;
     const old = this.all<{ id: string }>("SELECT id FROM users WHERE guest = 1 AND COALESCE(last_seen, created) < ? LIMIT 50", cutoff);
     for (const { id } of old) {
+      let failed = false;
       for (const p of this.projects(id)) {
         try {
           await (this.env.PROJECT.getByName(p.id) as unknown as { destroyProject(): Promise<unknown> }).destroyProject();
         } catch (e) {
           console.log(JSON.stringify({ event: "guest-sweep", project: p.id, error: String(e) }));
-          continue;
+          failed = true;
         }
       }
-      this.deleteUser(id);
+      if (!failed) this.deleteUser(id); // else the next sweep tries again: the rows are what finds its machines and files
     }
     // support copies past their days (the copy, its machines and files; the original is not touched)
     for (const c of this.all<{ project_id: string; user_id: string; name: string }>("SELECT project_id, user_id, name FROM admin_copies WHERE expires IS NOT NULL AND expires < ? LIMIT 20", Date.now())) {
       try {
         if (this.projectById(c.project_id)) await (this.env.PROJECT.getByName(c.project_id) as unknown as { destroyProject(): Promise<unknown> }).destroyProject();
-        this.deleteProject(c.user_id, c.name);
+        // by id: the copy may have been renamed since (and its old name taken by another project)
+        this.sql.exec("DELETE FROM shares WHERE project_id = ?", c.project_id);
+        this.sql.exec("DELETE FROM projects WHERE id = ?", c.project_id);
         this.sql.exec("DELETE FROM admin_copies WHERE project_id = ?", c.project_id);
         console.log(JSON.stringify({ event: "support-copy-expired", project: c.project_id }));
       } catch (e) {

@@ -127,7 +127,7 @@ function frame(kind: number, id: number, payload: Uint8Array): Uint8Array {
   return out;
 }
 
-const fresh = { helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined };
+const fresh = { helloAt: undefined, agentStarted: undefined, readyAt: undefined, restoreMs: undefined, lostAt: undefined };
 
 /** Whether a machine reported work that is not in the latest save. */
 function dirty(u: unknown) {
@@ -719,6 +719,8 @@ export class Project extends DurableObject<Env> {
       if (m.kind === "cloud" && !this.ctx.container?.running && !this.agent(m.id)) {
         Object.assign(m, { on: false, joinHash: undefined, stoppedAt: Date.now() });
         await this.bill(m);
+        if (this.state.id) await this.accounts().machineStopped(this.state.id); // or a guest's slot stays taken
+        this.broadcast();
         continue;
       }
       await this.bill(m);

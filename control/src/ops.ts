@@ -1,7 +1,7 @@
 // What a signed-in user can do, shared by the REST API (the CLI, the pages)
 // and the MCP tools, so both behave the same. Every function answers a plain
 // object; failures are {error, hint}.
-import type { ProjectRef, User } from "./accounts";
+import { SUPPORT_ID, type ProjectRef, type User } from "./accounts";
 import { accounts } from "./auth";
 import type { Host } from "./host";
 import type { Project } from "./project";
@@ -9,7 +9,6 @@ import { stub } from "./rpc";
 
 export type Result = Record<string, unknown>;
 export const NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
-export const MACHINE_NAMES = ["cpu-1", "cpu-2", "cpu-4"];
 
 const fail = (error: string, hint?: string): Result => ({ error, ...(hint ? { hint } : {}) });
 
@@ -160,6 +159,7 @@ export async function removeSshKey(env: Env, user: User, id: unknown): Promise<R
 }
 
 export async function connectInfo(env: Env, user: User, origin: string, name: string): Promise<Result> {
+  if (user.id === SUPPORT_ID) return fail("the support account signs in with its own key, not a code", "tule login --token <key> (an admin makes it: tule admin support-key)");
   const code = await accounts(env).cliLoginCode(user.id);
   return {
     setup: `curl -fsSL ${origin}/cli.sh | sh -s -- ${code}   # installs the tule CLI and signs it in; once per computer (the code works once, for an hour). Skip it if \`tule ls\` already works.`,

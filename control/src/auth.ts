@@ -4,7 +4,8 @@
 //   the CLI, MCP    an API key (tule_...), made by `tule login` (device code)
 //                   or in Settings; MCP clients also get OAuth tokens
 //                   (/authorize: sign in with Google, then consent)
-//   tests, admin    DEV_TOKEN, which acts as the "dev" user
+//   tests           DEV_TOKEN, which acts as the "dev" user (not an admin)
+//   admin, support  an ADMIN_EMAILS account; the support account's key (tule admin support-key)
 //
 // ALLOWED_EMAILS (comma-separated, "*" for anyone) says who may sign up.
 import { SUPPORT_ID, type Accounts, type User } from "./accounts";
