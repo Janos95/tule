@@ -1,79 +1,54 @@
-// The parts panel: the shown frame's parts (show() names) as a small tree.
-// Paths ("gripper/left jaw/finger") make the groups; a root that every
-// part shares is the panel's title. Rows: the name; the
-// eye hides the part (or group), "only" (or Alt-click) shows just it, and
-// hovering or tapping a row highlights it in the view (the other parts turn
-// translucent). Unnamed shapes are "shape 1", "shape 2", ...; references
-// (show(reference=...)) are one row. Hidden parts are kept by name per
+// The parts panel: the shown frame's parts (their names) as a small tree.
+// Paths ("gripper/left jaw/finger") make the groups (a root that every part
+// shares is left out). Rows: the name; the eye hides the part (or group),
+// "only" (or Alt-click) shows just it, and hovering or tapping a row
+// highlights it in the view (the other parts turn translucent). Unnamed
+// shapes are "shape 1", "shape 2", ... Hidden parts are kept by name per
 // project for the session: they stay hidden across an animation's frames
-// and across runs. They are neither drawn nor fitted, and the agent's
-// screenshot shows what the page shows. With one unnamed shape and no
-// reference there is no panel (and nothing is hidden).
+// and across runs, and are neither drawn nor fitted. With a single part
+// there is no panel (and nothing is hidden).
 
 const EYE = '<svg viewBox="0 0 16 16"><path d="M1.5 8S3.9 3.5 8 3.5 14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
 const EYE_OFF = '<svg viewBox="0 0 16 16"><path d="M1.5 8S3.9 3.5 8 3.5 14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M2.5 13.5l11-11"/></svg>';
 const CARET = '<svg viewBox="0 0 16 16"><path d="M6 4l4 4-4 4"/></svg>';
 
-// the keys of a frame's meshes: the part name, "shape <n>" for the n-th
-// unnamed shape, null for references
+// the keys of a frame's meshes: the part name, "shape <n>" for the n-th unnamed shape
 function partKeys(meshes) {
   let unnamed = 0;
-  return meshes.map((m) => (m.role === "reference" ? null : (m.name ?? `shape ${++unnamed}`)));
-}
-
-// a name picks the parts whose path contains its segments in a row ("left
-// jaw" picks "gripper/left jaw/finger"); "reference" picks the references
-const segs = (s) => s.split("/").map((x) => x.trim().toLowerCase());
-function picks(key, name) {
-  if (key === null) return name.trim().toLowerCase() === "reference";
-  const k = segs(key);
-  const n = segs(name);
-  for (let i = 0; i + n.length <= k.length; i++) if (n.every((x, j) => x === k[i + j])) return true;
-  return false;
+  return meshes.map((m) => m.name ?? `shape ${++unnamed}`);
 }
 
 /** viewer: the Viewer; project: () => the open project's id. */
 export function initParts({ viewer, project }) {
   const $ = (id) => document.getElementById(id);
   const panel = $("parts");
-  const byProject = new Map(); // project id -> {parts: Set of hidden keys, reference: hidden}
+  const byProject = new Map(); // project id -> Set of hidden keys
   const expanded = new Set(); // open groups (ids)
-  let shown = []; // the shown frame's meshes
-  let keys = []; // and their keys
-  let rows = new Map(); // row id -> {id, label, keys: [...], kind: "part" | "group" | "reference"}
-  let shape = ""; // the frame's parts and colors: the list is rebuilt when they change
+  let keys = []; // the shown frame's keys
+  let rows = new Map(); // row id -> {id, label, keys: [...], kind: "part" | "group"}
+  let shape = ""; // the frame's parts: the list is rebuilt when they change
   let offered = false;
   let hover = null; // row ids
   let selected = null;
 
   const hiddenSet = () => {
     const id = project();
-    if (!byProject.has(id)) byProject.set(id, { parts: new Set(), reference: false });
+    if (!byProject.has(id)) byProject.set(id, new Set());
     return byProject.get(id);
   };
-  const isHidden = (key) => (key === null ? hiddenSet().reference : hiddenSet().parts.has(key));
-  const setHidden = (key, on) => {
-    const h = hiddenSet();
-    if (key === null) h.reference = on;
-    else if (on) h.parts.add(key);
-    else h.parts.delete(key);
-  };
-  const modelKeys = () => [...new Set(keys.filter((k) => k !== null))];
+  const isHidden = (key) => hiddenSet().has(key);
+  const setHidden = (key, on) => (on ? hiddenSet().add(key) : hiddenSet().delete(key));
+  const modelKeys = () => [...new Set(keys)];
   const anyHidden = () => keys.some((k) => isHidden(k));
 
-  /** The viewer style for the shown frame: {hidden, lit} as mesh indices.
-   * hide, only: part names (picks) for an agent's screenshot; lit: false
-   * leaves out the highlight. */
-  function style({ hide = [], only = null, lit = true } = {}) {
+  /** The viewer style for the shown frame: {hidden, lit} as mesh indices. */
+  function style() {
     if (!offered) return { hidden: null, lit: null };
     const hidden = new Set();
-    keys.forEach((k, i) => {
-      if (only ? !only.some((n) => picks(k, n)) : isHidden(k)) hidden.add(i);
-      if (hide.some((n) => picks(k, n))) hidden.add(i);
-    });
-    const row = lit && rows.get(hover ?? selected);
+    keys.forEach((k, i) => isHidden(k) && hidden.add(i));
+    const row = rows.get(hover ?? selected);
     let on = null;
-    if (row && row.kind !== "reference") {
+    if (row) {
       on = new Set();
       keys.forEach((k, i) => row.keys.includes(k) && !hidden.has(i) && on.add(i));
       if (!on.size) on = null;
@@ -81,17 +56,14 @@ export function initParts({ viewer, project }) {
     return { hidden, lit: on };
   }
 
-  // while a part is lit the panel turns see-through: the part may be behind it
   const restyle = () => {
-    const st = style();
-    viewer.setStyle(st);
-    panel.classList.toggle("see-through", !!st.lit);
+    viewer.setStyle(style());
     paint();
   };
 
   // ---------------------------------------------------------------- the list
 
-  function build(colors) {
+  function build() {
     rows = new Map();
     const model = modelKeys();
     let paths = model.map((k) => k.split("/"));
@@ -117,7 +89,7 @@ export function initParts({ viewer, project }) {
         g.keys.push(key);
         list = g.children;
       }
-      const leaf = { id: `p:${key}`, label: paths[i][paths[i].length - 1], kind: "part", keys: [key], color: colors.get(key), depth };
+      const leaf = { id: `p:${key}`, label: paths[i][paths[i].length - 1], kind: "part", keys: [key], depth };
       rows.set(leaf.id, leaf);
       list.push(leaf);
     });
@@ -147,16 +119,14 @@ export function initParts({ viewer, project }) {
       }
     };
     fold(top, root.join("/"));
-    if (keys.includes(null)) rows.set("r", { id: "r", label: "Reference", kind: "reference", keys: [null], color: colors.get(null), depth: 0 });
     if (!rows.has(hover)) hover = null;
     if (!rows.has(selected)) selected = null;
 
     panel.textContent = "";
     const head = document.createElement("div");
     head.className = "parts-head";
-    head.innerHTML = '<span class="parts-title"></span><button class="parts-all" type="button">Show all</button>';
-    head.firstChild.textContent = root.join(" / ");
-    head.lastChild.addEventListener("click", showAll);
+    head.innerHTML = '<button class="parts-all" type="button">Show all</button>';
+    head.firstChild.addEventListener("click", showAll);
     panel.appendChild(head);
     const list = document.createElement("div");
     list.className = "parts-list";
@@ -170,10 +140,6 @@ export function initParts({ viewer, project }) {
       into.appendChild(kids);
     };
     for (const n of top) add(n, list);
-    if (rows.has("r")) {
-      if (top.length) list.appendChild(Object.assign(document.createElement("div"), { className: "parts-sep" }));
-      list.appendChild(row(rows.get("r")));
-    }
     panel.appendChild(list);
   }
 
@@ -187,9 +153,9 @@ export function initParts({ viewer, project }) {
       node.kind === "group"
         ? `<button class="caret" type="button" aria-label="Expand">${CARET}</button>`
         : '<span class="lead"></span>'; // names line up under a group's
-    el.innerHTML = `${lead}<span class="name"></span>${node.kind === "reference" ? "" : '<button class="only" type="button" title="Show only this (Alt-click)">only</button>'}<button class="eye" type="button"></button>`;
+    el.innerHTML = `${lead}<span class="name"></span><button class="only" type="button" title="Show only this (Alt-click)">only</button><button class="eye" type="button"></button>`;
     el.querySelector(".name").textContent = node.label;
-    el.title = node.kind === "reference" ? "Reference shapes (show(reference=...)), drawn translucent" : node.keys.length === 1 ? node.keys[0] : `${node.label}: ${node.keys.length} parts`;
+    el.title = node.keys.length === 1 ? node.keys[0] : `${node.label}: ${node.keys.length} parts`;
     return el;
   }
 
@@ -232,7 +198,7 @@ export function initParts({ viewer, project }) {
     restyle();
   }
 
-  // only this row's parts (references keep their state); again: show all.
+  // only this row's parts; again: show all.
   // Both end a highlight that a click or tap kept.
   function solo(node) {
     const model = modelKeys();
@@ -262,9 +228,8 @@ export function initParts({ viewer, project }) {
       else expanded.add(node.id);
       return paint();
     }
-    if (node.kind !== "reference" && (e.altKey || e.target.closest(".only"))) return solo(node);
+    if (e.altKey || e.target.closest(".only")) return solo(node);
     if (e.target.closest(".eye")) return toggle(node);
-    if (node.kind === "reference") return;
     selected = selected === node.id ? null : node.id;
     restyle();
   });
@@ -288,46 +253,20 @@ export function initParts({ viewer, project }) {
     restyle();
   });
 
-  // a frame offers the tree when there is something to choose: several parts, or references
-  const offers = (meshes, k) => k.length > 1 || k.some((x) => x === null);
-
   return {
-    /** A new frame (or a replayed one): returns its viewer style. */
+    /** A new frame (or a replayed one): returns its viewer style. The tree is offered for several parts. */
     frame(meshes) {
-      shown = meshes;
       keys = partKeys(meshes);
-      offered = offers(meshes, keys);
-      const colors = new Map(keys.map((k, i) => [k, meshes[i].color]));
-      const next = offered ? JSON.stringify([...colors]) : "";
+      offered = keys.length > 1;
+      const next = offered ? JSON.stringify(keys) : "";
       if (next !== shape) {
         shape = next;
-        if (offered) build(colors);
+        if (offered) build();
         else panel.textContent = "";
       }
       layout();
       if (offered) paint();
       return style();
-    },
-    style,
-    /** A frame's (default: the shown one's) part names, the hidden ones and
-     * the number of references. */
-    names(meshes = shown) {
-      const k = partKeys(meshes);
-      const model = [...new Set(k.filter((x) => x !== null))];
-      return { parts: model, hidden: offers(meshes, k) ? model.filter((x) => isHidden(x)) : [], references: k.filter((x) => x === null).length };
-    },
-    /** The names of the parts a style hides ("reference" for references). */
-    hiddenNames: (st) => [...new Set(keys.filter((k, i) => st.hidden?.has(i)).map((k) => k ?? "reference"))],
-    /** Names (of hide / only) that pick no part of the shown frame. */
-    unknown: (names) => names.filter((n) => !keys.some((k) => picks(k, n))),
-    /** Indices of the visible model shapes of a frame's meshes, or null when
-     * none is hidden (exports). */
-    keep(meshes) {
-      const k = partKeys(meshes);
-      if (!offers(meshes, k)) return null;
-      const keep = [];
-      k.forEach((key, i) => key !== null && !isHidden(key) && keep.push(i));
-      return keep.length === k.filter((x) => x !== null).length ? null : keep;
     },
   };
 }

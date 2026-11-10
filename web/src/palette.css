@@ -60,6 +60,46 @@
   --view-center: #fdfcf9;
   --view-mid: #f1eee7;
   --view-edge: #e5e0d5;
+  --part: #8a96a3; /* a part without a color of its own */
+  --edge: #23344a; /* the CAD edges: the navy (the 3D view stays light) */
+
+  /* data colors: fixed, chosen to tell lines and faces apart, not roles */
+  /* the sequence plot's lines, in order by key */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #8e5bd6;
+  --series-8: #a8642a;
+  --series-9: #17a2b8;
+  --series-10: #6b7280;
+  /* overlay roles beyond fixed and load, in order of appearance */
+  --role-1: #4f8a3c;
+  --role-2: #8a6bb8;
+  --role-3: #2f9a95;
+  --role-4: #c8689a;
+  /* the value scale: a diverging blue-yellow-red ramp, low to high (hex only: it is interpolated) */
+  --ramp-1: #3b4cc0;
+  --ramp-2: #6f92f3;
+  --ramp-3: #aac7fd;
+  --ramp-4: #f2e5a0;
+  --ramp-5: #f7a889;
+  --ramp-6: #e26952;
+  --ramp-7: #b40426;
+  /* annotation pens (named red, blue, green, black in annotation.json), picked faces, labeled picks */
+  --pen-red: #e5484d;
+  --pen-blue: #2a78d6;
+  --pen-green: #1baf7a;
+  --pen-black: #23344a;
+  --pick-selected: #9b5de5;
+  --pick-1: #2a78d6;
+  --pick-2: #eb6834;
+  --pick-3: #1baf7a;
+  --pick-4: #e87ba4;
+  --pick-5: #008300;
+  --pick-6: #eda100;
 }
 
 @media (prefers-color-scheme: dark) {

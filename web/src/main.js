@@ -1029,7 +1029,7 @@ function play(on) {
   // placements per frame, per part: read once
   const at = fr.map((f) => f.parts.map((p) => (p.transform != null ? placement(p.transform, p.file) : null)));
   let pos = state.frame >= fr.length - 1 ? 0 : state.frame;
-  let drawnFrame = state.frame; // whose files are drawn
+  let drawnFrame = Math.min(state.frame, fr.length - 1); // whose files are drawn (a frame from a longer sequence: its last)
   let last = null; // the first tick's time (a frame's timestamp may be before now)
   playing = { blend: true };
   const tick = (now) => {

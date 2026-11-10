@@ -29,31 +29,33 @@
 // in the strip switch fields, a slider scales the motion; hover shows the value
 // under the pointer. Extra fields are ignored.
 
-import { color } from "./colors.js";
+import { color, colors } from "./colors.js";
 
 // severities, the two known roles and arrows mean something: palette.css variables, read when drawn
 const SEVERITY = { error: "--danger-fill", warning: "--warn-fill", info: "--info-fill", ok: "--ok-fill" };
 const ROLES = { fixed: { color: "--info-fill", hatch: true }, load: { color: "--reed" } };
 const ARROW = "--reed";
-// further roles, in order of appearance: plain series colors (stem green, purple, teal, pink),
+// further roles, in order of appearance: plain series colors (--role-1.. in palette.css),
 // apart from the status and role colors above
-const MORE = ["#4f8a3c", "#8a6bb8", "#2f9a95", "#c8689a"];
+const MORE = "--role";
 const RANK = { error: 0, warning: 1, info: 2, ok: 3 };
-// a diverging blue-yellow-red ramp, low to high
-const RAMP = ["#3b4cc0", "#6f92f3", "#aac7fd", "#f2e5a0", "#f7a889", "#e26952", "#b40426"];
+// a diverging blue-yellow-red ramp, low to high (--ramp-1.. in palette.css)
+const RAMP = "--ramp";
 
 /** The ramp's color at t in [0, 1]. */
 function ramp(t) {
-  const x = Math.min(1, Math.max(0, t)) * (RAMP.length - 1);
-  const i = Math.min(RAMP.length - 2, Math.floor(x));
-  const a = RAMP[i].match(/\w\w/g).map((h) => parseInt(h, 16));
-  const b = RAMP[i + 1].match(/\w\w/g).map((h) => parseInt(h, 16));
+  const stops = colors(RAMP);
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  const a = stops[i].match(/\w\w/g).map((h) => parseInt(h, 16));
+  const b = stops[i + 1].match(/\w\w/g).map((h) => parseInt(h, 16));
   return "#" + a.map((v, k) => Math.round(v + (b[k] - v) * (x - i)).toString(16).padStart(2, "0")).join("");
 }
 
 /** The ramp as sRGB numbers in 0..1, for the field shader. */
-const RAMP_RGB = RAMP.map((h) => h.match(/\w\w/g).map((x) => parseInt(x, 16) / 255));
+const rampRGB = () => colors(RAMP).map((h) => h.match(/\w\w/g).map((x) => parseInt(x, 16) / 255));
 
+const nth = (list, i) => list[i % list.length];
 const fmt = (v) => (typeof v === "number" ? +v.toPrecision(4) : String(v));
 
 /** A .npy file's array (little-endian float32, int32 or uint32, C order): {shape, data}. */
@@ -147,7 +149,7 @@ export function initOverlay({ viewer, legend, marks }) {
         continue;
       }
       const role = sev ? null : String(f.role ?? "note");
-      if (role && !roles.has(role)) roles.set(role, ROLES[role] ? { ...ROLES[role], color: color(ROLES[role].color) } : { color: MORE[roles.size % MORE.length] });
+      if (role && !roles.has(role)) roles.set(role, ROLES[role] ? { ...ROLES[role], color: color(ROLES[role].color) } : { color: nth(colors(MORE), roles.size) });
       const label = String(f.label ?? "");
       const key = `${sev ?? "role:" + role}|${label}`;
       if (!groups.has(key)) {
@@ -241,7 +243,7 @@ export function initOverlay({ viewer, legend, marks }) {
           faceIds: fs ? Uint32Array.from(fs.data) : null,
           values: Float32Array.from(raw, norm),
           vectors: val.shape.length === 2 ? val.data : null,
-          ramp: RAMP_RGB,
+          ramp: rampRGB(),
         });
       } else {
         const grid = await load(f.file);
@@ -255,7 +257,7 @@ export function initOverlay({ viewer, legend, marks }) {
           if (!vector) return {};
           const edges = mesh.edges?.length ? sampleGrid(grid, f.origin, f.step, mesh.edges).vectors : null;
           return { vectors: sampleGrid(grid, f.origin, f.step, mesh.positions).vectors, edges };
-        }, { values: Float32Array.from(sampleNodes(grid), norm), shape: shape.slice(0, 3), origin: f.origin, step: f.step, ramp: RAMP_RGB });
+        }, { values: Float32Array.from(sampleNodes(grid), norm), shape: shape.slice(0, 3), origin: f.origin, step: f.step, ramp: rampRGB() });
       }
       fielded = true;
       deformation();
@@ -315,7 +317,7 @@ export function initOverlay({ viewer, legend, marks }) {
       } else bar.append(el("span", "legend-scale-label", s.label));
       bar.append(
         el("small", "", `${fmt(s.min)}${unit}`),
-        Object.assign(el("span", "legend-ramp"), { style: `background: linear-gradient(90deg, ${RAMP.join(", ")})` }),
+        Object.assign(el("span", "legend-ramp"), { style: `background: linear-gradient(90deg, ${colors(RAMP).join(", ")})` }),
         el("small", "", `${fmt(s.max)}${unit}`),
       );
       const note = f ? [fieldError, f.note].filter(Boolean).join("; ") : "";

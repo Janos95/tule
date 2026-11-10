@@ -414,14 +414,15 @@ function table(into, { head, body }, c) {
 function theme() {
   const css = getComputedStyle(document.documentElement);
   const v = (n) => css.getPropertyValue(n).trim();
+  const px = (n) => parseFloat(v(n)); // a text role (palette.css), in pixels
   const font = getComputedStyle(document.body).fontFamily;
   return {
     background: null,
     font,
     range: { category: [v("--reed"), v("--navy"), v("--stem"), v("--info-fill"), v("--danger-fill"), v("--warn-fill"), v("--faint")] },
-    axis: { domainColor: v("--line-strong"), gridColor: v("--line"), tickColor: v("--line-strong"), labelColor: v("--muted"), titleColor: v("--muted"), labelFontSize: 11, titleFontSize: 11.5, titleFontWeight: 500 },
-    legend: { labelColor: v("--muted"), titleColor: v("--muted"), labelFontSize: 11, titleFontSize: 11.5, titleFontWeight: 500 },
-    title: { color: v("--text"), fontSize: 13, fontWeight: 600, anchor: "start" },
+    axis: { domainColor: v("--line-strong"), gridColor: v("--line"), tickColor: v("--line-strong"), labelColor: v("--muted"), titleColor: v("--muted"), labelFontSize: px("--fs-label"), titleFontSize: px("--fs-small"), titleFontWeight: 500 },
+    legend: { labelColor: v("--muted"), titleColor: v("--muted"), labelFontSize: px("--fs-label"), titleFontSize: px("--fs-small"), titleFontWeight: 500 },
+    title: { color: v("--text"), fontSize: px("--fs-body"), fontWeight: 600, anchor: "start" },
     view: { stroke: null },
     mark: { color: v("--reed"), tooltip: true },
     bar: { color: v("--reed") },

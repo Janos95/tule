@@ -6,7 +6,9 @@
 // frame's values in the legend, clicking (or dragging) jumps to it. Clicking a
 // legend entry shows that line alone, with its numbers on the axis.
 
-const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#8e5bd6", "#a8642a", "#17a2b8", "#6b7280"]; // fixed order, by key
+import { colors } from "./colors.js";
+
+const series = (j) => { const s = colors("--series"); return s[j % s.length]; }; // palette.css, fixed order by key
 const H = 64;
 const PAD = { l: 8, r: 8, t: 6, b: 6 };
 const SVG = "http://www.w3.org/2000/svg";
@@ -107,10 +109,10 @@ export function initPlot(el, onPick) {
         });
         paths.set(`${k}|${w}`, d);
       }
-      add("path", { d, class: "plot-line", stroke: SERIES[j % SERIES.length], ...(drawn.has(d) ? { "stroke-dasharray": "5 4" } : {}) });
+      add("path", { d, class: "plot-line", stroke: series(j), ...(drawn.has(d) ? { "stroke-dasharray": "5 4" } : {}) });
       drawn.add(d);
       const v = frames[current]?.values?.[k];
-      if (Number.isFinite(v)) add("circle", { cx: x(current, w), cy: y(v), r: 3.5, fill: SERIES[j % SERIES.length], class: "plot-dot" });
+      if (Number.isFinite(v)) add("circle", { cx: x(current, w), cy: y(v), r: 3.5, fill: series(j), class: "plot-dot" });
     });
     if (shown().every((k) => scale(k) === scale(shown()[0]))) { // one scale: its numbers on the axis
       const r = scale(shown()[0]);
@@ -150,7 +152,7 @@ export function initPlot(el, onPick) {
         });
       }
       item.innerHTML = '<i></i><span class="k"></span> <b></b> <small></small>';
-      item.querySelector("i").style.background = SERIES[j % SERIES.length];
+      item.querySelector("i").style.background = series(j);
       item.querySelector(".k").textContent = k;
       item.querySelector("b").textContent = fmt(f?.values?.[k], r);
       item.querySelector("small").textContent = shown().length > 1 ? `(${fmt(r.lo, r)} – ${fmt(r.hi, r)})` : "";

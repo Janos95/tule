@@ -14,18 +14,13 @@
 // goes back to theirs and their strokes are drawn over the view until it
 // moves.
 
-import { color as palette } from "./colors.js";
+import { color as palette, colors } from "./colors.js";
 
 // pens (named in annotation.json for the agent), the picked-face highlight and pick colors:
-// fixed data colors, chosen to stand out on a part, not palette.css roles
-const COLORS = [
-  { name: "red", hex: "#e5484d" },
-  { name: "blue", hex: "#2a78d6" },
-  { name: "green", hex: "#1baf7a" },
-  { name: "black", hex: "#23344a" }, // the palette's navy (palette.css)
-];
-const SELECTED = "#9b5de5"; // faces picked but not labeled yet
-const PICKS = ["#2a78d6", "#eb6834", "#1baf7a", "#e87ba4", "#008300", "#eda100"];
+// fixed data colors in palette.css (--pen-*, --pick-*), chosen to stand out on a part, read when drawn
+const COLORS = ["red", "blue", "green", "black"].map((name) => ({ name, get hex() { return palette(`--pen-${name}`); } }));
+const SELECTED = "--pick-selected"; // faces picked but not labeled yet
+const pick = (i) => { const c = colors("--pick"); return c[i % c.length]; };
 const WIDTH = 3; // stroke width, CSS pixels
 
 /** ctx: {viewer, req(op, args, ms), machine() -> state, output() -> what is
@@ -104,7 +99,7 @@ export function initAnnotate(ctx) {
       for (const [part, ids] of byPart) out.push({ part, faces: ids, color: c });
     };
     for (const p of [...(ghost?.picks ?? []), ...picks]) add(p.faces, p.color);
-    add([...selection].map((k) => ({ index: +k.split(":")[0], face: +k.split(":")[1] })), SELECTED);
+    add([...selection].map((k) => ({ index: +k.split(":")[0], face: +k.split(":")[1] })), palette(SELECTED));
     return out;
   }
 
@@ -272,7 +267,7 @@ export function initAnnotate(ctx) {
     const label = $("annot-label").value.trim();
     if (!label || !selection.size) return;
     const faces = [...selection].map((k) => ({ index: +k.split(":")[0], face: +k.split(":")[1] }));
-    picks.push({ label, faces, color: PICKS[picks.length % PICKS.length] });
+    picks.push({ label, faces, color: pick(picks.length) });
     selection.clear();
     $("annot-label").value = "";
     restyle();
@@ -312,7 +307,7 @@ export function initAnnotate(ctx) {
     const pending = [...selection];
     if (pending.length) {
       // a selection without a label is saved as "selected"
-      picks.push({ label: $("annot-label").value.trim() || "selected", color: PICKS[picks.length % PICKS.length], faces: pending.map((k) => ({ index: +k.split(":")[0], face: +k.split(":")[1] })) });
+      picks.push({ label: $("annot-label").value.trim() || "selected", color: pick(picks.length), faces: pending.map((k) => ({ index: +k.split(":")[0], face: +k.split(":")[1] })) });
       selection.clear();
       restyle();
     }
@@ -404,7 +399,7 @@ export function initAnnotate(ctx) {
         id: rec.id,
         viewport: rec.viewport,
         strokes: rec.strokes ?? [],
-        picks: (rec.picks ?? []).map((p, i) => ({ label: p.label, color: PICKS[i % PICKS.length], faces: p.faces.map((f) => ({ index: index(f.part), face: f.face })) })),
+        picks: (rec.picks ?? []).map((p, i) => ({ label: p.label, color: pick(i), faces: p.faces.map((f) => ({ index: index(f.part), face: f.face })) })),
       };
       if (rec.camera) viewer.setCamera(rec.camera);
       $("annot-shown").hidden = false;

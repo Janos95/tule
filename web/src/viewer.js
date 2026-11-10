@@ -1,5 +1,5 @@
 // three.js viewer, from genau's web/src/viewer.js: environment lighting, a key
-// light that moves with the camera, z up, fit and preset views, translucent
+// light that moves with the camera, z up, fit and a 3/4 view, translucent
 // ghosting for parts that are not highlighted (the Parts panel), snapshots.
 //
 // What changed for Tule: meshes come from the machine's tessellation
@@ -28,16 +28,8 @@ const LAYERS = ["overlay", "annotate", "hover"];
 // surfaces sit a little behind their edges and behind opaque parts they touch
 const BEHIND = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 };
 
-// camera directions (from the target) for view(); z is up, "front" looks along +y
-export const VIEWS = {
-  iso: [0.62, -1.0, 0.68],
-  front: [0, -1, 0],
-  back: [0, 1, 0],
-  left: [-1, 0, 0],
-  right: [1, 0, 0],
-  top: [0, -1e-3, 1],
-  bottom: [0, -1e-3, -1],
-};
+// the 3/4 view's camera direction (from the target); z is up, "front" looks along +y
+const ISO = [0.62, -1.0, 0.68];
 
 /** Sets a geometry's positions to rest + scale × vec (or rest), reusing its own array: whether anything changed. */
 function place(geometry, rest, vec, scale) {
@@ -94,9 +86,10 @@ export class Viewer {
     this.gridStep = null;
     this.scene.add(this.grid, this.group, this.arrows);
     this.materials = new Map();
-    // the CAD edges: the palette's navy (--navy in palette.css), a constant since the 3D view stays light
-    this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x23344a, transparent: true, opacity: 0.75 });
-    this.edgeClear = new THREE.LineBasicMaterial({ color: 0x23344a, transparent: true, opacity: 0.3 }); // a see-through part's
+    // the CAD edges: --edge in palette.css (the navy), read once since the 3D view stays light
+    const edge = new THREE.Color(palette("--edge"));
+    this.edgeMaterial = new THREE.LineBasicMaterial({ color: edge, transparent: true, opacity: 0.75 });
+    this.edgeClear = new THREE.LineBasicMaterial({ color: edge, transparent: true, opacity: 0.3 }); // a see-through part's
     this.depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false, ...BEHIND });
     // a field is colored per pixel: its grid is a 3D texture sampled at the undeformed point ("rest"),
     // so a coarse mesh (a flat face is two triangles) still shows the field as it is
@@ -251,7 +244,7 @@ export class Viewer {
     const kept = new Set();
     const reuse = (m) => {
       const list = spare.get(m.positions) ?? [];
-      const i = list.findIndex((p) => p.userData.color === (m.color || "#8a96a3") && p.userData.mesh.indices === m.indices && p.userData.mesh.edges === m.edges);
+      const i = list.findIndex((p) => p.userData.color === (m.color || palette("--part")) && p.userData.mesh.indices === m.indices && p.userData.mesh.edges === m.edges);
       return i < 0 ? null : list.splice(i, 1)[0];
     };
     const plan = meshes.map((m) => (m.positions.length ? reuse(m) : null));
@@ -287,7 +280,7 @@ export class Viewer {
         part.matrixAutoUpdate = false;
         part.matrix.set(...m.matrix);
       }
-      const color = m.color || "#8a96a3";
+      const color = m.color || palette("--part");
       part.userData = { index, color, geometry: g, mesh: m };
       const clear = opacityOf(color)[1] < 1;
       const solid = new THREE.Mesh(g, this.material(color));
@@ -706,7 +699,7 @@ export class Viewer {
   // than its flat back; the usual corner unless another clearly sees more (as
   // tule screenshot picks it, cli/tule_cli/render.py)
   iso() {
-    const [x, y, z] = VIEWS.iso;
+    const [x, y, z] = ISO;
     const corners = [[x, y, z], [-x, y, z], [x, -y, z], [-x, -y, z]].map((c) => new THREE.Vector3(...c).normalize());
     const all = []; // [unit normal, area] of each face that points one way
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
@@ -735,14 +728,6 @@ export class Viewer {
     const seen = corners.map((d) => all.reduce((s, [n, area]) => s + (area < big ? area * Math.max(0, n.dot(d)) : 0), 0));
     const best = seen.indexOf(Math.max(...seen));
     return corners[seen[best] > 1.2 * seen[0] ? best : 0];
-  }
-
-  view(name) {
-    if (!this.bounds) return;
-    const dir = name === "iso" ? this.iso() : new THREE.Vector3(...VIEWS[name]);
-    this.camera.position.copy(this.controls.target).add(dir);
-    this.fitted ||= this.bounds.clone();
-    this.fit();
   }
 
   /** The camera as plain numbers: {position, target, up, fov (degrees)}. */
@@ -788,11 +773,6 @@ export class Viewer {
     const arrow = hit.object.parent?.userData.arrow;
     if (arrow !== undefined) return { arrow };
     const { index, mesh, surface } = hit.object.parent.userData;
-    // the triangle's corner nearest the point (a field's value there)
-    const pos = hit.object.geometry.attributes.position;
-    const local = hit.object.worldToLocal(hit.point.clone());
-    const vertex = [hit.face.a, hit.face.b, hit.face.c].reduce((best, v) =>
-      new THREE.Vector3().fromBufferAttribute(pos, v).distanceToSquared(local) < new THREE.Vector3().fromBufferAttribute(pos, best).distanceToSquared(local) ? v : best);
     // the same point on the undeformed shape (where a field is sampled)
     const rest = hit.object.geometry.attributes.rest;
     let at = null;
@@ -803,7 +783,7 @@ export class Viewer {
     // on a surface field: the triangle's vertices (the field's own numbering) and the point's weights
     const surf = surface && hit.barycoord ? { tri: [hit.face.a, hit.face.b, hit.face.c].map((v) => surface.vertexOf[v]), bary: [hit.barycoord.x, hit.barycoord.y, hit.barycoord.z] } : null;
     const face = surface ? surface.faceIds?.[hit.faceIndex] ?? -1 : mesh.faceIds[hit.faceIndex];
-    return { index, mesh, face, vertex, rest: at, surf, point: [hit.point.x, hit.point.y, hit.point.z] };
+    return { index, mesh, face, rest: at, surf, point: [hit.point.x, hit.point.y, hit.point.z] };
   }
 
   /** The view as drawn, on a plain background: a canvas at the device's resolution. */
@@ -818,11 +798,6 @@ export class Viewer {
     g.fillRect(0, 0, out.width, out.height);
     g.drawImage(src, 0, 0);
     return out;
-  }
-
-  setWireframe(on) {
-    this.wire = on;
-    this.setStyle(this.style);
   }
 
   clear() {
