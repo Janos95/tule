@@ -283,7 +283,13 @@ def container(project: str) -> str:
     return f"tule-{project}"
 
 
-def running() -> list[str]:
+def running(docker_off_ok: bool = False) -> list[str]:
+    """The projects with a machine here. ``docker_off_ok``: none when Docker is not running, instead of failing."""
+    if docker_off_ok:
+        try:
+            find_docker()
+        except CliError:
+            return []
     out = docker("ps", "--filter", f"label={LABEL}", "--format", f'{{{{.Label "{LABEL}"}}}}', check=False)
     return [x for x in out.split() if x]
 
@@ -383,11 +389,12 @@ def cmd_up(args):
     sp = specs()  # fails early without Docker
     cfg = read_config()
     url = (args.url or (cfg or {}).get("url") or load().get("url") or DEFAULT_URL).rstrip("/")
-    if not cfg or cfg.get("url") != url or args.name and args.name != cfg.get("name") or args.key:
+    # Tule may store a different name than asked for (lowercased, or pc-… when it is a machine's name): compare both
+    if not cfg or cfg.get("url") != url or args.name and args.name not in (cfg.get("name"), cfg.get("asked")) or args.key:
         name = args.name or socket.gethostname().split(".")[0]
         same = cfg and cfg.get("url") == url
         cfg = pair_with_key(url, name, args.key, cfg["token"] if same else None) if args.key else pair(url, name, not args.no_browser)
-        write_config(cfg)
+        write_config({**cfg, "asked": name})
     install_service()
     gpus = f", GPUs: {', '.join(sp['gpus'])}" if sp["gpus"] else ""
     log(f"{cfg['name']} is ready: {sp['cpus']} cores, {sp['memoryGb']} GB{gpus}. Start a machine here with: tule up -p <project> --on {cfg['name']}")
@@ -405,13 +412,17 @@ def cmd_status(args):
     elif shutil.which("systemctl"):
         r = subprocess.run(["systemctl", "--user", "is-active", UNIT], capture_output=True, text=True)
         print("service:", r.stdout.strip() or "not installed")
-    ps = running()
-    print("machines here:", ", ".join(ps) if ps else "none")
+    try:
+        find_docker()
+        ps = running()
+        print("machines here:", ", ".join(ps) if ps else "none")
+    except CliError as e:
+        print("machines here: unknown,", e)
 
 
 def cmd_down(args):
     remove_service()
-    for p in running():
+    for p in running(docker_off_ok=True):  # with Docker stopped, no machine runs here either
         stop(p)
     if args.forget and os.path.exists(HOST_CONFIG):
         os.remove(HOST_CONFIG)

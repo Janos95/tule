@@ -20,7 +20,7 @@ import struct
 import subprocess
 import sys
 
-GEOMETRY = (".step", ".stp", ".stl")
+GEOMETRY = (".step", ".stp", ".stl", ".glb")
 SOCKET = os.environ.get("TULE_AGENT_SOCKET", "/run/tule/agent.sock")
 DOC_ORDER = ["index", "setup", "loop", "modeling", "outputs", "drawings", "sheetmetal", "occt", "annotations", "fea", "topopt", "golden-paths"]
 
@@ -130,13 +130,15 @@ def _need_tule():
 
 
 def load_items(path: str) -> list[tuple[str, object]]:
-    """[(name, Shape or STL triangles)] for a STEP/STL file."""
+    """[(name, Shape or triangles)] for a STEP, STL or glTF (.glb) file."""
     ext = os.path.splitext(path)[1].lower()
     base = os.path.splitext(os.path.basename(path))[0]
     if ext == ".stl":
         return [(base, read_stl(path))]
+    if ext == ".glb":
+        return read_glb(path, base)
     if ext not in (".step", ".stp"):
-        raise CliError(f"{path}: unsupported file type {ext or '(none)'}; use STEP, STL or a PDF"
+        raise CliError(f"{path}: unsupported file type {ext or '(none)'}; use STEP, STL, GLB or a PDF"
                        + ("; read an image directly" if ext in (".png", ".jpg", ".jpeg", ".svg") else
                           "; a chart or doc: read its data in the file (charts show in the viewer)"
                           if ext in (".json", ".md") else ""))
@@ -147,6 +149,28 @@ def load_items(path: str) -> list[tuple[str, object]]:
     if isinstance(item, Assembly):
         return [(n.rsplit("/", 1)[-1], s) for n, s in item.parts()]
     return [(item.name or base, item)]
+
+
+def read_glb(path: str, base: str) -> list[tuple[str, object]]:
+    """[(mesh name, (n, 3, 3) float32 triangles)], placed as the file places them."""
+    try:
+        import trimesh
+    except ImportError:
+        raise CliError("reading a .glb needs trimesh: pip install trimesh") from None
+    try:
+        scene = trimesh.load(path, force="scene")
+    except Exception as e:  # noqa: BLE001 - trimesh raises many kinds
+        raise CliError(f"{path}: not a readable glTF ({e})") from None
+    out = []
+    for node in scene.graph.nodes_geometry:
+        matrix, geom = scene.graph[node]
+        mesh = scene.geometry[geom]
+        if not len(getattr(mesh, "faces", ())):
+            continue
+        out.append((str(node or geom or base), mesh.copy().apply_transform(matrix).triangles.astype("float32")))
+    if not out:
+        raise CliError(f"{path}: the glTF has no triangles")
+    return out
 
 
 def to_parts(path: str, color: str | None = None, name: str | None = None):
@@ -529,7 +553,8 @@ def remote(args, argv: list[str], out: str | None = None):
     computer); its stdout goes to the file out (a PNG) or to ours."""
     import shlex
 
-    cmd = [sys.executable, "-m", "tule_cli", "ssh", "-p", args.project, "--", shlex.join(argv)]
+    which = ["--machine", args.machine] if getattr(args, "machine", None) else []
+    cmd = [sys.executable, "-m", "tule_cli", "ssh", "-p", args.project, *which, "--", shlex.join(argv)]
     if out is None:
         sys.exit(subprocess.call(cmd))
     with open(out, "wb") as f:
@@ -688,7 +713,7 @@ def cmd_inspect(args):
         if os.path.isdir(path):
             found = [os.path.join(path, f) for f in sorted(os.listdir(path)) if f.lower().endswith(GEOMETRY)]
             if not found:
-                raise CliError(f"{path}: no STEP or STL files")
+                raise CliError(f"{path}: no STEP, STL or GLB files")
             files += found
         elif os.path.exists(path):
             files.append(path)
@@ -944,9 +969,11 @@ def add_commands(add):
     sp.add_argument("--page", type=int, dest="frame", help="a PDF's page, from 1 (a datasheet's drawing)")
     sp.add_argument("-p", "--project", help="from your own computer: render on this project's machine, write the PNG here")
     sp.add_argument("--field", help="an overlay field to color by, by label (default: the first; e.g. displacement)")
+    sp.add_argument("--machine", help="with -p: which machine (when several run)")
     sp = add("inspect", cmd_inspect, "parts, bounds, volume, faces with ids, types, areas and tags", project=False)
     sp.add_argument("file", nargs="+", help="STEP/STL files or output folders")
     sp.add_argument("--json", action="store_true", help="print JSON instead of text")
     sp.add_argument("-p", "--project", help="from your own computer: inspect files on this project's machine")
+    sp.add_argument("--machine", help="with -p: which machine (when several run)")
     sp = add("docs", cmd_docs, "the agent instructions: tule docs lists topics, tule docs <topic> prints one", project=False)
     sp.add_argument("topic", nargs="?")

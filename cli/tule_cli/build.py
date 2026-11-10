@@ -288,10 +288,11 @@ class Build:
         """The outputs that read these, and what reads those, from the last records."""
         out: list[str] = []
         todo = list(names)
+        reads = {t: set(self.deps(t)) for t in self.all}  # each record read once
         while todo:
             n = todo.pop()
             for t in self.all:
-                if t not in out and t not in names and n in self.deps(t):
+                if t not in out and t not in names and n in reads[t]:
                     out.append(t)
                     todo.append(t)
         return out

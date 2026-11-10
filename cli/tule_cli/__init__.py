@@ -162,6 +162,12 @@ def find(s: dict, slot: str) -> dict:
     return {"id": slot, "state": "stopped"}
 
 
+def cloud_size(s: dict) -> str:
+    """The size the Tule cloud machine last ran at (cpu-1 when it never ran)."""
+    size = find(s, "cloud").get("size") or ""
+    return size if size.startswith("cpu-") else "cpu-1"
+
+
 def live(s: dict) -> list[dict]:
     return [m for m in s.get("machines") or [] if m["state"] != "stopped"]
 
@@ -261,18 +267,19 @@ def cmd_ssh(args):
         if st == "starting" or (st == "stopped" and slot == "joined"):
             s = wait_running(p, slot, timeout=60)  # a joined machine (re)connects by itself
         elif st != "running" or not s.get("hostKey"):
-            s = up(p, "cpu-1" if args.machine == "cloud" else args.machine)
+            s = up(p, cloud_size(s) if args.machine == "cloud" else args.machine)
     else:
         if len(live(s)) > 1:
             raise CliError(f"{p} runs on {' and '.join(m['id'] for m in live(s))}: say which with --machine")
-        # a joined computer that is (re)connecting is still the project's machine: wait for it, don't start another
-        joined = [m for m in s.get("machines") or [] if m["id"] != "cloud"]
-        m = live(s)[0] if live(s) else joined[0] if len(joined) == 1 else None
+        # a joined computer that is (re)connecting is still the project's machine: wait for it, don't start another.
+        # A stopped GPU or computer is not: with nothing running, the Tule cloud machine starts at its last size.
+        joined = [m for m in s.get("machines") or [] if m.get("kind", m["id"]) == "joined"]
+        m = live(s)[0] if live(s) else joined[0] if joined else None
         slot = m["id"] if m else "cloud"
         if m and slot != "cloud" and (m["state"] != "running" or not s.get("hostKey")):
             s = wait_running(p, slot, timeout=60)
         elif not m or m["state"] != "running" or not s.get("hostKey"):
-            s = up(p, m["size"] if m else "cpu-1")
+            s = up(p, m["size"] if m else cloud_size(s))
     ensure_access(p, s)
     argv = ["ssh", *ssh_options(p)]
     if args.command and not (sys.stdin.isatty() and sys.stdout.isatty()):  # no terminal: bytes pass unchanged
@@ -440,7 +447,9 @@ def cmd_up(args):
     p = project_of(args, load())
     if sum(map(bool, (args.gpu, args.on, args.machine != "cpu-1"))) > 1:
         raise CliError("choose one of --machine, --gpu and --on")
-    up(p, f"gpu-{args.gpu}" if args.gpu else args.on or args.machine)
+    s = up(p, f"gpu-{args.gpu}" if args.gpu else args.on or args.machine)
+    if s.get("hostKey"):
+        ensure_access(p, s)  # plain `ssh tule-<project>` (tule ssh --config) works from here on
 
 
 def cmd_hosts(args):

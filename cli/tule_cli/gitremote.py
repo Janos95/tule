@@ -64,8 +64,9 @@ def has(sha: str) -> bool:
 
 
 class Remote:
-    def __init__(self, url: str):
+    def __init__(self, url: str, name: str = "tule"):
         self.url = url.rstrip("/")
+        self.name = name  # the remote's name in the repository (git passes the URL when there is none)
         self.auth = {"Authorization": f"Bearer {token()}"}
 
     def call(self, method: str, path: str, data: bytes | None = None, raw: bool = False):
@@ -99,7 +100,7 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) < 2:
         die("git-remote-tule is run by git: git remote add tule tule::https://<site>/api/projects/<id>/git")
-    remote = Remote(argv[1])
+    remote = Remote(argv[1], argv[0] if "://" not in argv[0] else "tule")
     state: dict = {}
     out = sys.stdout
     lines = iter(sys.stdin.readline, "")
@@ -185,7 +186,7 @@ def push(remote: Remote, state: dict, spec: str) -> str:
     if big:
         files = ", ".join(f"{p} ({n >> 20} MB)" for p, n in big[:5])
         # rewrite only the commits the remote lacks
-        only = f"--include-ref={src if src.startswith('refs/') else 'HEAD'}" + (f" --exclude-ref=refs/remotes/{os.environ.get('TULE_REMOTE', 'tule')}/{dst.removeprefix('refs/heads/')}" if old else "")
+        only = f"--include-ref={src if src.startswith('refs/') else 'HEAD'}" + (f" --exclude-ref=refs/remotes/{remote.name}/{dst.removeprefix('refs/heads/')}" if old else "")
         return f"error {dst} large files belong in Git LFS: {files}. Run: git lfs migrate import --include=\"{big[0][0]}\" {only}, then push again"
     count = int(git("rev-list", "--count", new, *exclude) or 0)
     data = b""

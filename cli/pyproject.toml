@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "The tule command: start Tule machines, SSH into them, open the viewer, render and inspect outputs"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["websockets>=13"]
+dependencies = ["websockets>=15"]
 
 [project.optional-dependencies]
 # tule screenshot / inspect also need the tule modeling package (python/)
