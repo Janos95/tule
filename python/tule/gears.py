@@ -53,7 +53,7 @@ try:  # OCP 8
 except ImportError:  # OCP 7.x
     from OCP.TColgp import TColgp_Array1OfPnt  # type: ignore
 
-from ._occ import cast, from_list, kind_of, subshapes
+from ._occ import cast, from_list, kind_of
 from .errors import TuleError
 from .profile import _quarter_turns
 from .shape import Shape

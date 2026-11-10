@@ -69,6 +69,19 @@ def test_round_too_big_says_the_largest_that_fits():
     assert 4.9 < e.value.data["max_radius"] <= 5
 
 
+def test_a_corner_that_cannot_be_rounded_or_chamfered_is_not_skipped():
+    import pytest
+
+    from tule import TuleError, polygon, rect
+
+    step = polygon([(0, 0), (10, 0), (10, 0.5), (4, 0.5), (4, 10), (0, 10)])  # a 0.5 mm edge between two corners
+    with pytest.raises(TuleError, match="could not round corners with 1"):
+        step.round(1)  # it used to round four of the six and say nothing
+    with pytest.raises(TuleError, match="could not chamfer corners with 6"):
+        rect(20, 10).chamfer(6)  # it used to return an invalid outline (area 208 of 200)
+    assert rect(20, 10).chamfer(2).area == pytest.approx(192) and step.round(0.2).area < step.area
+
+
 def test_offset_grows_shrinks_and_closes_holes():
     import math
 

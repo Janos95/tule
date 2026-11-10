@@ -31,7 +31,6 @@ import os
 import re
 import sys
 import zlib
-from typing import Union
 
 import numpy as np
 from OCP.BRep import BRep_Tool
@@ -240,7 +239,7 @@ class _Frame:
         self.name = " | ".join(self.cells)
 
     def letters(self):
-        return [d.split()[0] for d in self.datums]
+        return [x for d in self.datums for x in d.split()[0].split("-")]  # "A-B" is a common datum: A and B
 
 
 def _frames(spec) -> list:
@@ -931,11 +930,6 @@ def _open_ends(inter, axes, d, r, t0, t1):
                     free = False
         out.append(free)
     return tuple(out)
-
-
-def _cylinders(shape, tol: float) -> list[_Cyl]:
-    """Full and partial cylinders; a concave one is a hole, ``capped`` when it has a bottom (blind, counterbore)."""
-    return _features(shape, tol)[0]
 
 
 def _has_bottom(f, edges, efaces, a, b, d, r, tol) -> bool:
@@ -1994,6 +1988,8 @@ def _plane_of(sel: Selection, tol: float):
             return None
         ax = a.Plane().Axis().Direction()
         n = np.array([ax.X(), ax.Y(), ax.Z()]) * (-1 if f.Orientation() == TopAbs_REVERSED else 1)
+        if not a.Plane().Position().Direct():  # a left-handed frame (a mirrored part): the normal is the other way
+            n = -n
         loc = a.Plane().Location()
         o = float(np.array([loc.X(), loc.Y(), loc.Z()]) @ n)
         if n0 is None:
@@ -4458,6 +4454,8 @@ def write(folder: str, base: str, item, views=None, dims=(),
                         hint="outputs.drawing(name, asm[\"plate\"], dxf=\"top\") for the part")
     for k, it in parts:
         shape, _ = _as_shape(it)
+        if dxf_view and shape.sheet_metal is None and dxf_view not in VIEWS:  # before anything is written
+            raise TuleError(f"unknown view {dxf_view!r}", op="drawing.dxf", hint=", ".join(VIEWS))
         if dxf_view and shape.sheet_metal is not None:  # a cut file needs the flat: fail first, once, naming the part
             from .sheetmetal import _flat
 

@@ -324,8 +324,10 @@ def _held(a, b, threads):
     d.LoadS1(faces(a))
     d.LoadS2(faces(b))
     d.Perform()
+    if not d.IsDone():
+        raise TuleError("could not measure the distance between the two shapes", op="closest")
     p, q = np.array(d.PointOnShape1(1).Coord()), np.array(d.PointOnShape2(1).Coord())
-    if not d.IsDone() or d.Value() < 1e-7:
+    if d.Value() < 1e-7:
         return 0.0, p, q
 
     def inside(s, x):
@@ -337,8 +339,10 @@ def _held(a, b, threads):
             ex.Next()
         return False
 
-    if inside(a, q) or inside(b, p):  # boundaries apart, one inside the other
+    if inside(a, q):  # boundaries apart, one inside the other: a point of the inner one, so inside both
         return 0.0, q, q
+    if inside(b, p):
+        return 0.0, p, p
     return d.Value(), p, q
 
 

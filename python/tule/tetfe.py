@@ -618,10 +618,6 @@ class Model:
             f[:, c] = np.bincount(self.tets.reshape(-1), weights=(share * a[c]).reshape(-1), minlength=self.n)
         return f
 
-    def strain_operator(self):
-        """B·u at the Gauss points: (e, 4, 6) strains from element displacements via G."""
-        return self.G
-
     def gauss_stress(self, u: np.ndarray, E: float, nu: float) -> np.ndarray:
         """Stresses at the Gauss points (e, 4, 6) from nodal displacements (n, 3)."""
         ue = u[self.tets]  # (e, 10, 3)
@@ -758,13 +754,6 @@ class Model:
             out[:, c] = np.bincount(idx, weights=vals[..., c].reshape(-1), minlength=self.n)
         cnt = np.bincount(idx, minlength=self.n)
         return out / np.maximum(cnt, 1)[:, None]
-
-
-def factorize(K):
-    """A sparse LU of a symmetric positive definite matrix (SuperLU with a symmetric ordering): .solve(b)."""
-    from scipy.sparse.linalg import splu
-
-    return splu(K.tocsc(), permc_spec="MMD_AT_PLUS_A", diag_pivot_thresh=0.0, options={"SymmetricMode": True})
 
 
 # ---------------------------------------------------------------- the solver

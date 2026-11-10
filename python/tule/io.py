@@ -182,9 +182,11 @@ def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False
         target_shape = BRepBuilderAPI_Transform(proto, loc.Transformation(), True).Shape()
     name = shape.name or default_name
     if instances is not None:
+        # the same part again: the same solid, name, color and tags (a red and a green LED are two parts)
+        look = (name, shape.color, tuple(sorted(k for k in shape._alias.values() if k.startswith("tag:"))))
         same = [(n, lab) for other, n, lab in instances if other.IsPartner(proto)]
-        for other_name, other_label in same:
-            if other_name == name:
+        for other_look, other_label in same:
+            if other_look == look:
                 return other_label, loc  # another instance of the same part
         if same:  # the same solid under another name (e.g. a moved copy) is a part of its own
             target_shape = BRepBuilderAPI_Copy(target_shape).Shape()
@@ -194,7 +196,7 @@ def _add_part(st, ct, shape: "Shape", default_name: str, prototype: bool = False
     final = direct.ModifiedShape(target_shape) if direct.IsDone() else target_shape
     label = st.AddShape(final, False)
     if instances is not None:
-        instances.append((proto, name, label))
+        instances.append((proto, look, label))
     _set_name(label, name)
     rgba = parse_rgba(shape.color)
     if rgba:

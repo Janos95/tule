@@ -371,7 +371,8 @@ class _Skin:
         seed = self._seed()
         p0, n0 = _plane(self.faces[seed])
         back = self.sm._trsf().Inverted()  # the part as it was made: the base sheet on z = 0
-        if abs(_apply(back, p0).z) < 1e-6 and _apply_vec(back, n0).z < -1 + 1e-9:
+        # not for a mirrored part: undoing the mirror would give the flat of the other hand
+        if not back.IsNegative() and abs(_apply(back, p0).z) < 1e-6 and _apply_vec(back, n0).z < -1 + 1e-9:
             self.planes[seed] = back
         else:
             self.planes[seed] = self._place(p0, n0)

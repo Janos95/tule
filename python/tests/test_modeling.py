@@ -390,3 +390,14 @@ def test_an_empty_shape_has_no_bounds_and_says_so():
     empty = box(1, 1, 1) & box(1, 1, 1).at(5, 0, 0)
     with pytest.raises(TuleError, match="empty"):
         empty.size
+
+
+def test_transform_stretches_and_shears():
+    assert tuple(box(1).transform([[2, 0, 0], [0, 1, 0], [0, 0, 1]]).size) == pytest.approx((2, 1, 1))  # was 1.26 each way
+    assert box(1).transform([[1, 1, 0], [0, 1, 0], [0, 0, 1]]).size.x == pytest.approx(2)
+    assert tuple(box(1).transform([[0, -2, 0], [2, 0, 0], [0, 0, 2]]).size) == pytest.approx((2, 2, 2))
+    with pytest.raises(TuleError, match="flattens"):
+        box(1).transform([[1, 0, 0], [0, 1, 0], [0, 0, 0]])
+    small, big = box(2, 2, 2, center=True).at(5, 0, 0), box(20, 20, 20, center=True)
+    d, p, q = small.closest(big)  # one inside the other: a point inside both
+    assert d == 0 and tuple(p) == tuple(q) and 4 <= p.x <= 6

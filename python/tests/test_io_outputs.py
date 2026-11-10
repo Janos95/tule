@@ -192,6 +192,18 @@ def test_a_color_with_opacity_is_kept(tmp_path, outdir):
     assert mat["alphaMode"] == "BLEND" and mat["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.4)
 
 
+def test_parts_of_one_solid_keep_their_own_color_and_formats_their_names(tmp_path, outdir):
+    led = box(5)
+    path = str(tmp_path / "leds.step")
+    Assembly(led.named("led", "#ff0000"), led.named("led", "#00ff00").at(20, 0, 0), name="leds").export_step(path)
+    assert [p.color for _, p in import_step(path).parts()] == ["#ff0000", "#00ff00"]  # both were red
+    folder = outputs.part("g", box(1), fmt="gltf")
+    assert json.load(open(os.path.join(folder, "output.json")))["file"] == "g.glb" and os.path.exists(os.path.join(folder, "g.glb"))
+    with outputs.sequence("s", fmt="step") as seq:
+        seq.add([box(1), box(1).at(3, 0, 0)])  # a list with a format: one file per frame
+    assert os.path.exists(os.path.join(seq.folder, "frame_0000.step"))
+
+
 def test_outputs_part_assembly_sequence(outdir):
     part = tagged_bracket()
     folder = outputs.part("bracket", part)

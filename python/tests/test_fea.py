@@ -74,7 +74,7 @@ def test_bar_in_tension():
     # held on three faces in one direction each: free to contract, so a plain uniaxial stress
     L, A, F = 60.0, 100.0, 2000.0
     b = beam(L)
-    r = fea.static(b, STEEL, fixed=[fea.fix("root", "x"), fea.fix(b.faces["bottom"], "z"), fea.fix(b.faces["front"], "y")],
+    r = fea.static(b, STEEL, fixed=(fea.fix("root", "x"), fea.fix(b.faces["bottom"], "z"), fea.fix(b.faces["front"], "y")),  # a tuple works as a list does
                    loads=[fea.force("tip", (F, 0, 0))], voxel=2.0, verbose=False)
     assert r.stress_p995 == pytest.approx(F / A, rel=0.02)
     assert r.stress_at([(L / 2, 5, 5)])[0] == pytest.approx(F / A, rel=0.01)
@@ -287,7 +287,7 @@ def test_warnings(tmp_path, monkeypatch, capsys):
     assert "× the 99.5th percentile, at the edge of a fixed face" in w and r.max_stress > 2 * r.stress_p995
     assert capsys.readouterr().out.count("fea: warning:") == 1  # printed once, when solved
     assert "WARNING: the peak" in str(r)
-    meta = json.load(open(os.path.join(r.show("beam-warn"), "output.json")))
+    assert json.load(open(os.path.join(r.show("beam-warn"), "output.json")))["fact"].startswith("safety ")
     hard = fea.static(b, STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1e5), at=(100, 5, 5), r=1)], voxel=2.5, verbose=False)
     assert any("past yield" in x for x in hard.warnings) and any("point load" in x for x in hard.warnings)
     assert "residual of 1.0e-03" in fea._common_warnings(1e-3, 1e-6, 0.0, 0.0)[0]

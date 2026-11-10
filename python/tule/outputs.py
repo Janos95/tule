@@ -47,7 +47,7 @@ B-rep face ids, the same as ``part.faces`` and the viewer's ``f12``::
 
 Every key of a face entry is optional: ``severity`` (``"error"``,
 ``"warning"``, ``"info"``, ``"ok"``), ``role`` (``"fixed"``, ``"load"``, ``"keep"``,
-``"void"``, or another word), ``label`` (short text), ``value`` (a number to
+``"avoid"``, or another word), ``label`` (short text), ``value`` (a number to
 color by). ``dir`` is a
 unit vector; ``at`` is in model units (mm). Faces not listed have no data.
 A face with only a ``value`` is colored on a blue-to-red scale from
@@ -258,7 +258,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
             meta["title"] = title
         _write_json(folder, meta)
         return folder
-    fmt = fmt or "step"
+    fmt = "glb" if fmt == "gltf" else fmt or "step"  # a binary glTF is written either way
     fname = f"{_slug(name.rsplit('/', 1)[-1])}.{fmt}"  # named after the output, so its path stays put when the label changes
     _write_geometry(os.path.join(folder, fname), shape)
     meta = {"kind": "part", "file": fname}
@@ -279,6 +279,7 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
         if not shp.faces:
             raise TuleError(f"{path} is empty (no faces)", op="outputs",
                             hint="the operation that made it left nothing: check len(part.faces) after each step")
+    fmt = "glb" if fmt == "gltf" else fmt
     folder = _folder(name)
     parts = []
     used = set()
@@ -416,7 +417,7 @@ class Sequence:
         self.title = title
         self._written = self._added = 0.0
         atexit.register(lambda: self._written < self._added and self._flush())  # frames of the last second
-        self.fmt = fmt
+        self.fmt = "glb" if fmt == "gltf" else fmt  # a binary glTF is written either way
         self.folder = _folder(name)
         self.frames: list[dict] = []
         self._parts: list[tuple] = []  # (geometry, name, color, file, geometry hash): each part's file, written once
@@ -441,6 +442,8 @@ class Sequence:
             fname = None
             placed = [self._place(path.split("/", 1)[-1], part) for path, part in asm.parts()]
         elif shape is not None:
+            if isinstance(shape, (list, tuple)):  # with a format given: one file per frame
+                shape = Assembly(*shape, name=self.name)
             fmt = self.fmt or "stl"
             fname = f"frame_{i:04d}.{fmt}"
             _write_geometry(os.path.join(self.folder, fname), shape)
@@ -836,7 +839,7 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
         _write_geometry(os.path.join(folder, stem + ".step"), shape)
         entry: dict[str, Any] = {"file": stem + ".step", "name": stem}
         if getattr(shape, "color", None):
-            entry["color"] = shape.color
+            entry["color"] = _color(shape.color)
         lo, hi = (shape.to_shape() if isinstance(shape, Assembly) else shape).bounds
         if x is not None:
             entry["transform"] = [1, 0, 0, round(x - lo.x, 5), 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]

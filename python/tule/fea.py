@@ -852,7 +852,7 @@ class Result:
     def show(self, name: str, title: str | None = None, deform: float | None = None) -> str:
         """Write an overlay output: two fields on the part (von Mises stress, colored up to the 99.5th
         percentile; displacement on the shape deformed ``deform`` times, by default to about 6 % of
-        its size), the supports and loads, and the numbers. Returns the folder."""
+        its size), the supports and loads; the safety factor is the output's fact. Returns the folder."""
         from . import outputs
 
         faces, arrows = _conditions(self.supports, self.loads)
@@ -862,7 +862,10 @@ class Result:
         n = np.minimum(np.ceil(size / self.voxel).astype(int) + 1, self.stress.shape)  # the part's nodes, not the padding
         cut = (slice(0, n[0]), slice(0, n[1]), slice(0, n[2]))
         disp, dstep = self.displacement[cut], self.voxel
-        if disp.shape[0] * disp.shape[1] * disp.shape[2] > 100_000:  # smooth: every other node is plenty, 8× smaller
+        # smooth: every other node is plenty, 8× smaller; not when an axis would lose its last layer (no padding
+        # after an even count) or is one voxel thick
+        whole = all(self.displacement.shape[i] > n[i] or n[i] % 2 == 1 for i in range(3))
+        if disp.shape[0] * disp.shape[1] * disp.shape[2] > 100_000 and min(n) >= 3 and whole:
             disp, dstep = self.displacement[: n[0] + 1: 2, : n[1] + 1: 2, : n[2] + 1: 2], 2 * self.voxel
         fields = [
             {"label": "von Mises stress", "unit": "MPa", "values": self.stress[cut], "origin": self.origin,
@@ -1207,7 +1210,7 @@ def _inputs(part, material, fixed, loads, accel, op: str, need_fixed: bool = Tru
     if not isinstance(part, Shape):
         raise TuleError(f"{op} needs a Shape, got {type(part).__name__}", op="fea")
     mat = _material(material)
-    sups = [] if fixed is None else fixed if isinstance(fixed, (list, tuple)) else [fixed]
+    sups = [] if fixed is None else list(fixed) if isinstance(fixed, (list, tuple)) else [fixed]
     if isinstance(loads, (Load, Move)):
         loads = [loads]
     loads = list(loads or ())
@@ -2305,7 +2308,8 @@ class TetResult:
 
     def show(self, name: str, title: str | None = None, deform: float | None = None) -> str:
         """An overlay output: von Mises stress and displacement on the mesh's own surface (thin
-        walls and slots drawn as they are), supports, loads and the numbers. Returns the folder.
+        walls and slots drawn as they are), supports and loads; the safety factor is the output's fact.
+        Returns the folder.
         A nonlinear result is drawn at its true shape (``deform`` 1) by default."""
         from . import outputs
 
@@ -2573,6 +2577,9 @@ def buckling(
 
     t_start = time.time()
     say = (lambda msg: print(f"{msg} [{time.time() - t_start:.1f} s]", flush=True)) if verbose else (lambda *a, **k: None)
+    n = int(n)
+    if not 1 <= n <= 50:
+        raise TuleError(f"n={n}", op="fea.buckling", hint="1 to 50 modes")
     part, mat, supports, resolved, a = _inputs(part, material, fixed, loads, accel, "fea.buckling")
     if not resolved and (a is None or a.length == 0):
         raise TuleError("no loads", op="fea", hint='loads=[fea.force("top", (0, 0, -1000))]')

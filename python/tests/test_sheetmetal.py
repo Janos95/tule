@@ -460,6 +460,17 @@ def test_dfm_without_bends_checks_holes_to_edges():
     assert bad.dfm(hole_to_edge=0.5).ok
 
 
+def test_a_mirrored_part_unfolds_to_its_own_hand():
+    part = rect(120, 80).sheet(1.5) - cylinder(3, 10, center=True).at(10, 40, 0)
+    lo, hi = part.unfold().bounds
+    mlo, mhi = part.mirror(1, 0, 0).unfold().bounds  # the flat of the mirrored part, not of the part it was made from
+    assert (lo.x, hi.x) == pytest.approx((0, 120)) and (mlo.x, mhi.x) == pytest.approx((-120, 0))
+    named = rect(60, 40).sheet(1.5)
+    named.dfm()  # unfolds: the flat is kept for copies of the part
+    flat = named.named("tray", "#4a8").unfold()
+    assert (flat.name, flat.color) == ("tray", "#4a8")
+
+
 def test_drawing_warns_once_about_dfm_issues(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
     s = base(120, 80)

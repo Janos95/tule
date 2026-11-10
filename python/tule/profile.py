@@ -23,6 +23,7 @@ from OCP.BRepBuilderAPI import (
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet2d
 from OCP.BRepGProp import BRepGProp
 from OCP.BRepTools import BRepTools
+from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.ChFi2d import ChFi2d_IsDone
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.GProp import GProp_GProps
@@ -214,6 +215,7 @@ class Profile:
         faces = []
         for face in self.faces:
             mk = BRepFilletAPI_MakeFillet2d(face)
+            bad = False
             corners = self._corners(face)
             for v in corners:
                 p = from_pnt(static(BRep_Tool, "Pnt")(v))
@@ -232,11 +234,12 @@ class Profile:
                     else:
                         es = [e for e in subshapes(face, "edge") if v in subshapes(e, "vertex")]
                         mk.AddChamfer(es[0], es[1], float(r), float(r))
+                    bad = bad or mk.Status() != ChFi2d_IsDone  # a corner it could not do: not skipped quietly
                 except OCC_ERRORS:
-                    pass
+                    bad = True
             try:
                 mk.Build()
-                ok = mk.IsDone()
+                ok = not bad and mk.IsDone() and BRepCheck_Analyzer(mk.Shape()).IsValid()
             except OCC_ERRORS:
                 ok = False
             if not ok:

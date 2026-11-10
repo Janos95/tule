@@ -967,8 +967,10 @@ def optimize(
                 ce = xp.sum((KEd @ ue) * ue, axis=0).reshape(coef.shape)
                 c = float(xp.sum(coef * ce))
                 dc_phys = -penal * problem.E * hs * (1 - Emin) * xphys ** (penal - 1) * ce * domain
-                dc = filt.transpose(dc_phys)
-                dv = filt.transpose(domain / n_dom)
+                # kept and void voxels do not follow x (phys overrides them): nothing of theirs is filtered back
+                passive = keep | void
+                dc = filt.transpose(xp.where(passive, 0.0, dc_phys))
+                dv = filt.transpose(xp.where(passive, 0.0, domain / n_dom))
                 xnew = UPDATES[method](x, dc, dv, design, bounds, volume_of, target, move, xp)
                 change = float(xp.max(xp.abs(xnew - x)))
                 x = xnew

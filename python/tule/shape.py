@@ -446,17 +446,26 @@ class Shape:
         m = [list(map(float, r)) for r in matrix]
         if len(m) == 3 and len(m[0]) == 3:
             m = [r + [0.0] for r in m]
-        t = gp_Trsf()
-        try:
+        # a rotation with one scale (a mirror too) keeps surfaces as they are; anything else (a stretch along
+        # one axis, a shear) needs the general transform. SetValues would quietly make the matrix orthogonal.
+        a = [r[:3] for r in m[:3]]
+        det = (a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+               + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]))
+        if abs(det) < 1e-12:
+            raise TuleError("transform: the matrix flattens the shape (its determinant is 0)", op="transform")
+        s2 = abs(det) ** (2 / 3)
+        aat = [[sum(a[i][k] * a[j][k] for k in range(3)) for j in range(3)] for i in range(3)]
+        similar = all(abs(aat[i][j] - (s2 if i == j else 0.0)) <= 1e-9 * s2 for i in range(3) for j in range(3))
+        if similar:
+            t = gp_Trsf()
             t.SetValues(*m[0][:4], *m[1][:4], *m[2][:4])
-        except OCC_ERRORS:
-            g = gp_GTrsf()
-            g.SetVectorialPart(gp_Mat(*m[0][:3], *m[1][:3], *m[2][:3]))
-            g.SetTranslationPart(gp_XYZ(m[0][3], m[1][3], m[2][3]))
-            b = BRepBuilderAPI_GTransform(self._s, g, True)
-            res = b.Shape()
-            return self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
-        return self._apply_trsf(t, copy=True)
+            return self._apply_trsf(t, copy=True)
+        g = gp_GTrsf()
+        g.SetVectorialPart(gp_Mat(*m[0][:3], *m[1][:3], *m[2][:3]))
+        g.SetTranslationPart(gp_XYZ(m[0][3], m[1][3], m[2][3]))
+        b = BRepBuilderAPI_GTransform(self._s, g, True)
+        res = b.Shape()
+        return self._derive(res, carry(self._groups, res, lambda s: from_list(b.Modified(s))))
 
     # ------------------------------------------------------------ features
     def fillet(self, edges: Selection, radius: float) -> "Shape":
@@ -632,7 +641,8 @@ class Shape:
             from .sheetmetal import unfold
 
             self._cache["unfold"] = unfold(self)
-        return self._cache["unfold"]
+        flat = self._cache["unfold"]  # shared with renamed copies of this part: under this one's name and color
+        return flat if (flat.name, flat.color) == (self.name, self.color) else flat._renamed(self.name, self.color)
 
     @property
     def bends(self) -> list:
