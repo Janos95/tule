@@ -405,7 +405,7 @@ export class Project extends DurableObject<Env> {
       env: this.machineEnv(origin, token),
     });
     await c.setInactivityTimeout(IDLE_MS + 2 * CHECK_MS);
-    await this.ctx.storage.setAlarm(Date.now() + (owner?.guest ? 60_000 : CHECK_MS));
+    await this.wake((owner?.guest ? 60_000 : CHECK_MS));
     return this.status();
   }
 
@@ -439,7 +439,7 @@ export class Project extends DurableObject<Env> {
       await this.save();
       return r;
     }
-    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    await this.wake(60_000);
     return { ...(await this.status()), note: r.pulling ? `${h.name} is downloading Tule's image; the first start there takes a few minutes` : undefined };
   }
 
@@ -481,7 +481,7 @@ export class Project extends DurableObject<Env> {
       joinHash: await sha256(token), upAt: now, billedUntil: now, lastActive: now, stoppedAt: undefined,
     };
     await this.save();
-    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    await this.wake(60_000);
     console.log(JSON.stringify({ event: "pod-created", project: this.state.name, gpu, cloud: pod.cloud, cost: pod.cost }));
     return { ...(await this.status()), note: "RunPod is pulling the image; the first start on a host can take several minutes" };
   }
@@ -701,7 +701,7 @@ export class Project extends DurableObject<Env> {
       } catch (e) {
         // keep the pod id: the alarm retries, so a pod never keeps billing unnoticed
         console.log(JSON.stringify({ event: "terminate", project: this.state.name, error: String(e) }));
-        await this.ctx.storage.setAlarm(Date.now() + 60_000);
+        await this.wake(60_000);
       }
     }
     Object.assign(m, { on: false, joinHash: undefined, stoppedAt: Date.now() });
@@ -723,6 +723,13 @@ export class Project extends DurableObject<Env> {
   async stopGpus(): Promise<number> {
     for (const m of Object.values(this.machines)) if (m.pod) await this.stopMachine(m.id, "RunPod disconnected");
     return Object.values(this.machines).filter((m) => m.pod).length;
+  }
+
+  /** The alarm runs within ms (or sooner, if one is already due sooner): a later request never postpones an earlier check. */
+  async wake(ms: number) {
+    const at = Date.now() + Math.max(ms, 0);
+    const cur = await this.ctx.storage.getAlarm();
+    if (cur === null || cur > at) await this.ctx.storage.setAlarm(at);
   }
 
   async alarm() {
@@ -769,7 +776,7 @@ export class Project extends DurableObject<Env> {
       later(m.pod || m.guest || (m.kind === "computer" && !this.agent(m.id)) ? 60_000 : CHECK_MS);
     }
     await this.save();
-    if (next) await this.ctx.storage.setAlarm(next);
+    if (next) await this.wake(next - Date.now());
   }
 
   // ------------------------------------------------------------ sockets
@@ -958,6 +965,7 @@ export class Project extends DurableObject<Env> {
         me.lastActive = Date.now();
         await this.save();
         await this.sendConfig(slot);
+        await this.wake(CHECK_MS); // a joined machine was not started here: its checks start with its hello
         console.log(JSON.stringify({ event: "agent-hello", project: this.state.name, machine: slot, coldStartMs: me.upAt ? me.helloAt - me.upAt : null }));
         this.broadcast();
         break;

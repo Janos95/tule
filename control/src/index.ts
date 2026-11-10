@@ -481,10 +481,10 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
     if (req.method === "POST") return reply(await ops.createProject(env, user, (await body(req)).name, origin));
     return error("method not allowed", 405);
   }
-  if (what === "" && req.method === "GET") return reply(await ops.status(env, user, name, origin));
-  if (what === "" && req.method === "DELETE") return reply(await ops.deleteProject(env, user, name));
   const ref = await ops.resolve(env, user, name);
   if (!ops.isRef(ref)) return json(ref, 404);
+  if (what === "" && req.method === "GET") return reply(await ops.status(env, user, name, origin));
+  if (what === "" && req.method === "DELETE") return reply(await ops.deleteProject(env, user, name));
   const project = ops.projectStub(env, ref.id);
   const ws = req.headers.get("Upgrade")?.toLowerCase() === "websocket";
   if (what === "ssh" || what === "view") return ws ? project.fetch(req) : error("expected a WebSocket", 426);
@@ -709,14 +709,21 @@ async function route(req: Request, env: Env): Promise<Response> {
     }
     if (path === "/api/admin/users/delete" && req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { email?: unknown };
-      const u = (await a.allUsers()).find((x) => !x.guest && x.email === b.email);
+      const email = typeof b.email === "string" ? b.email.trim().toLowerCase() : "";
+      const u = (await a.allUsers()).find((x) => !x.guest && (x.email ?? "").toLowerCase() === email);
       if (!u) return error(`no account ${JSON.stringify(b.email)}`, 404);
-      for (const h of await a.hosts(u.id)) await stub<Host>(env.HOST, h.id).forget();
-      const grants = await env.OAUTH_PROVIDER.listUserGrants(u.id);
-      for (const g of grants.items) await env.OAUTH_PROVIDER.revokeGrant(g.id, u.id);
+      const hosts = await a.hosts(u.id);
+      // projects first: if one cannot be removed, the account stays whole (its computers and sign-ins too)
       const res = await a.removeAccount(u.id);
+      let signIns = 0;
+      if (!res.failed.length) {
+        for (const h of hosts) await stub<Host>(env.HOST, h.id).forget();
+        const grants = await env.OAUTH_PROVIDER.listUserGrants(u.id);
+        for (const g of grants.items) await env.OAUTH_PROVIDER.revokeGrant(g.id, u.id);
+        signIns = grants.items.length;
+      }
       await a.logAdmin(actor.email, "delete-account", u.email ?? "", "", `${res.projects.length} projects`);
-      return reply({ deleted: !res.failed.length, email: u.email, projects: res.projects, failed: res.failed, connectorSignIns: grants.items.length });
+      return reply({ deleted: !res.failed.length, email: u.email, projects: res.projects, failed: res.failed, connectorSignIns: signIns });
     }
     return error("unknown admin route", 404);
   }
@@ -754,6 +761,12 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (path === "/device") {
     if (!user) return new Response(null, { status: 302, headers: { Location: loginUrl(path + url.search) } });
     return devicePage(req, env, url, user);
+  }
+  // /p/<project id> (what `tule open` prints on a machine, which knows only the id) goes to the project's name
+  const byId = path.match(/^\/p\/(p_[a-z0-9]{8,32})\/?$/);
+  if (byId && user) {
+    const p = (await accounts(env).projects(user.id)).find((x) => x.id === byId[1]);
+    if (p) return new Response(null, { status: 302, headers: { Location: `/p/${p.name}${url.search}` } });
   }
   // /p/<name> (the viewer) checks /api/me itself and sends a signed-out visitor to sign in
   return env.ASSETS.fetch(req);

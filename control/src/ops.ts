@@ -82,7 +82,7 @@ export async function up(env: Env, user: User, name: unknown, machine: unknown, 
   const p = await resolve(env, user, name);
   if (!isRef(p)) return p;
   const m = typeof machine === "string" && machine ? machine : "cpu-1";
-  return projectStub(env, p.id).up(m, origin);
+  return projectStub(env, p.id).up(m, env.MACHINE_URL || origin); // machines reach the site at MACHINE_URL in local dev
 }
 
 const machineArg = (m: unknown) => (typeof m === "string" && m ? m : undefined);
@@ -104,7 +104,7 @@ export async function join(env: Env, user: User, name: unknown, origin: string):
   const p = await resolve(env, user, name);
   if (!isRef(p)) return p;
   const r = await projectStub(env, p.id).join();
-  return { ...r, env: { TULE_URL: origin, TULE_PROJECT: p.id, TULE_JOIN_TOKEN: r.joinToken } };
+  return { ...r, env: { TULE_URL: env.MACHINE_URL || origin, TULE_PROJECT: p.id, TULE_JOIN_TOKEN: r.joinToken } };
 }
 
 export async function snapshots(env: Env, user: User, name: unknown, limit = 20, machine?: unknown): Promise<Result> {

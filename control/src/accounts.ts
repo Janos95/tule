@@ -197,7 +197,20 @@ export class Accounts extends DurableObject<Env> {
       this.sql.exec("UPDATE projects SET user_id = ?, name = ? WHERE id = ?", userId, name, p.id);
       await (this.env.PROJECT.getByName(p.id) as unknown as { adopt(owner: string, name: string): Promise<void> }).adopt(userId, name);
     }
-    for (const t of ["api_keys", "ssh_keys", "usage", "usage_day", "running"]) {
+    // the same month (or day) on both: added together, not dropped
+    this.sql.exec(
+      "INSERT INTO usage (user_id, month, kind, seconds, cost) SELECT ?, month, kind, seconds, cost FROM usage WHERE user_id = ? " +
+        "ON CONFLICT (user_id, month, kind) DO UPDATE SET seconds = seconds + excluded.seconds, cost = cost + excluded.cost",
+      userId, guestId,
+    );
+    this.sql.exec(
+      "INSERT INTO usage_day (user_id, day, seconds) SELECT ?, day, seconds FROM usage_day WHERE user_id = ? " +
+        "ON CONFLICT (user_id, day) DO UPDATE SET seconds = seconds + excluded.seconds",
+      userId, guestId,
+    );
+    this.sql.exec("DELETE FROM usage WHERE user_id = ?", guestId);
+    this.sql.exec("DELETE FROM usage_day WHERE user_id = ?", guestId);
+    for (const t of ["api_keys", "ssh_keys", "running"]) {
       try {
         this.sql.exec(`UPDATE OR IGNORE ${t} SET user_id = ? WHERE user_id = ?`, userId, guestId);
       } catch {
@@ -265,6 +278,9 @@ export class Accounts extends DurableObject<Env> {
       }
       if (!failed) this.deleteUser(id); // else the next sweep tries again: the rows are what finds its machines and files
     }
+    // expired sign-ins, and daily guest minutes older than a week (only today's count limits anyone)
+    this.sql.exec("DELETE FROM sessions WHERE expires < ?", Date.now());
+    this.sql.exec("DELETE FROM usage_day WHERE day < ?", day(Date.now() - 7 * 86_400_000));
     // support copies past their days (the copy, its machines and files; the original is not touched)
     for (const c of this.all<{ project_id: string; user_id: string; name: string }>("SELECT project_id, user_id, name FROM admin_copies WHERE expires IS NOT NULL AND expires < ? LIMIT 20", Date.now())) {
       try {
