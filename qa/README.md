@@ -30,6 +30,10 @@ Each run:
 
 `runs/<night>/report.md` merges the findings of the night (`prompts/report.md`).
 
+**Turn by turn:** you (or an agent) play the user instead of the simulated one:
+`run.py serve` starts the control plane, then `start`, `say`, `wait`, `shell`, `shot` and
+`finish` drive one run a message at a time (see the comment above them in `run.py`).
+
 **Scenarios** are in `scenarios.toml`: an opening message as a user would type it (vague
 on purpose), a persona, a goal, and how to set the project up. Add the odd things you
 notice yourself as new scenarios.

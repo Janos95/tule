@@ -951,8 +951,8 @@ def local_request(msg: dict, timeout: float = 900) -> dict:
     return r
 
 
-def snapshot_here(reason: str = "manual"):
-    r = local_request({"op": "snapshot", "reason": reason})
+def snapshot_here():
+    r = local_request({"op": "snapshot", "reason": "manual"})
     print(f"tule: snapshot {r['snapshot']}" + ("" if r.get("changed", True) else " (nothing changed since)"))
 
 

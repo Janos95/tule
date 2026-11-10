@@ -18,7 +18,7 @@ import os
 import shutil
 import subprocess
 
-ETC = os.environ.get("TULE_ETC", "/etc/tule")
+ETC = "/etc/tule"
 REMOTE = "tule"
 
 
@@ -138,7 +138,7 @@ def unsaved(root: str) -> dict:
     return {"files": files, "commits": commits}
 
 
-def save(root: str, message: str = "", who: str = "") -> dict:
+def save(root: str, message: str = "") -> dict:
     """Commits everything, merges what other machines saved, and pushes (main, or the branch checked out).
 
     On a merge conflict nothing is pushed: the answer lists the files (they have
@@ -156,7 +156,7 @@ def save(root: str, message: str = "", who: str = "") -> dict:
     big = _big_adds(root)
     committed = False
     if git(root, "diff", "--cached", "--quiet").returncode:
-        git(root, "commit", "-q", "-m", message.strip() or f"Save from {who or 'a Tule machine'}", check=True)
+        git(root, "commit", "-q", "-m", message.strip() or "Save from a Tule machine", check=True)
         committed = True
     merged = False
     b = branch(root)

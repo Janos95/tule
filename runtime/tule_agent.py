@@ -28,11 +28,12 @@ Wire protocol on the one WebSocket (text frames are JSON, binary frames are
                 {"t": "reply", "rid": n, ...}  the answer to stop / snapshot / restore / save
                 {"t": "res", "rid": n, ...}  the answer to a viewer's request
                 {"t": "broadcast", ...}  an event for every viewer
-                binary kind 1: SSH bytes for stream id; kind 2: a mesh for request id
+                binary kind 1: SSH bytes for stream id; kind 2: a binary reply (a mesh) for request id;
+                kind 3: a chunk of a big binary reply, before its last one (kind 2)
   DO -> agent   {"t": "config", "keys": [...], "hostKey": {...} | null}
                 {"t": "ssh-open", "sid": n} / {"t": "ssh-close", "sid": n}
                 {"t": "mesh", "rid": n, "path": "outputs/bracket/bracket.step", "hash": "..."}
-                {"t": "stop" | "snapshot", "rid": n}  save now (stop: the machine is going away)
+                {"t": "stop" | "snapshot", "rid": n, "reason": "..."}  save now (stop: the machine is going away)
                 {"t": "restore", "rid": n, "id": "..."}  make /workspace match a snapshot
                 {"t": "save", "rid": n, "message": "..."}  commit, merge main, push (saves.py)
                 {"t": "req", "rid": n, "op": "...", "args": {...}}  a viewer's request (REQUESTS)
@@ -68,10 +69,10 @@ SSH, MESH, MESH_PART = 1, 2, 3  # MESH_PART: a big binary reply's chunk, before 
 CHUNK = 8 << 20  # one WebSocket message through the control plane stays well under its 32 MiB
 WORKSPACE = os.environ.get("TULE_WORKSPACE", "/workspace")
 OUTPUTS = os.path.join(WORKSPACE, "outputs")
-ETC = os.environ.get("TULE_ETC", "/etc/tule")
-TEMPLATE = os.environ.get("TULE_TEMPLATE", "/opt/tule/template")
-BOOT_LOG = os.environ.get("TULE_BOOT_LOG", "/var/log/tule-boot.log")
-SSHD_PORT = int(os.environ.get("TULE_SSHD_PORT", "22"))
+ETC = "/etc/tule"
+TEMPLATE = "/opt/tule/template"
+BOOT_LOG = "/var/log/tule-boot.log"
+SSHD_PORT = 22
 GEOMETRY = (".step", ".stp", ".stl")
 STARTED = int(time.time() * 1000)
 
@@ -815,14 +816,10 @@ class Agent:
             await asyncio.sleep(0.5)
 
 
-def _ping(agent: "Agent", args: dict) -> dict:
-    return {"pong": True, "workspace": WORKSPACE}
-
-
 # viewer requests by op (see Agent.request): a handler returns a dict or bytes;
 # a dict's "broadcast" entry is an event for every viewer. files.py: read
 # (the viewer's Download and file views); annotations.py: annotate, annotations.
-REQUESTS = {"ping": _ping, **FILE_REQUESTS, **ANNOTATION_REQUESTS}
+REQUESTS = {**FILE_REQUESTS, **ANNOTATION_REQUESTS}
 
 
 def new_project(root: str):

@@ -172,7 +172,7 @@ def live(s: dict) -> list[dict]:
     return [m for m in s.get("machines") or [] if m["state"] != "stopped"]
 
 
-def wait_running(p: str, slot: str, timeout: float = 120, quiet: bool = False) -> dict:
+def wait_running(p: str, slot: str, timeout: float = 120) -> dict:
     t0 = time.time()
     shown = None
     while True:
@@ -180,7 +180,7 @@ def wait_running(p: str, slot: str, timeout: float = 120, quiet: bool = False) -
         m = find(s, slot)
         if m["state"] == "running" and s.get("hostKey"):
             return s
-        if m["state"] != shown and not quiet:
+        if m["state"] != shown:
             print(f"tule: {p} on {slot} is {m['state']}…", file=sys.stderr)
             shown = m["state"]
         if m["state"] == "stopped" and m.get("lastError"):
@@ -196,20 +196,19 @@ def wait_running(p: str, slot: str, timeout: float = 120, quiet: bool = False) -
         time.sleep(0.5)
 
 
-def up(p: str, machine: str, quiet: bool = False) -> dict:
+def up(p: str, machine: str) -> dict:
     t0 = time.time()
     slot = slot_of(machine)
     s = api("POST", f"/api/projects/{p}/up", {"machine": machine})
-    if s.get("note") and not quiet:
+    if s.get("note"):
         print(f"tule: {s['note']}", file=sys.stderr)
     if find(s, slot)["state"] != "running" or not s.get("hostKey"):
         # a GPU pod or your own computer may first download the image
-        s = wait_running(p, slot, timeout=120 if machine.startswith("cpu-") else 1500, quiet=quiet)
-    if not quiet:
-        cs = find(s, slot).get("coldStartMs")
-        extra = f" (cold start {cs / 1000:.1f} s: start to agent connected)" if cs and time.time() - t0 > 1 else ""
-        others = [m["id"] for m in live(s) if m["id"] != slot]
-        print(f"tule: {p} is running on {slot}{extra}" + (f"; also on {', '.join(others)}" if others else ""), file=sys.stderr)
+        s = wait_running(p, slot, timeout=120 if machine.startswith("cpu-") else 1500)
+    cs = find(s, slot).get("coldStartMs")
+    extra = f" (cold start {cs / 1000:.1f} s: start to agent connected)" if cs and time.time() - t0 > 1 else ""
+    others = [m["id"] for m in live(s) if m["id"] != slot]
+    print(f"tule: {p} is running on {slot}{extra}" + (f"; also on {', '.join(others)}" if others else ""), file=sys.stderr)
     return s
 
 

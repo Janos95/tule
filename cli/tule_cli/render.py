@@ -390,7 +390,7 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     font = _font(fs)
     boxes: list[tuple] = []
     if labels or overlay is not None:
-        boxes = _labels(im, draw, font, parts, Kf, visible, names, overlay, labels, report)
+        boxes = _labels(draw, font, parts, Kf, visible, names, overlay, labels, report)
     for at, tail, text in arrows:
         if text:
             p = ((tail @ R[0] - c[0]) * scale + W / 2, H / 2 - (tail @ R[1] - c[1]) * scale)
@@ -459,7 +459,7 @@ def _color_bar(draw, font, s, x, y, fs):
         draw.text((x, y), note, fill=(90, 96, 104), font=font)
 
 
-def _labels(im, draw, font, parts, Kf, visible, names, overlay, labels, report) -> list:
+def _labels(draw, font, parts, Kf, visible, names, overlay, labels, report) -> list:
     H, W = Kf.shape
     inside = _depth_inside(Kf)
     flat_k = Kf.reshape(-1)

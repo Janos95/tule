@@ -458,7 +458,7 @@ def report(night: Path):
 
 # ---------------------------------------------------------------- turn by turn (someone plays the user)
 #
-#   run.py serve [--no-image]                    build the image, start the control plane; prints the night
+#   run.py serve [--no-image] [--restart]        build the image, start the control plane; prints the night
 #   run.py start <night> <name> [--model M] [--scenario S | --file DEST=SRC ... --setup CMD ...]
 #   run.py say <run> "message"                   send the user's message; returns at once
 #   run.py wait <run> [--max 540]                the reply and what the agent did, once the turn is over
@@ -488,8 +488,9 @@ def cmd_serve(a):
     if not a.no_image:
         log(f"building {IMAGE}")
         sh("docker", "build", "-q", "-f", "runtime/Dockerfile", "-t", IMAGE, ".", cwd=ROOT, timeout=1800)
-    if a.restart:
-        cmd_stop(argparse.Namespace(night=str(night)))
+    if a.restart:  # stop the running control plane, wherever its night is
+        for pid in sorted((QA / "runs").glob("*/control.pid")) + [night / "control.pid"]:
+            cmd_stop(argparse.Namespace(night=str(pid.parent)))
         for _ in range(30):
             try:
                 urllib.request.urlopen(URL + "/__dev/version", timeout=1)

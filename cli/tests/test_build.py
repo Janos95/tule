@@ -22,8 +22,15 @@ with open(outputs.folder() + "/bom.csv", "w") as f:
 """
 
 
+@pytest.fixture(autouse=True)
+def _not_on_a_machine(monkeypatch):
+    """Every command here finds its project from its folder, not from the caller's machine."""
+    monkeypatch.delenv("TULE_WORKSPACE", raising=False)
+    monkeypatch.delenv("TULE_OUTPUTS", raising=False)
+
+
 def build(root, *args, machine="/nonexistent/machine.json"):
-    env = {k: v for k, v in os.environ.items() if k not in ("TULE_WORKSPACE", "TULE_OUTPUTS")}
+    env = dict(os.environ)
     env["TULE_MACHINE_FILE"] = str(machine)  # off a Tule machine: no build cache
     r = subprocess.run([sys.executable, "-m", "tule_cli", "build", *args], cwd=root, env=env,
                        capture_output=True, text=True, timeout=300)
@@ -242,7 +249,7 @@ while not os.path.exists({str(flag / 'go')!r}):
     time.sleep(0.05)
 open(outputs.folder() + "/x.txt", "w").write("x")
 """)
-    env = {k: v for k, v in os.environ.items() if k not in ("TULE_WORKSPACE", "TULE_OUTPUTS")}
+    env = dict(os.environ)
     p = subprocess.Popen([sys.executable, "-m", "tule_cli", "build", "slow"], cwd=project, env=env,
                          stderr=subprocess.DEVNULL)
     for _ in range(600):
