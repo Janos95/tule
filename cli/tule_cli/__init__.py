@@ -644,7 +644,7 @@ def cmd_save(args):
         body = {"message": args.message or "", **({"machine": args.machine} if args.machine else {})}
         url, token = need(cfg)
         req = urllib.request.Request(url + f"/api/projects/{p}/save", data=json.dumps(body).encode(), method="POST",
-                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "tule-cli/0.1"})
         try:
             with urllib.request.urlopen(req, timeout=900) as res:
                 r = json.load(res)

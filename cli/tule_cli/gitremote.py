@@ -67,7 +67,7 @@ class Remote:
     def __init__(self, url: str, name: str = "tule"):
         self.url = url.rstrip("/")
         self.name = name  # the remote's name in the repository (git passes the URL when there is none)
-        self.auth = {"Authorization": f"Bearer {token()}"}
+        self.auth = {"Authorization": f"Bearer {token()}", "User-Agent": "tule-git"}  # Cloudflare refuses Python-urllib (error 1010)
 
     def call(self, method: str, path: str, data: bytes | None = None, raw: bool = False):
         req = urllib.request.Request(self.url + path, data=data, method=method, headers=dict(self.auth))
