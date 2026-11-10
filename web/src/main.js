@@ -72,6 +72,7 @@ const state = {
   frame: Math.max(0, (parseInt(new URLSearchParams(location.search).get("frame") ?? "", 10) || 1) - 1), // a sequence's frame (the link counts from 1)
   pinned: new URLSearchParams(location.search).has("frame"), // a frame asked for (a link, an annotation): a running sequence stays on it
   meshes: [], // what is drawn
+  drawn: null, // the key of the last drawing that finished (state.shown while loading is the next one)
   record: null, // what is drawn, for an annotation: {name, kind, title, files, frame}
 };
 const meshes = new Map(); // hash -> Promise<parts>
@@ -908,6 +909,21 @@ async function show() {
   // a part's or assembly's folder may hold more than the model (an STL to print, a 3MF): offer them all, the shown ones first
   const offerFiles = () => offerDownload(kind === "sequence" ? [...shownFiles, ...extras(o)] : [...shownFiles, ...o.files.filter((f) => !shownFiles.includes(f) && f.file !== "output.json"), ...extras(o)]);
   if (key === state.shown) return offerFiles(); // the drawing is as it was; the folder's other files may not be
+  // scrubbing a motion study onto a frame with the same files as the drawn one: only placements differ, so the
+  // drawn parts move (no rebuild). The key is "id|file hashes|placements"; playback's blend handles its own frames.
+  const same = (a, b) => a.slice(0, a.lastIndexOf("|")) === b.slice(0, b.lastIndexOf("|"));
+  if (placed && viewer && !viewer.blend && state.shown && state.drawn === state.shown && same(state.shown, key)) {
+    try {
+      const at = placed.map((p) => (p.transform != null ? placement(p.transform, p.file) : null));
+      viewer.placeParts((m) => at[m.entry]);
+      for (const m of state.meshes) m.matrix = at[m.entry];
+      state.shown = state.drawn = key;
+      state.record = { ...state.record, frame };
+      return offerFiles();
+    } catch {
+      // a bad placement: the full path below says so
+    }
+  }
   const first = !state.shown || !state.shown.startsWith(o.id + "|");
   state.shown = key;
   if (first) annotate?.reset();
@@ -958,6 +974,7 @@ async function show() {
     overlay?.apply(o.meta ?? null, kind === "overlay", field);
     $("strip").hidden = $("legend").hidden;
     state.meshes = all;
+    state.drawn = key; // drawn completely (a motion study's next frame may only move it)
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
     offerFiles();
     const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";

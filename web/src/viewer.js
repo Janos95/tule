@@ -39,6 +39,25 @@ export const VIEWS = {
   bottom: [0, -1e-3, -1],
 };
 
+/** Sets a geometry's positions to rest + scale × vec (or rest), reusing its own array: whether anything changed. */
+function place(geometry, rest, vec, scale) {
+  const attr = geometry.getAttribute("position");
+  if (!vec || !scale) {
+    if (attr?.array === rest) return false;
+    geometry.setAttribute("position", new THREE.BufferAttribute(rest, 3));
+    return true;
+  }
+  let a = attr;
+  if (!a || a.isInterleavedBufferAttribute || a.array === rest || a.array.length !== rest.length) {
+    a = new THREE.BufferAttribute(new Float32Array(rest.length), 3);
+    geometry.setAttribute("position", a);
+  }
+  const out = a.array;
+  for (let i = 0; i < rest.length; i++) out[i] = rest[i] + scale * vec[i];
+  a.needsUpdate = true;
+  return true;
+}
+
 export class Viewer {
   constructor(el) {
     this.el = el;
@@ -220,7 +239,25 @@ export class Viewer {
       fit = true;
     }
     this.extent = extent ? new THREE.Box3(new THREE.Vector3(...extent.min), new THREE.Vector3(...extent.max)) : null;
+    // a part whose mesh is the same data (a motion study's next frame, an output redrawn) is kept as it is:
+    // its geometry stays on the GPU. One showing a field or moved by one is made anew.
+    const spare = new Map(); // positions array -> [part]
     for (const part of this.group.children) {
+      const u = part.userData;
+      if (u.surface || u.field || u.motion || u.geometry.getAttribute("position")?.array !== u.mesh.positions) continue;
+      if (!spare.has(u.mesh.positions)) spare.set(u.mesh.positions, []);
+      spare.get(u.mesh.positions).push(part);
+    }
+    const kept = new Set();
+    const reuse = (m) => {
+      const list = spare.get(m.positions) ?? [];
+      const i = list.findIndex((p) => p.userData.color === (m.color || "#8a96a3") && p.userData.mesh.indices === m.indices && p.userData.mesh.edges === m.edges);
+      return i < 0 ? null : list.splice(i, 1)[0];
+    };
+    const plan = meshes.map((m) => (m.positions.length ? reuse(m) : null));
+    for (const p of plan) if (p) kept.add(p);
+    for (const part of this.group.children) {
+      if (kept.has(part)) continue;
       part.userData.geometry.dispose();
       part.userData.lines?.dispose();
       part.userData.surface?.geometry.dispose();
@@ -229,6 +266,15 @@ export class Viewer {
     this.group.clear();
     meshes.forEach((m, index) => {
       if (!m.positions.length) return;
+      const old = plan[index];
+      if (old) {
+        Object.assign(old.userData, { index, mesh: m });
+        old.matrixAutoUpdate = !m.matrix;
+        if (m.matrix) old.matrix.set(...m.matrix);
+        else old.matrix.identity();
+        this.group.add(old);
+        return;
+      }
       sortByFace(m);
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(m.positions, 3));
@@ -279,6 +325,19 @@ export class Viewer {
         _q.slerpQuaternions(pa.q, pb.q, t),
         _s.lerpVectors(pa.s, pb.s, t),
       );
+    }
+    this.group.updateMatrixWorld(true);
+    this.dirty = true;
+  }
+
+  /** Puts each drawn part at fn(its mesh): a 4x4 row-major placement, or null (where it was made). For a
+   * motion study's frame whose files are the ones drawn: the parts move, nothing is rebuilt. */
+  placeParts(fn) {
+    for (const part of this.group.children) {
+      const m = fn(part.userData.mesh);
+      part.matrixAutoUpdate = false;
+      if (m) part.matrix.set(...m);
+      else part.matrix.identity();
     }
     this.group.updateMatrixWorld(true);
     this.dirty = true;
@@ -486,11 +545,12 @@ export class Viewer {
         surface.move(scale);
         continue;
       }
-      const moved = (rest, vec) => (vec && scale ? Float32Array.from(rest, (x, i) => x + scale * vec[i]) : rest);
-      geometry.setAttribute("position", new THREE.BufferAttribute(moved(mesh.positions, motion?.vectors), 3));
-      if (lines && mesh.edges) lines.setAttribute("position", new THREE.BufferAttribute(moved(mesh.edges, motion?.edges), 3));
-      geometry.computeBoundingBox();
-      geometry.computeBoundingSphere();
+      // a part that does not move keeps its rest positions; a moving one is written in place (no new GPU buffer per frame)
+      if (place(geometry, mesh.positions, motion?.vectors, scale)) {
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+      }
+      if (lines && mesh.edges) place(lines, mesh.edges, motion?.edges, scale);
     }
     this.dirty = true;
   }

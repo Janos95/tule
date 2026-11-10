@@ -28,6 +28,7 @@ export function initPlot(el, onPick) {
   let dragging = false;
   let solo = null; // the one key shown alone (a legend click), or null
   let inputs = new Set(); // what drives the motion (a crank angle rising evenly): read out, not drawn
+  let paths = new Map(); // "key|width" -> the line's path, until the frames change
   const shown = () => (solo && keys.includes(solo) ? [solo] : keys.filter((k) => !inputs.has(k)));
 
   const svg = document.createElementNS(SVG, "svg");
@@ -94,14 +95,18 @@ export function initPlot(el, onPick) {
       const j = keys.indexOf(k);
       const { lo, span } = scale(k);
       const y = (v) => H - PAD.b - ((v - lo) / span) * (H - PAD.t - PAD.b);
-      let d = "";
-      let pen = false;
-      frames.forEach((f, i) => {
-        const v = f.values?.[k];
-        if (!Number.isFinite(v)) return (pen = false);
-        d += `${pen ? "L" : "M"}${x(i, w).toFixed(1)},${y(v).toFixed(1)}`;
-        pen = true;
-      });
+      let d = paths.get(`${k}|${w}`);
+      if (d == null) {
+        d = "";
+        let pen = false;
+        frames.forEach((f, i) => {
+          const v = f.values?.[k];
+          if (!Number.isFinite(v)) return (pen = false);
+          d += `${pen ? "L" : "M"}${x(i, w).toFixed(1)},${y(v).toFixed(1)}`;
+          pen = true;
+        });
+        paths.set(`${k}|${w}`, d);
+      }
       add("path", { d, class: "plot-line", stroke: SERIES[j % SERIES.length], ...(drawn.has(d) ? { "stroke-dasharray": "5 4" } : {}) });
       drawn.add(d);
       const v = frames[current]?.values?.[k];
@@ -181,8 +186,15 @@ export function initPlot(el, onPick) {
   return {
     /** The sequence's frames ({label, values}) and the shown one; hidden without values. */
     set(list, shown) {
+      // the same frames (a step to another frame): only the cursor, dots and legend change
+      const same = list.length === frames.length && list.every((f, i) => f.values === frames[i].values && f.label === frames[i].label);
       frames = list;
       current = shown;
+      if (same) {
+        if (keys.length) render();
+        return;
+      }
+      paths = new Map();
       keys = [...new Set(list.flatMap((f) => Object.keys(f.values ?? {}).filter((k) => Number.isFinite(f.values[k]))))];
       // a value that only counts the frames (step 0, 1, 2 …) says nothing the slider doesn't
       const counts = (k) => list.every((f, i) => f.values?.[k] === i || f.values?.[k] === i + 1) && new Set(list.map((f, i) => f.values[k] - i)).size === 1;

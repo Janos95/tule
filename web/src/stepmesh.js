@@ -76,13 +76,22 @@ function flatNormals(p, idx) {
 
 /** Lines where two B-rep faces meet (and open borders): the edges the machine would send. */
 function featureEdges(p, idx, faceIds) {
-  const key = (i) => `${Math.round(p[3 * i] * 1e4)},${Math.round(p[3 * i + 1] * 1e4)},${Math.round(p[3 * i + 2] * 1e4)}`;
-  const seen = new Map(); // edge key -> [face, vertex a, vertex b, count, other faces differ]
+  // vertices at the same place (to 0.1 µm) are one: numbered once per vertex, so an edge is a number pair
+  const weld = new Map();
+  const id = new Uint32Array(p.length / 3);
+  for (let i = 0; i < id.length; i++) {
+    const k = `${Math.round(p[3 * i] * 1e4)},${Math.round(p[3 * i + 1] * 1e4)},${Math.round(p[3 * i + 2] * 1e4)}`;
+    let w = weld.get(k);
+    if (w === undefined) weld.set(k, (w = weld.size));
+    id[i] = w;
+  }
+  const W = weld.size;
+  const seen = new Map(); // edge (lower id × W + higher id) -> [face, vertex a, vertex b, count, other faces differ]
   for (let t = 0; t < idx.length / 3; t++) {
     for (let k = 0; k < 3; k++) {
       const a = idx[3 * t + k], b = idx[3 * t + ((k + 1) % 3)];
-      const ka = key(a), kb = key(b);
-      const e = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const wa = id[a], wb = id[b];
+      const e = wa < wb ? wa * W + wb : wb * W + wa;
       const s = seen.get(e);
       if (!s) seen.set(e, [faceIds[t], a, b, 1, false]);
       else (s[3] += 1), (s[4] ||= s[0] !== faceIds[t]);
