@@ -8,6 +8,29 @@ from tule import *
 from tule import topopt
 
 
+
+def _dense_stiffness(level) -> np.ndarray:
+    """The coarsest operator as a dense matrix (on the host), fixed dofs as identity rows."""
+    free = topopt._host(level.free).reshape(-1)
+    nx, ny, nz = level.shape
+    if level.Ke is None:
+        Ke = topopt._host(level.coef).reshape(-1, 1, 1) * topopt._host(level.KE)[None]
+    else:
+        Ke = topopt._host(level.Ke).reshape(-1, 24, 24)
+    Ny, Nz = ny + 1, nz + 1
+    nn = (nx + 1) * Ny * Nz
+    i, j, k = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
+    nodes = np.stack([((i + a) * Ny + (j + b)) * Nz + (k + c) for (a, b, c) in topopt.CORNERS]).reshape(8, -1)
+    dofs = (np.arange(3)[None, :, None] * nn + nodes[:, None, :]).reshape(24, -1).T  # (elements, 24)
+    n = 3 * nn
+    A = np.zeros(n * n)
+    on = np.nonzero(np.abs(Ke).reshape(len(Ke), -1).max(axis=1) > 0)[0]
+    flat = (dofs[on, :, None] * n + dofs[on, None, :]).reshape(-1)
+    np.add.at(A, flat, Ke[on].reshape(-1))
+    A = A.reshape(n, n) * free[:, None] * free[None, :]
+    A[np.diag_indices(n)] += 1 - free
+    return A
+
 def cantilever():
     b = box(40, 10, 20)
     return b.tag("fixed", b.faces["left"]).tag("load", b.faces["right"])
@@ -41,7 +64,7 @@ def grid_level(rng, shape=(4, 2, 4)):
 def test_matrix_free_operator_matches_assembled_matrix():
     rng = np.random.default_rng(0)
     lv = grid_level(rng)
-    A = topopt._dense_stiffness(lv)
+    A = _dense_stiffness(lv)
     u = rng.normal(size=lv.free.shape)
     assert np.allclose(lv.A(u).reshape(-1), A @ u.reshape(-1))
     assert np.allclose(A, A.T)
@@ -57,8 +80,8 @@ def test_coarse_operator_is_galerkin():
     P = np.stack([topopt._prolong(e.reshape(coarse.free.shape), np).reshape(-1) for e in np.eye(n_c)], axis=1)
     R = np.stack([topopt._restrict(e.reshape(lv.free.shape), np).reshape(-1) for e in np.eye(lv.free.size)], axis=1)
     assert np.allclose(R, P.T)
-    A = topopt._dense_stiffness(lv)
-    assert np.allclose(topopt._dense_stiffness(coarse), P.T @ A @ P)
+    A = _dense_stiffness(lv)
+    assert np.allclose(_dense_stiffness(coarse), P.T @ A @ P)
 
 
 def test_cg_iterations_stay_flat_as_the_grid_gets_finer():

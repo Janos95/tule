@@ -7,7 +7,6 @@ Planar faces are named by their outward normal (``top`` +Z, ``bottom`` -Z,
 
 from __future__ import annotations
 
-import math
 from typing import Sequence
 
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing
@@ -22,9 +21,9 @@ from OCP.BRepPrimAPI import (
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 from OCP.TopoDS import TopoDS
 
-from ._occ import cast, static, subshapes
+from ._occ import static, subshapes
 from .errors import TuleError
-from .geom import Vec, VecLike, vec
+from .geom import VecLike, vec
 from .selection import face_normal, face_type
 from .shape import Shape
 

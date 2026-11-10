@@ -2534,7 +2534,7 @@ def _place(rects, frame, keep_outs):
     return float(X[i]), float(Y[i])
 
 
-def _grid_block(canv: dict, grid: dict, s: float):
+def _grid_block(canv: dict, grid: dict):
     """Place annotated views in their projection cells; returns view offsets, their rects and the empty cells."""
     names = list(canv)
     G = {k: canv[k][1] for k in names}  # geometry bbox (sheet mm, view-local)
@@ -3403,7 +3403,7 @@ def _sheet(V, plans, grid, si, sp, extent, title, rows, rev, projection, notes, 
                 c = _annotate(V[k], s, plans[k])
                 bb = V[k].bbox()
                 canv[k] = (c, (bb[0] * s, bb[1] * s, bb[2] * s, bb[3] * s))
-            cache[s] = (canv, *(_grid_block(canv, grid, s) if canv else ({}, [], [])))
+            cache[s] = (canv, *(_grid_block(canv, grid) if canv else ({}, [], [])))
         return cache[s]
 
     def fit(s, size):
@@ -4348,8 +4348,7 @@ def to_dxf(view: _View) -> str:
 
 
 # R12 linetypes: name -> (description, pattern in mm: dashes > 0, gaps < 0, dots 0)
-DXF_LTYPES = {"CONTINUOUS": ("Solid line", ()), "DASHDOT": ("Dash dot __ . __ .", (8.0, -2.0, 0.0, -2.0)),
-              "DASHED": ("Dashed __ __ __", (6.0, -3.0))}
+DXF_LTYPES = {"CONTINUOUS": ("Solid line", ()), "DASHED": ("Dashed __ __ __", (6.0, -3.0))}
 
 
 def to_dxf_entities(prims, texts=(), layers=None) -> str:

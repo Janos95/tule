@@ -105,7 +105,7 @@ import numpy as np
 
 from .assembly import Assembly
 from .errors import TuleError
-from .io import Mesh, _plate, export_3mf, export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
+from .io import Mesh, export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
 from .selection import Selection
 from .shape import Shape
 

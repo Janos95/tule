@@ -984,7 +984,7 @@ def _pcg(A, M, b, tol: float, maxiter: int, xp, say):
     z = M(r)
     p = z
     rz = float(xp.sum(r * z))
-    t0 = last = time.time()
+    last = time.time()
     res = 1.0
     for it in range(1, maxiter + 1):
         Ap = A(p)
@@ -1821,7 +1821,7 @@ def _tet_setup(part, mat, supports, dofs, size, say, notes, need_fixed: bool = T
     return m, model, fixed, K, solver
 
 
-def _surface_stats(m, values: np.ndarray):
+def _surface_stats(m):
     """On the boundary: (vertex node ids, flat triangles, face ids, area per vertex)."""
     used, tri, face = m.surface
     P = m.nodes[used]
@@ -1913,7 +1913,7 @@ def _static_tet(part, mat, supports, resolved, a, dofs, size, say, t_start, tol=
     gp = model.cauchy(u, mat.E, mat.nu) if nonlinear else model.gauss_stress(u, mat.E, mat.nu)
     sigma = model.nodal(gp)
     vm = von_mises(sigma.T)
-    used, tri, face, area = _surface_stats(m, vm)
+    used, tri, face, area = _surface_stats(m)
     s_vm = vm[used]
     i_max = int(np.argmax(s_vm))
     dmag = np.linalg.norm(u, axis=1)
@@ -2021,7 +2021,6 @@ def _newton(model, solver, K, f, uc, fixed, move_dofs, mat, steps, say) -> dict:
     E, nu = mat.E, mat.nu
     n3 = len(f)
     pre0 = copy.copy(solver.pre)  # the linear stiffness and its preconditioner (the stability check's metric)
-    K0f = solver.K
     notes: list[str] = []
     driven = bool(fixed[uc != 0].any())
     what = ("loads and moves" if np.any(f) else "moves") if driven else "loads"
@@ -2463,7 +2462,6 @@ def modes(
     stresses, so the default budget is 100,000."""
     from scipy.sparse.linalg import eigsh
 
-    from . import tetfe
 
     t_start = time.time()
     say = (lambda msg: print(f"{msg} [{time.time() - t_start:.1f} s]", flush=True)) if verbose else (lambda *a, **k: None)

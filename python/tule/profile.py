@@ -32,7 +32,7 @@ from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.TopoDS import TopoDS_Compound
 from OCP.BRep import BRep_Builder
 
-from ._occ import cast, explore, from_list, shape_list, static, subshapes
+from ._occ import cast, static, subshapes
 from .errors import OCC_ERRORS, TuleError
 from .geom import Vec, from_pnt
 from .selection import edge_type

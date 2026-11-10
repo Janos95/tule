@@ -448,7 +448,7 @@ def bevel_pair(module: float, z1: int, z2: int, width: float, *, shaft_angle: fl
     if not 0 < d2 < 90:
         raise TuleError(f"gear 2's pitch cone angle {d2:.4g}° is outside 0°–90°", op=op,
                         hint="internal and crown bevel gears are not supported; use a smaller shaft angle")
-    pair, problem = _mesh(module, z1, z2, shaft_angle, d1, d2, pressure_angle, x1, x2, b1, b2)
+    pair, problem = _mesh(module, z1, z2, d1, d2, pressure_angle, x1, x2, b1, b2)
     if problem is not None:
         message, hint, data = problem
         if hint is None:  # interference: look for the long-addendum shift that cures it
@@ -457,7 +457,7 @@ def bevel_pair(module: float, z1: int, z2: int, width: float, *, shaft_angle: fl
             for k in range(1, 21):
                 y = x1 + 0.05 * k * s
                 try:
-                    ok = _mesh(module, z1, z2, shaft_angle, d1, d2, pressure_angle, y, -y, b1, b2)[1] is None
+                    ok = _mesh(module, z1, z2, d1, d2, pressure_angle, y, -y, b1, b2)[1] is None
                 except TuleError:
                     break
                 if ok:
@@ -483,7 +483,7 @@ def _frames(d1, d2):
     return e1, c, np.column_stack([x2, np.cross(z2, x2), z2])
 
 
-def _mesh(m, z1, z2, shaft_angle, d1, d2, pressure_angle, x1, x2, b1, b2):
+def _mesh(m, z1, z2, d1, d2, pressure_angle, x1, x2, b1, b2):
     """``((g1, g2, contact ratio), None)``, or ``(..., (message, hint, data))`` with hint None for interference."""
     op = "bevel_pair"
     g1 = _Bevel(m, z1, pressure_angle, d1, x1, b1, op)

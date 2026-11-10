@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable, Sequence, Union
+from typing import Sequence, Union
 
-from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 
 VecLike = Union[Sequence[float], "Vec"]
 
@@ -101,12 +101,6 @@ def axis(origin: VecLike = ORIGIN, direction: VecLike = Z) -> gp_Ax1:
     return gp_Ax1(pnt(origin), gdir(direction))
 
 
-def frame(origin: VecLike = ORIGIN, normal: VecLike = Z, xdir: VecLike | None = None) -> gp_Ax2:
-    if xdir is None:
-        return gp_Ax2(pnt(origin), gdir(normal))
-    return gp_Ax2(pnt(origin), gdir(normal), gdir(xdir))
-
-
 def translation(v: VecLike) -> gp_Trsf:
     t = gp_Trsf()
     t.SetTranslation(gvec(v))
@@ -128,5 +122,3 @@ def xyz_rotation(x: float = 0, y: float = 0, z: float = 0, origin: VecLike = ORI
     return t
 
 
-def as_points(points: Iterable[VecLike]) -> list[Vec]:
-    return [vec(p) for p in points]

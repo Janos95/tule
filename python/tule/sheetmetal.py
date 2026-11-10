@@ -510,7 +510,7 @@ class _EdgeSpec:
     out: Vec      # outward, in the panel's plane, away from the material
 
 
-def _edge_spec(part: "Shape", skin: _Skin, e, other) -> _EdgeSpec | None:
+def _edge_spec(skin: _Skin, e, other) -> _EdgeSpec | None:
     """The sheet edge along line ``e`` between a skin face and the edge face ``other``."""
     ei = skin.edges.index(e)
     fs = skin.edge_faces.get(ei, [])
@@ -553,7 +553,7 @@ def _resolve_edges(part: "Shape", where, skin: _Skin, op: str) -> list[_EdgeSpec
             "(part.edges...), or the flat edge faces themselves (part.faces['side'] on a fresh sheet)")
     if sel.kind == "edge":
         for e in sel.items:
-            sp = _edge_spec(part, skin, e, None) if _is_line(e) else None
+            sp = _edge_spec(skin, e, None) if _is_line(e) else None
             if sp is None:
                 raise TuleError("this edge is not a straight edge of the sheet", op=op,
                                 edges=part._ids("edge", [e]), hint=hint)
@@ -570,7 +570,7 @@ def _resolve_edges(part: "Shape", where, skin: _Skin, op: str) -> list[_EdgeSpec
                     continue
                 ei = skin.edges.index(e)
                 if any(g in skin.planes for g in skin.edge_faces.get(ei, ()) if g != fi):
-                    sp = _edge_spec(part, skin, skin.edges[ei], fi)
+                    sp = _edge_spec(skin, skin.edges[ei], fi)
                     if sp is not None and edge_length(e) > skin.sm.thickness * 1.01:
                         found.append(sp)
             if not found:
@@ -587,7 +587,7 @@ def _resolve_edges(part: "Shape", where, skin: _Skin, op: str) -> list[_EdgeSpec
     return specs
 
 
-def _current(part: "Shape", skin: _Skin, spec: _EdgeSpec, op: str) -> tuple[float, float]:
+def _current(skin: _Skin, spec: _EdgeSpec, op: str) -> tuple[float, float]:
     """The extent of ``spec``'s line on the part as it is now (earlier flanges shorten it)."""
     ts = []
     tol = 1e-6 * max(1.0, spec.hi - spec.lo)
@@ -674,7 +674,7 @@ def _one_flange(part: "Shape", spec0: _EdgeSpec, L: float, a: float, up: bool, R
     sm = part._sm
     t = sm.thickness
     skin = _Skin(part, sm, op)
-    s0, s1 = _current(part, skin, spec0, op)
+    s0, s1 = _current(skin, spec0, op)
     # the lower end in the user's sense: the one with the lower x, then y, then z
     p_lo, p_hi = spec0.a + spec0.d * spec0.lo, spec0.a + spec0.d * spec0.hi
     flip = tuple(round(c, 9) for c in p_lo) > tuple(round(c, 9) for c in p_hi)

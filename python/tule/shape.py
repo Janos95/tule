@@ -17,7 +17,6 @@ Boolean, pass the feature's selection: ``part.fillet(boss.edges["bottom"], 2)``.
 from __future__ import annotations
 
 import itertools
-import math
 from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
@@ -42,7 +41,7 @@ from .geom import Vec, VecLike, from_pnt, gdir, pnt, translation, vec, xyz_rotat
 from .selection import SELECTION_TYPES, Edges, Faces, Selection, Vertices
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .assembly import Assembly
+    pass
 
 _ids = itertools.count(1)
 

@@ -69,7 +69,7 @@ def face_type(f) -> str:
     return _SURFACE_TYPES.get(BRepAdaptor_Surface(f).GetType(), "other")
 
 
-def face_normal(f, at: VecLike | None = None) -> Vec:
+def face_normal(f) -> Vec:
     """Outward normal of a face (at its parametric middle)."""
     umin, umax, vmin, vmax = static(BRepTools, "UVBounds")(f)
     surf = BRepAdaptor_Surface(f)

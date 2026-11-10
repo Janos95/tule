@@ -291,29 +291,6 @@ def _sparse_stiffness(level: _Level):
     return A.tocsc()
 
 
-def _dense_stiffness(level: _Level) -> np.ndarray:
-    """The coarsest operator as a dense matrix (on the host), fixed dofs as identity rows."""
-    free = _host(level.free).reshape(-1)
-    nx, ny, nz = level.shape
-    if level.Ke is None:
-        Ke = _host(level.coef).reshape(-1, 1, 1) * _host(level.KE)[None]
-    else:
-        Ke = _host(level.Ke).reshape(-1, 24, 24)
-    Ny, Nz = ny + 1, nz + 1
-    nn = (nx + 1) * Ny * Nz
-    i, j, k = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
-    nodes = np.stack([((i + a) * Ny + (j + b)) * Nz + (k + c) for (a, b, c) in CORNERS]).reshape(8, -1)
-    dofs = (np.arange(3)[None, :, None] * nn + nodes[:, None, :]).reshape(24, -1).T  # (elements, 24)
-    n = 3 * nn
-    A = np.zeros(n * n)
-    on = np.nonzero(np.abs(Ke).reshape(len(Ke), -1).max(axis=1) > 0)[0]
-    flat = (dofs[on, :, None] * n + dofs[on, None, :]).reshape(-1)
-    np.add.at(A, flat, Ke[on].reshape(-1))
-    A = A.reshape(n, n) * free[:, None] * free[None, :]
-    A[np.diag_indices(n)] += 1 - free
-    return A
-
-
 _P_CHILD = _child_prolongations()
 
 
