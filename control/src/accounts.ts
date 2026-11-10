@@ -78,6 +78,7 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS shares (token TEXT PRIMARY KEY, project_id TEXT UNIQUE, created INTEGER);
       CREATE TABLE IF NOT EXISTS admin_log (at INTEGER, actor TEXT, action TEXT, owner TEXT, project TEXT, detail TEXT);
       CREATE TABLE IF NOT EXISTS pairings (hash TEXT PRIMARY KEY, code TEXT UNIQUE, next TEXT, expires INTEGER, user_id TEXT);
+      CREATE TABLE IF NOT EXISTS merged (guest_id TEXT PRIMARY KEY, user_id TEXT, at INTEGER);
       CREATE TABLE IF NOT EXISTS admin_copies (project_id TEXT PRIMARY KEY, user_id TEXT, name TEXT, source_id TEXT, snapshot TEXT, created INTEGER, expires INTEGER);
     `);
     // columns added after the first deploy
@@ -115,7 +116,10 @@ export class Accounts extends DurableObject<Env> {
   user(id: string): User | null {
     const u = this.one<{ id: string; email: string | null; name: string | null; guest: number; agent_seen: number | null }>(
       "SELECT id, email, name, guest, agent_seen FROM users WHERE id = ?", id);
-    return u ? { id: u.id, email: u.email ?? "guest", name: u.name ?? "Guest", ...(u.guest ? { guest: true } : {}), ...(u.agent_seen ? { agent: true } : {}) } : null;
+    if (u) return { id: u.id, email: u.email ?? "guest", name: u.name ?? "Guest", ...(u.guest ? { guest: true } : {}), ...(u.agent_seen ? { agent: true } : {}) };
+    // a guest who signed in since: the account it became (a connector approved as that guest keeps working)
+    const m = this.one<{ user_id: string }>("SELECT user_id FROM merged WHERE guest_id = ?", id);
+    return m && m.user_id !== id ? this.user(m.user_id) : null;
   }
 
   /** The connector was used (MCP initialize): remember the first time. */
@@ -200,11 +204,16 @@ export class Accounts extends DurableObject<Env> {
         // a primary-key clash (the same SSH key twice): the account's row stays
       }
     }
+    this.sql.exec("UPDATE running SET guest = 0 WHERE user_id = ?", userId); // its machines are an account's now
     this.deleteUser(guestId);
+    this.sql.exec("INSERT OR REPLACE INTO merged VALUES (?, ?, ?)", guestId, userId, Date.now());
     return moved.length;
   }
 
   deleteUser(id: string) {
+    this.sql.exec("DELETE FROM shares WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)", id);
+    this.sql.exec("DELETE FROM merged WHERE user_id = ? OR guest_id = ?", id, id);
+    for (const t of ["admin_copies", "host_keys", "pairings"]) this.sql.exec(`DELETE FROM ${t} WHERE user_id = ?`, id);
     for (const t of ["sessions", "api_keys", "devices", "ssh_keys", "projects", "runpod", "usage", "usage_day", "running", "hosts"]) this.sql.exec(`DELETE FROM ${t} WHERE user_id = ?`, id);
     this.sql.exec("DELETE FROM users WHERE id = ?", id);
   }
@@ -508,7 +517,9 @@ export class Accounts extends DurableObject<Env> {
   }
 
   async createHost(userId: string, wanted: string): Promise<{ id: string; name: string; token: string }> {
-    const base = wanted.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "computer";
+    let base = wanted.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "computer";
+    // not a name Tule's own machines have: "gpu-box" would be read as a GPU type, "cloud" as the cloud machine
+    if (/^(cloud|joined|external|cpu-\d+|gpu-.*)$/.test(base)) base = `pc-${base}`.slice(0, 40);
     let name = base;
     for (let i = 2; this.one("SELECT 1 FROM hosts WHERE user_id = ? AND name = ?", userId, name); i++) name = `${base}-${i}`;
     const id = `h_${rand(12).toLowerCase().replace(/[^a-z0-9]/g, "0")}`;

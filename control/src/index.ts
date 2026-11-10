@@ -569,8 +569,14 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
         message = "RunPod connected.";
       }
     } else if (action === "runpod/remove") {
-      await a.removeRunpod(user.id);
-      message = "RunPod disconnected.";
+      // first end the GPU machines: without the key their pods could not be terminated and would bill on
+      let left = 0;
+      for (const p of await a.projects(user.id)) left += await ops.projectStub(env, p.id).stopGpus();
+      if (left) rpError = `RunPod is still connected: ${left} GPU machine${left === 1 ? "" : "s"} could not be terminated just now. Try again in a minute.`;
+      else {
+        await a.removeRunpod(user.id);
+        message = "RunPod disconnected.";
+      }
     } else if (action === "keys/new") {
       newKey = (await a.createApiKey(user.id, f("name") || "API key")).key;
     } else if (action === "keys/revoke") {

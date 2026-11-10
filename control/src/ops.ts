@@ -54,7 +54,11 @@ export async function createProject(env: Env, user: User, name: unknown, origin:
 export async function deleteProject(env: Env, user: User, name: unknown): Promise<Result> {
   const p = await resolve(env, user, name);
   if (!isRef(p)) return p;
-  await projectStub(env, p.id).destroyProject();
+  try {
+    await projectStub(env, p.id).destroyProject();
+  } catch (e) {
+    return fail(`${p.name} was not deleted: ${e instanceof Error ? e.message : String(e)}`);
+  }
   await accounts(env).deleteProject(user.id, p.name);
   return { deleted: p.name };
 }

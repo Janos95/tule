@@ -250,7 +250,12 @@ export class Project extends DurableObject<Env> {
 
   /** Stops every machine and forgets everything: storage here and the project's files in R2. */
   async destroyProject(): Promise<Result> {
-    for (const m of Object.values(this.machines)) if (m.on) await this.stopMachine(m.id, "delete");
+    for (const m of Object.values(this.machines)) if (m.on || m.pod) await this.stopMachine(m.id, "delete");
+    // a pod RunPod would not terminate just now: keep the project (and the pod's id) and let the caller try again,
+    // or the pod would bill on with nothing left that knows of it
+    const left = Object.values(this.machines).filter((m) => m.pod);
+    if (left.length && this.state.owner && (await this.accounts().runpodKey(this.state.owner)))
+      throw new Error(`could not terminate the RunPod pod of ${left.map((m) => m.id).join(", ")} yet; try again in a minute`);
     const id = this.state.id;
     if (id) {
       let cursor: string | undefined;
@@ -456,8 +461,12 @@ export class Project extends DurableObject<Env> {
     const key = await this.accounts().runpodKey(this.state.owner);
     if (!key) return { error: "RunPod is not connected", hint: "paste a RunPod API key in Tule's Settings (GPU machines run on your RunPod account)" };
     const cur = this.machines[machine];
-    if (cur?.on && cur.pod && this.agent(machine)) return this.status();
-    if (cur?.on && cur.pod) await this.stopMachine(machine, "restart");
+    // running, or started in the last 20 minutes (the image is still coming): not a second pod
+    if (cur?.on && cur.pod && (this.agent(machine) || (cur.upAt ?? 0) > Date.now() - 20 * 60_000)) return this.status();
+    if (cur?.pod) {
+      await this.stopMachine(machine, "restart");
+      if (this.machines[machine]?.pod) return { error: "the last pod of this machine could not be terminated yet", hint: "try again in a minute (its id is kept, so it is not lost)" };
+    }
     const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
     const pod = await createPod(key, {
       name: `tule-${this.state.name ?? "project"}-${b64url(crypto.getRandomValues(new Uint8Array(3))).toLowerCase()}`,
@@ -682,8 +691,13 @@ export class Project extends DurableObject<Env> {
     if (m.pod && this.state.owner) {
       const key = await this.accounts().runpodKey(this.state.owner);
       try {
-        if (key) await terminatePod(key, m.pod.id);
-        m.pod = undefined;
+        if (key) {
+          await terminatePod(key, m.pod.id);
+          m.pod = undefined;
+        } else {
+          // RunPod was disconnected: the pod cannot be ended from here. Its id stays, so it is ended once a key is back.
+          console.log(JSON.stringify({ event: "terminate", project: this.state.name, pod: m.pod.id, error: "no RunPod key" }));
+        }
       } catch (e) {
         // keep the pod id: the alarm retries, so a pod never keeps billing unnoticed
         console.log(JSON.stringify({ event: "terminate", project: this.state.name, error: String(e) }));
@@ -695,6 +709,22 @@ export class Project extends DurableObject<Env> {
     this.broadcast();
   }
 
+  /** How long a started machine has been out of contact: since it was started if its agent never said hello,
+   * else since the connection closed. 0 while connected. A machine that ran for hours and reconnects after a
+   * deploy is not "never connected". */
+  away(m: Machine): number {
+    if (this.agent(m.id)) return 0;
+    if (!m.helloAt) return Date.now() - (m.upAt ?? 0);
+    m.lostAt ??= Date.now(); // the close was not seen (this object restarted): the clock starts now
+    return Date.now() - m.lostAt;
+  }
+
+  /** Ends every GPU machine (RunPod is being disconnected): how many pods could not be terminated. */
+  async stopGpus(): Promise<number> {
+    for (const m of Object.values(this.machines)) if (m.pod) await this.stopMachine(m.id, "RunPod disconnected");
+    return Object.values(this.machines).filter((m) => m.pod).length;
+  }
+
   async alarm() {
     let next = 0;
     const later = (ms: number) => (next = next ? Math.min(next, Date.now() + ms) : Date.now() + ms);
@@ -702,17 +732,18 @@ export class Project extends DurableObject<Env> {
       if (m.pod && this.state.owner) {
         // a pod that failed, or one left over from a failed terminate
         const key = await this.accounts().runpodKey(this.state.owner);
-        const p = key ? await getPod(key, m.pod.id).catch(() => undefined) : null;
+        const p = key ? await getPod(key, m.pod.id).catch(() => undefined) : undefined; // no key: unknown, not gone
         const dead = p === null || (p && ["EXITED", "ERROR", "TERMINATED"].includes(p.status));
-        const stuck = !this.agent(m.id) && Date.now() - (m.upAt ?? 0) > 20 * 60_000;
+        const stuck = this.away(m) > 20 * 60_000;
         if (dead || stuck || !m.on) {
-          console.log(JSON.stringify({ event: "pod-cleanup", project: this.state.name, machine: m.id, status: p?.status ?? "gone", stuck }));
-          await this.stopMachine(m.id, dead ? "the pod stopped" : "the pod never connected");
+          console.log(JSON.stringify({ event: "pod-cleanup", project: this.state.name, machine: m.id, status: p?.status ?? (key ? "gone" : "no key"), stuck }));
+          await this.stopMachine(m.id, dead ? "the pod stopped" : m.helloAt ? "the pod lost contact" : "the pod never connected");
+          if (m.pod && key) later(60_000); // not terminated: again in a minute
           continue;
         }
       }
       if (!m.on) continue;
-      if (m.kind === "computer" && !this.agent(m.id) && Date.now() - (m.upAt ?? 0) > 20 * 60_000) {
+      if (m.kind === "computer" && this.away(m) > 20 * 60_000) {
         await this.hostFailed("the machine did not connect within 20 minutes", m.host?.id);
         continue;
       }

@@ -43,7 +43,8 @@ export function bearer(req: Request): string {
 /** The signed-in user, from the session cookie, an API key or the dev token. */
 export async function who(req: Request, env: Env): Promise<User | null> {
   const a = accounts(env);
-  const token = bearer(req) || new URL(req.url).searchParams.get("t") || "";
+  // ?t= only where a browser cannot send a header (the viewer's WebSocket): not in the URL of an ordinary request
+  const token = bearer(req) || (req.headers.get("Upgrade")?.toLowerCase() === "websocket" ? new URL(req.url).searchParams.get("t") : "") || "";
   if (token) {
     if (env.DEV_TOKEN && same(token, env.DEV_TOKEN)) return a.devUser();
     if (token.startsWith("tule_")) return a.apiKeyUser(token);
