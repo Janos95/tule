@@ -1,8 +1,5 @@
 // What output.json says about the shown part, in the strip under the view:
 //
-//   "info" (any kind): facts about the part, shown as rows
-//     {"info": {"material": "aluminium 6061", "mass": "20.8 g", "volume": 7711.3}}
-//
 //   kind "overlay": data on the part's B-rep faces (ids as in the viewer: f12)
 //     {"version": 1, "kind": "overlay", "file": "part.step", "title": "...",
 //      "faces": {"12": {"severity": "error" | "warning" | "info" | "ok", "label": "..."},
@@ -304,7 +301,7 @@ export function initOverlay({ viewer, legend, marks }) {
         fields.forEach((x, i) => {
           const b = el("button", "", String(x.label ?? `field ${i + 1}`));
           b.type = "button";
-          b.style.cssText = "height: 24px; font-size: 12px; padding: 0 8px; white-space: nowrap";
+          b.style.cssText = "height: 24px; font-size: var(--fs-small); padding: 0 8px; white-space: nowrap";
           b.setAttribute("aria-pressed", String(i === active));
           b.addEventListener("click", () => {
             if (i === active) return;
@@ -372,7 +369,7 @@ export function initOverlay({ viewer, legend, marks }) {
     if (f.animate) {
       const b = el("button", "", swing ? "Pause" : "Play");
       b.type = "button";
-      b.style.cssText = "height: 22px; font-size: 12px; padding: 0 8px";
+      b.style.cssText = "height: 22px; font-size: var(--fs-small); padding: 0 8px";
       b.setAttribute("aria-pressed", String(!swing));
       b.addEventListener("click", () => {
         swing = !swing;
@@ -410,7 +407,7 @@ export function initOverlay({ viewer, legend, marks }) {
   viewer.listeners.add(place);
 
   return {
-    /** Shows what an output's meta says about the shown meshes: info for any kind, face data,
+    /** Shows what an output's meta says about the shown meshes: face data,
      * arrows and fields for an overlay (`isOverlay`). null clears it. readFile(name) reads a
      * file of the output (a field's .npy) as an ArrayBuffer. */
     apply(meta, isOverlay = false, readFile = null) {

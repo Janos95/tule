@@ -138,6 +138,7 @@ async function openShared(delay) {
     return void setTimeout(() => openShared(Math.min(delay * 2, 10_000)), delay);
   }
   if (!r.ok) {
+    if (r.status !== 404 && r.status !== 410) return void setTimeout(() => openShared(Math.min(delay * 2, 10_000)), delay); // the server, not the link
     $("machine-text").textContent = "link turned off";
     return setStatus(LINK_OFF);
   }
@@ -180,6 +181,11 @@ async function sharedMesh(file) {
       if (data.error) job?.reject(new Error(data.error));
       else job?.resolve(decode(data.buf, 0));
     };
+    stepWorker.onerror = (e) => { // it could not start: fail what waits, and start a new one next time
+      for (const job of stepJobs.values()) job.reject(new Error(e.message || "could not start the mesher"));
+      stepJobs.clear();
+      stepWorker = null;
+    };
   }
   const id = ++rid;
   return new Promise((resolve, reject) => {
@@ -192,6 +198,9 @@ function onText(m) {
   if (m.t === "outputs") {
     if (m.status) machine(m.status);
     state.outputs = prepare(m.outputs ?? []);
+    // meshes of files that are gone (rebuilt, deleted) are dropped: a long session would keep them all
+    const live = new Set(state.outputs.flatMap((o) => o.files.map((f) => f.hash)));
+    for (const h of meshes.keys()) if (!live.has(h)) meshes.delete(h);
     renderList();
     show();
   } else if (m.t === "mesh-error" || m.t === "res") {
@@ -705,6 +714,7 @@ function studyBox(o, files, loaded) {
 /** Shows an output (or input) by id; resolves once it is drawn. */
 function select(id) {
   if (state.selected === id && state.shown) return Promise.resolve();
+  play(false);
   state.wanted = id;
   state.view = null;
   state.frame = 0;
@@ -716,6 +726,7 @@ function select(id) {
 
 /** Shows one of the selected entry's views: "3d", one of its files, or "log". */
 function selectView(id) {
+  play(false);
   state.wanted = state.selected; // the URL names the entry with the view
   state.view = id;
   remember();
@@ -803,6 +814,7 @@ async function showPage(o, v) {
   if (key === pageKey) return;
   offerDownload(v?.f ? [v.f, ...extras(o).filter((f) => f !== v.f)] : extras(o));
   pageKey = key;
+  setStatus(""); // a 3D view's "Loading…" or error is not this page's
   const run = (pageRun = {});
   pageCleanup?.();
   pageCleanup = null;
@@ -945,6 +957,7 @@ async function show() {
   } catch (e) {
     if (state.shown === key) {
       state.shown = null;
+      if (first) clearStage(); // not the output shown before, as if it were this one
       setStatus(`Cannot show ${o.name}: ${e.message}`);
     }
   }
@@ -964,7 +977,8 @@ function play(on) {
     playing = null;
     if (blended) {
       viewer.movePlacements(null);
-      state.shown = null; // draw the frame it stopped on as it is
+      // draw the frame it stopped on as it is: the same output still (the camera and an annotation stay)
+      state.shown = state.shown?.startsWith(`${state.selected}|`) ? `${state.selected}|` : null;
       show();
     }
   }
@@ -989,11 +1003,11 @@ function play(on) {
   const at = fr.map((f) => f.parts.map((p) => (p.transform != null ? placement(p.transform, p.file) : null)));
   let pos = state.frame >= fr.length - 1 ? 0 : state.frame;
   let drawnFrame = state.frame; // whose files are drawn
-  let last = performance.now();
+  let last = null; // the first tick's time (a frame's timestamp may be before now)
   playing = { blend: true };
   const tick = (now) => {
     if (state.selected !== o.id || !state.shown?.startsWith(o.id + "|")) return play(false); // another output, or a page
-    pos += (now - last) / step;
+    pos += (now - (last ?? now)) / step;
     last = now;
     if (pos >= fr.length - 1) pos = 0; // loop: back to the first frame
     const i = Math.floor(pos);
@@ -1084,7 +1098,10 @@ function save(bytes, name) {
 }
 
 let downloads = [];
-/** The Download button offers the shown output's geometry files, or the file shown. */
+function closeDownload() {
+  $("download-menu").hidden = true;
+  $("download").setAttribute("aria-expanded", "false");
+}
 /** An output's files with no view of their own (.3mf, .zip): offered in Download from every view. */
 const extras = (o) => o.docs.filter((f) => f.type === "file" || sheetSvg(o, f));
 /** A drawing's sheet as an SVG (bracket.svg, bracket-2.svg beside bracket.pdf): in Download, not a view of its own. */
@@ -1092,13 +1109,14 @@ const sheetSvg = (o, f) => /\.svg$/i.test(f.file) && o.docs.some((d) => d.type =
 
 // a file to print (3MF, STL) first: it is what most people come for
 const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.stl$/i.test(f.file) ? 1 : 2);
+/** The Download button offers the shown output's geometry files, or the file shown. */
 function offerDownload(list) {
   downloads = [...list].sort((a, b) => printable(a) - printable(b));
   $("download").hidden = !list.length;
-  $("download-menu").hidden = true;
+  closeDownload();
 }
 async function download(f) {
-  $("download-menu").hidden = true;
+  closeDownload();
   try {
     save(await req("read", { path: f.path, max: WHOLE }, 300_000), f.file.split("/").pop());
   } catch (e) {
@@ -1107,6 +1125,7 @@ async function download(f) {
 }
 $("download").addEventListener("click", (e) => {
   e.stopPropagation();
+  shareMenu(false);
   if (downloads.length === 1) return download(downloads[0]);
   const menu = $("download-menu");
   menu.textContent = "";
@@ -1124,7 +1143,7 @@ $("download").addEventListener("click", (e) => {
   menu.hidden = !menu.hidden;
   $("download").setAttribute("aria-expanded", String(!menu.hidden));
 });
-document.addEventListener("click", () => ($("download-menu").hidden = true));
+document.addEventListener("click", closeDownload);
 
 // ------------------------------------------------------------ share: a view-only link (owner)
 
@@ -1217,6 +1236,7 @@ async function share(method) {
 
 $("share").addEventListener("click", (e) => {
   e.stopPropagation();
+  closeDownload();
   if (!shareState.shared) return void share("POST");
   shareMenu($("share-menu").hidden);
 });

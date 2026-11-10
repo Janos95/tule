@@ -312,8 +312,10 @@ export class Viewer {
       }
     }
     if (this.extent && !hidden?.size) box.union(this.extent);
-    this.bounds = box.isEmpty() ? null : box;
-    this.updateGrid();
+    const next = box.isEmpty() ? null : box;
+    const same = next ? !!this.bounds?.equals(next) : !this.bounds;
+    this.bounds = next;
+    if (!same) this.updateGrid(); // not on every hover of a parts row: the grid follows the bounds
     this.dirty = true;
   }
 

@@ -6,7 +6,10 @@
 importScripts("__OCCT__occt-import-js.js");
 
 let occt;
-const ready = () => (occt ??= occtimportjs({ locateFile: (f) => `__OCCT__${f}` }));
+const ready = () => (occt ??= occtimportjs({ locateFile: (f) => `__OCCT__${f}` }).catch((e) => {
+  occt = undefined; // not kept: the next model tries again
+  throw e;
+}));
 
 onmessage = async ({ data: { id, name, bytes } }) => {
   try {

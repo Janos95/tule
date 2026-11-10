@@ -483,7 +483,9 @@ export function initAnnotate(ctx) {
   return {
     /** The shown output changed: marks on the old one no longer apply. */
     reset() {
-      if (!strokes.length && !selection.size && !picks.length) return restyle();
+      ghost = null; // an earlier annotation shown again was on the old output too
+      $("annot-shown").hidden = true;
+      if (!strokes.length && !selection.size && !picks.length) return void (restyle(), redraw());
       strokes = [];
       selection.clear();
       picks = [];

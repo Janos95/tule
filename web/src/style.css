@@ -29,39 +29,6 @@ body {
   overflow: hidden;
 }
 
-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 48px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--line);
-  flex: none;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: inherit;
-  text-decoration: none;
-  font-size: var(--fs-title);
-  letter-spacing: 0.2px;
-}
-
-.brand img {
-  width: 22px;
-  height: 22px;
-}
-
-.actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-
 button {
   font: inherit;
   font-size: var(--fs-body);
@@ -102,12 +69,6 @@ button.primary {
 
 button.primary:hover:not(:disabled) {
   background: var(--accent-hover);
-}
-
-button.danger {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: var(--bg);
 }
 
 button.line svg,
@@ -170,328 +131,10 @@ button.line svg,
 #download-menu button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #download-menu button small { flex: none; }
 
-/* the file tabs above the editor: + adds a file, ··· has the file and
-   project actions */
-.filebar {
-  flex: none;
-  display: flex;
-  align-items: flex-end;
-  height: 36px;
-  padding: 0 8px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-  gap: 2px;
-}
-
-#tabs {
-  min-width: 0;
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 100%;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-#tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.tab {
-  flex: none;
-  position: relative;
-  height: 30px;
-  margin-bottom: -1px;
-  padding: 0 12px;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  background: none;
-  color: var(--muted);
-  font-size: var(--fs-body);
-  white-space: nowrap;
-}
-
-.tab:hover {
-  border-color: transparent;
-  background: var(--hover);
-  color: var(--text);
-}
-
-.tab[aria-selected="true"] {
-  border-color: var(--line);
-  background: var(--bg);
-  color: var(--text);
-  font-weight: 500;
-  /* covers the bar's bottom line: the tab opens into the editor */
-  box-shadow: 0 1px 0 var(--bg);
-}
-
-.tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* the file of the last error */
-.tab.err::after {
-  content: "";
-  position: absolute;
-  top: 7px;
-  right: 4px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--danger-fill);
-}
-
-.tab-add {
-  flex: none;
-  width: 26px;
-  height: 26px;
-  margin: 0 0 3px 2px;
-  padding: 0;
-  justify-content: center;
-  border-color: transparent;
-  background: none;
-  color: var(--muted);
-}
-
-.tab-add:hover {
-  border-color: transparent;
-  background: var(--hover);
-  color: var(--text);
-}
-
-.tab-add svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-}
-
 main {
   flex: 1;
   display: flex;
   min-height: 0;
-}
-
-#left {
-  width: clamp(340px, 42%, 720px);
-  min-width: 0;
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-  transition: width 180ms ease;
-}
-
-main:not(.code-open) #left {
-  width: 0 !important;
-  visibility: hidden;
-}
-
-main:not(.code-open) #split {
-  display: none;
-}
-
-body.resizing #left {
-  transition: none;
-}
-
-/* the splitter: a 1 px line with a wider grip area; split.js moves it */
-#split {
-  flex: none;
-  position: relative;
-  z-index: 3;
-  width: 1px;
-  background: var(--line);
-  cursor: col-resize;
-  touch-action: none;
-  outline: none;
-}
-
-#split::before {
-  content: "";
-  position: absolute;
-  inset: 0 -5px;
-}
-
-/* the grip, on hover, focus and while dragging */
-#split::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: -2px;
-  width: 5px;
-  height: 36px;
-  margin-top: -18px;
-  border-radius: 3px;
-  background: var(--faint);
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-
-#split:hover,
-#split:focus-visible,
-body.resizing #split {
-  background: var(--line-strong);
-}
-
-#split:hover::after,
-#split:focus-visible::after,
-body.resizing #split::after {
-  opacity: 1;
-}
-
-body.resizing {
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-body.resizing.h,
-body.resizing.h * {
-  cursor: col-resize !important;
-}
-
-body.resizing.v,
-body.resizing.v * {
-  cursor: row-resize !important;
-}
-
-#editor {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-#editor .cm-editor {
-  height: 100%;
-}
-
-#bar {
-  flex: none;
-  display: flex;
-  max-height: 32%;
-  min-height: 34px;
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-}
-
-/* A slim, permanent bar: these controls never move with the drawer. */
-#controls {
-  position: relative;
-  z-index: 4;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 46px;
-  padding: 7px 12px max(7px, env(safe-area-inset-bottom));
-  border-top: 1px solid var(--line);
-  background: var(--bg);
-}
-
-#run-controls {
-  display: flex;
-  flex: none;
-  gap: 6px;
-}
-
-#code-toggle[aria-expanded="true"] {
-  background: var(--selected);
-  border-color: var(--accent);
-  color: var(--link);
-}
-
-#run-error {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  left: 12px;
-  width: max-content;
-  max-width: min(560px, calc(100vw - 24px));
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--danger-line);
-  border-radius: 8px;
-  background: var(--danger-bg);
-  color: var(--danger);
-  box-shadow: 0 4px 20px var(--shadow);
-}
-
-#run-error-text {
-  min-width: 0;
-  max-height: 120px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font: 12px/1.5 var(--mono);
-}
-
-#show-code {
-  flex: none;
-  color: var(--danger);
-  border-color: var(--danger-line);
-}
-
-#console {
-  flex: 1 1 auto;
-  min-width: 130px;
-  overflow: auto;
-  font: 12px/1.45 var(--mono);
-  padding: 8px 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-#console .err {
-  color: var(--danger);
-  background: var(--danger-bg);
-  border-left: 3px solid var(--danger-fill);
-  margin: 2px -12px;
-  padding: 4px 9px;
-}
-
-#console .out {
-  color: var(--text);
-}
-
-#console .info {
-  color: var(--muted);
-}
-
-/* the thread count, at the end of the bar */
-#threads {
-  flex: none;
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-small);
-  line-height: 1.45;
-  color: var(--faint);
-  white-space: nowrap;
-  cursor: default;
-}
-
-#threads::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--idle);
-}
-
-#threads.mt::before {
-  background: var(--ok-fill);
-}
-
-#threads.st::before {
-  background: var(--warn-fill);
 }
 
 #right {
@@ -745,24 +388,6 @@ body.resizing.v * {
   }
 }
 
-/* Download: export only the visible parts (shown when some are hidden) */
-.menu-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  margin: 4px -4px -4px;
-  padding: 0 12px;
-  border-top: 1px solid var(--line);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
-.menu-check input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-
 /* the polygon count and genau time: quiet text in the viewer's corner */
 #counts {
   position: absolute;
@@ -774,19 +399,6 @@ body.resizing.v * {
   text-shadow: 0 0 4px var(--bg), 0 0 2px var(--bg);
   white-space: nowrap;
   pointer-events: none;
-}
-
-/* Replay stays below the view, even with the editor closed. */
-#replay {
-  flex: 1 1 auto;
-  max-width: 280px;
-  min-width: 0;
-  justify-content: flex-end;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-small);
-  color: var(--muted);
 }
 
 #play {
@@ -836,342 +448,20 @@ body.resizing.v * {
   display: none;
 }
 
-/* the Agent button and its popover */
-#link .dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--idle);
-}
-
-#link[data-state="on"] .dot {
-  background: var(--ok-fill);
-}
-
-#link[data-state="connecting"] .dot {
-  background: var(--warn-fill);
-  animation: blink 1s ease-in-out infinite;
-}
-
-#link[data-state="replaced"] .dot {
-  background: var(--warn-fill);
-}
-
 @keyframes blink {
   50% {
     opacity: 0.3;
   }
 }
-
-.pop {
-  position: fixed;
-  top: 52px;
-  right: 12px;
-  z-index: 10;
-  width: min(400px, calc(100vw - 16px));
-  padding: 8px 12px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
-  box-shadow: 0 12px 40px var(--shadow);
-}
-
-.pop-head {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin: 0 -6px 4px 0;
-  font-size: var(--fs-small);
-}
-
-#link-status {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#link-status::before {
-  content: "";
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--idle);
-}
-
-#link-status[data-state="on"]::before {
-  background: var(--ok-fill);
-}
-
-#link-status[data-state="connecting"]::before,
-#link-status[data-state="replaced"]::before {
-  background: var(--warn-fill);
-}
-
-.pop button.quiet {
-  border: none;
-  background: none;
-  height: 24px;
-  padding: 0 6px;
-  font-size: var(--fs-small);
-  color: var(--muted);
-}
-
-.pop button.quiet:hover {
-  color: var(--link);
-  background: var(--hover);
-}
-
-.pop .close {
-  border: none;
-  background: none;
-  font-size: 20px;
-  height: 24px;
-  width: 26px;
-  padding: 0;
-  justify-content: center;
-  color: var(--muted);
-}
-
-.field + .field {
-  margin-top: 10px;
-}
-
-.field-label {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 4px;
-  font-size: var(--fs-small);
-  font-weight: 500;
-  color: var(--text);
-}
-
-/* the "?" with its tip: hover or focus, or a tap (.open) */
-.tip {
-  position: relative;
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  justify-content: center;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  background: var(--bg);
-  font-size: var(--fs-label);
-  font-weight: 500;
-  line-height: 1;
-  color: var(--muted);
-  cursor: help;
-}
-
-.tip:hover {
-  border-color: var(--accent);
-  color: var(--link);
-  background: var(--bg);
-}
-
-.tip::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: -8px;
-  top: calc(100% + 6px);
-  z-index: 1;
-  width: max-content;
-  max-width: min(260px, calc(100vw - 60px));
-  padding: 6px 9px;
-  border-radius: 6px;
-  background: var(--text);
-  color: var(--bg);
-  font-size: var(--fs-small);
-  font-weight: 400;
-  line-height: 1.4;
-  text-align: left;
-  white-space: normal;
-  box-shadow: 0 4px 14px var(--shadow);
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.12s;
-  pointer-events: none;
-}
-
-.tip:hover::after,
-.tip:focus-visible::after,
-.tip.open::after {
-  opacity: 1;
-  visibility: visible;
-}
-
-.pop-url {
-  display: flex;
-}
-
-.pop-url input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-right: none;
-  border-radius: 6px 0 0 6px;
-  background: var(--panel);
-  font: 12px var(--mono);
-  color: var(--text);
-}
-
-.pop-url input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-button.copy {
-  width: 34px;
-  height: 30px;
-  padding: 0;
-  justify-content: center;
-  border-radius: 0 6px 6px 0;
-  color: var(--muted);
-}
-
-button.copy:hover {
-  color: var(--link);
-}
-
-button.copy svg {
-  width: 15px;
-  height: 15px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-button.copy.done {
-  color: var(--ok);
-}
-
-/* what the agent is doing, over the viewer */
-.chip {
-  position: absolute;
-  top: 10px;
-  left: 12px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--text);
-  color: var(--bg);
-  font-size: var(--fs-small);
-  pointer-events: none;
-}
-
-/* a note (catching up after the page was away): under the viewer's
-   buttons, wrapping on narrow screens */
-.chip.note {
-  top: 48px;
-  max-width: calc(100% - 48px);
-  border-radius: 12px;
-  line-height: 1.35;
-}
-
-.cm-error-line {
-  background: var(--danger-bg) !important;
-}
-
-.project-actions { position: relative; margin: 0 0 3px auto; flex: none; }
-#project-actions { width: 30px; height: 26px; justify-content: center; font-weight: 700; }
-.project-actions .menu { right: 0; min-width: 170px; }
-.menu .danger-item { color: var(--danger); }
-.menu-sep { height: 1px; margin: 4px 2px; background: var(--line); }
 .unsaved-dot { display: none; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn-fill); }
-#save.unsaved .unsaved-dot { display: inline-block; }
-
-/* the project picker: the open project's name; its list opens upwards */
-.picker { position: relative; display: flex; min-width: 0; flex: 0 1 auto; }
-#project { min-width: 0; max-width: 220px; gap: 6px; padding: 0 8px 0 10px; font-weight: 500; }
 #project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#project .chev { flex: none; width: 12px; height: 12px; stroke: var(--muted); stroke-width: 1.6; }
-#project:hover .chev, #project[aria-expanded="true"] .chev { stroke: var(--text); }
-#project[aria-expanded="true"] { background: var(--hover); border-color: var(--line-strong); }
-#project-list {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 8px);
-  z-index: 12;
-  width: 260px;
-  max-height: min(62vh, 520px);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
-  box-shadow: 0 10px 36px var(--shadow);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.pick-scroll { min-height: 0; overflow-y: auto; padding: 4px 4px 2px; display: flex; flex-direction: column; }
-.pick-group { padding: 8px 10px 3px; font-size: var(--fs-label); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
-.pick-note { padding: 4px 10px 6px; font-size: var(--fs-small); color: var(--muted); }
-.pick-sep { flex: none; height: 1px; margin: 4px 2px; background: var(--line); }
 .pick { flex: none; width: 100%; height: 32px; padding: 0 10px; border: none; border-radius: 6px; gap: 8px; justify-content: space-between; text-align: left; }
 .pick:hover, .pick:focus-visible { background: var(--hover); outline: none; }
 .pick[aria-selected="true"] { background: var(--selected); color: var(--link); font-weight: 500; }
-.pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick .unsaved-dot { display: inline-block; }
-.pick-foot { margin: 0 6px 4px; }
-.pick-new { width: auto; margin: 0 4px 4px; justify-content: flex-start; gap: 7px; color: var(--muted); }
-.pick-new svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
-.pick-new:hover { color: var(--text); }
-.pick-filter { flex: none; height: 30px; margin: 2px 2px 4px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: var(--fs-body); }
-.pick-filter:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
-
-/* "Saved": a quiet note beside Save that fades out */
-#run-controls { position: relative; }
-#save-note {
-  position: absolute;
-  left: calc(100% + 4px);
-  top: 50%;
-  transform: translateY(-50%);
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--bg);
-  font-size: var(--fs-small);
-  color: var(--muted);
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.6s ease 0.2s;
-}
-#save-note.show { opacity: 1; transition: none; }
-#save-note::before { content: "✓ "; color: var(--ok); }
-#save-note:empty { display: none; }
-
-#project-status { flex: none; padding: 5px 12px; color: var(--muted); border-top: 1px solid var(--line); font-size: var(--fs-small); }
-#project-status:empty { display: none; }
-#project-status.error { color: var(--danger); }
-
-/* the name dialog: a title, one field, two buttons */
-#name-dialog { width: min(340px, calc(100% - 32px)); padding: 18px; border: 1px solid var(--line); border-radius: 12px; color: var(--text); box-shadow: 0 16px 64px var(--shadow); }
-#name-dialog::backdrop { background: color-mix(in srgb, var(--navy) 25%, transparent); }
-#name-dialog h2 { margin: 0 0 12px; font-size: var(--fs-title); font-weight: 600; }
-#name-input { width: 100%; height: 34px; padding: 0 10px; font: inherit; border: 1px solid var(--line-strong); border-radius: 6px; }
-#name-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
-#name-input[aria-invalid="true"] { outline-color: var(--danger-fill); }
-#name-error { margin: 6px 0 0; font-size: var(--fs-small); color: var(--danger); }
-#name-error:empty { display: none; }
-.dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
 /* narrow screens: viewer on top, editor below */
 @media (max-width: 820px) {
-  header {
-    padding: 0 8px 0 10px;
-  }
-  .actions {
-    gap: 5px;
-  }
   #download .label {
     display: none;
   }
@@ -1183,90 +473,19 @@ button.copy.done {
   .menu button {
     height: 38px;
   }
-  #controls {
-    padding-left: 8px;
-    padding-right: 8px;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  #controls:has(#replay:not([hidden])) #threads .unit {
-    display: none;
-  }
-  #project-list {
-    position: fixed;
-    left: 8px;
-    right: 8px;
-    bottom: calc(var(--bar-h, 46px) + 6px);
-    width: auto;
-    max-height: min(72vh, 640px);
-  }
   .pick {
     height: 40px;
-  }
-  #replay {
-    flex: 1;
-    max-width: none;
-    gap: 4px;
   }
   #scrub {
     min-width: 30px;
   }
-  .pop {
-    right: 8px;
-  }
-}
-
-/* a stand-in (?standin=, store.js): headless, nobody looks at it; the viewer
-   fills the window, so that screenshots have its proportions */
-html.standin header,
-html.standin #left,
-html.standin #split,
-html.standin #hud,
-html.standin #controls,
-html.standin #link-pop {
-  display: none !important;
-}
-html.standin main {
-  flex-direction: row;
-}
-html.standin #right {
-  flex: 1;
-  height: auto;
 }
 
 /* phones: Run, Code (its icon), Save and the picker share one row; the
    replay, when there is one, gets the row above it */
 @media (max-width: 520px) {
-  #replay {
-    order: -1;
-    flex: 1 0 100%;
-    max-width: none;
-  }
   #scrub {
     max-width: none;
-  }
-  #code-toggle {
-    width: 34px;
-    padding: 0;
-    justify-content: center;
-  }
-  #code-toggle .label {
-    display: none;
-  }
-  #threads .unit {
-    display: none;
-  }
-  #project {
-    max-width: 42vw;
-  }
-  #parts {
-    width: 196px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  #left {
-    transition: none;
   }
 }
 
@@ -1515,9 +734,6 @@ main {
   box-shadow: 0 1px 4px var(--shadow);
 }
 
-@media (max-width: 640px) {
-}
-
 /* ---------------------------------------------------------------- annotations */
 
 #ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
@@ -1581,7 +797,7 @@ main {
 .annot-done { padding: 8px; border-radius: 6px; background: var(--ok-bg); border: 1px solid color-mix(in srgb, var(--ok-fill) 30%, var(--ok-bg)); display: flex; flex-direction: column; gap: 4px; }
 .annot-done code { font: 12px var(--mono); }
 .annot-done.error { background: var(--danger-bg); border-color: var(--danger-line); color: var(--danger); }
-.annot-done.error > div { display: none; }
+.annot-done.error > :not(.annot-summary) { display: none; }
 .annot-tell { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .annot-say { font-weight: 500; }
 .annot-tell button { height: 22px; font-size: var(--fs-small); padding: 0 7px; }
@@ -1666,7 +882,8 @@ main {
 
 .page { position: absolute; inset: 0; display: none; overflow: auto; background: var(--bg); }
 #stage.paged .page { display: block; }
-#stage.paged #annotate-toggle, #stage.paged #fit, #stage.paged #counts, #stage.paged #caption, #stage.paged #marks, #stage.paged #pick { display: none; }
+#stage.paged #annotate-toggle, #stage.paged #fit, #stage.paged #counts, #stage.paged #caption, #stage.paged #marks, #stage.paged #pick,
+#stage.paged #ink, #stage.paged #annotate, #stage.paged #annot-shown { display: none; }
 .page-body { max-width: 920px; margin: 0 auto; padding: 52px 28px 40px; }
 .page-empty { color: var(--muted); font-size: var(--fs-body); text-align: center; margin-top: 18vh; }
 .page-error { color: var(--danger); font-size: var(--fs-body); }
