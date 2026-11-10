@@ -13,6 +13,7 @@ on:
       - "cli/**"
       - "skills/**"
       - "templates/**"
+      - "examples/**"
       - "tools/build_agents_md.py"
       - ".dockerignore"
       - ".github/workflows/runtime.yml"

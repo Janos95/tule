@@ -22,7 +22,7 @@ import type { Project } from "./project";
 import { stub } from "./rpc";
 
 type Result = Record<string, unknown>;
-type Info = { id?: string; name?: string; owner?: string; specs?: Record<string, unknown>; seenAt?: number; running?: string[] };
+type Info = { id?: string; name?: string; specs?: Record<string, unknown>; seenAt?: number; running?: string[] };
 
 export class Host extends DurableObject<Env> {
   info: Info = {};
@@ -42,12 +42,11 @@ export class Host extends DurableObject<Env> {
   /** The computer connects (the Worker checked its token and passes who it is). */
   async fetch(req: Request): Promise<Response> {
     const id = req.headers.get("X-Tule-Host-Id") ?? "";
-    const owner = req.headers.get("X-Tule-Host-Owner") ?? "";
     const name = req.headers.get("X-Tule-Host-Name") ?? "";
     for (const old of this.ctx.getWebSockets("host")) old.close(4000, "replaced by a new connection");
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, ["host"]);
-    this.info = { ...this.info, id, owner, name, seenAt: Date.now() };
+    this.info = { ...this.info, id, name, seenAt: Date.now() };
     await this.ctx.storage.put("info", this.info);
     return new Response(null, { status: 101, webSocket: client });
   }

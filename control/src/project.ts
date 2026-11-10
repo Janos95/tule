@@ -13,8 +13,8 @@
 // remote (gitRefs/gitPush, bundles in R2) and Git LFS (index.ts). A machine
 // that starts fresh begins from the latest save (main); a slot that comes
 // back resumes its own last snapshot. A stopped slot with unsaved work stays
-// listed until it is loaded again or forgotten (DESIGN.md, "Planned: several
-// machines per project").
+// listed until it is loaded again or forgotten (DESIGN.md, "Several
+// machines per project, saves in git").
 //
 // Sockets (hibernation API, tagged): "agent" + "m:<slot>" (a machine), "ssh" +
 // "sid:<n>" + "sm:<slot>" (one per `tule proxy` client), "view" (viewer pages;
@@ -39,6 +39,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Accounts } from "./accounts";
 import { stub } from "./rpc";
+import { bearer, sha256hex } from "./util";
 import type { Host } from "./host";
 import { createPod, getPod, GPUS, terminatePod } from "./runpod";
 
@@ -114,11 +115,6 @@ export function slotOf(machine: string): { id: string; kind: Kind } {
 
 const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-async function sha256(s: string): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("");
-}
-
 function frame(kind: number, id: number, payload: Uint8Array): Uint8Array {
   const out = new Uint8Array(5 + payload.byteLength);
   out[0] = kind;
@@ -141,6 +137,7 @@ export class Project extends DurableObject<Env> {
   pending = new Map<number, { ws: WebSocket; rid: number }>(); // viewer requests in flight (also in storage as rq:<id>: hibernation forgets this map)
   asks = new Map<number, (reply: Result) => void>(); // commands to agents awaiting a reply
   lastSaved = 0;
+  cloudUps: Promise<unknown> = Promise.resolve(); // up() calls for the cloud machine, in order
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -383,6 +380,14 @@ export class Project extends DurableObject<Env> {
         hint: "start a machine with the project's join token (tule join), or use one of your computers (tule hosts)",
       };
     }
+    // one at a time: the checks below await other objects, and two starts would each mint a join token
+    const run = this.cloudUps.then(() => this.upCloud(c, machine, instance, !!owner?.guest, origin));
+    this.cloudUps = run.catch(() => {});
+    return run;
+  }
+
+  /** The cloud machine: Tule's container for this project. Only up() calls it, one call at a time. */
+  async upCloud(c: Container, machine: string, instance: (typeof MACHINES)[string], guest: boolean, origin: string): Promise<Result> {
     const cur = this.machines.cloud;
     if (c.running && cur?.on) {
       if (cur.size === machine) return this.status();
@@ -397,7 +402,7 @@ export class Project extends DurableObject<Env> {
       if (u.cpuHours >= quota)
         return { error: `this month's CPU machine time is used up (${u.cpuHours} of ${quota} h)`, hint: "it renews on the 1st; GPU machines on your RunPod account are not limited by it" };
     }
-    const token = await this.slot("cloud", "cloud", machine, { guest: !!owner?.guest });
+    const token = await this.slot("cloud", "cloud", machine, { guest });
     c.start({
       image: c.images.cpu,
       instance,
@@ -405,7 +410,7 @@ export class Project extends DurableObject<Env> {
       env: this.machineEnv(origin, token),
     });
     await c.setInactivityTimeout(IDLE_MS + 2 * CHECK_MS);
-    await this.wake((owner?.guest ? 60_000 : CHECK_MS));
+    await this.wake(guest ? 60_000 : CHECK_MS);
     return this.status();
   }
 
@@ -414,7 +419,7 @@ export class Project extends DurableObject<Env> {
     const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
     const now = Date.now();
     const prev = this.machines[id];
-    this.machines[id] = { ...prev, id, kind, size, ...fresh, ...extra, on: true, joinHash: await sha256(token), upAt: now, billedUntil: now, lastActive: now, stoppedAt: undefined, hostError: undefined };
+    this.machines[id] = { ...prev, id, kind, size, ...fresh, ...extra, on: true, joinHash: await sha256hex(token), upAt: now, billedUntil: now, lastActive: now, stoppedAt: undefined, hostError: undefined };
     await this.save();
     this.broadcast();
     return token;
@@ -478,7 +483,7 @@ export class Project extends DurableObject<Env> {
     const now = Date.now();
     this.machines[machine] = {
       ...cur, id: machine, kind: "gpu", size: machine, ...fresh, on: true, pod: { id: pod.id, cost: pod.cost, gpu, cloud: pod.cloud },
-      joinHash: await sha256(token), upAt: now, billedUntil: now, lastActive: now, stoppedAt: undefined,
+      joinHash: await sha256hex(token), upAt: now, billedUntil: now, lastActive: now, stoppedAt: undefined,
     };
     await this.save();
     await this.wake(60_000);
@@ -519,7 +524,7 @@ export class Project extends DurableObject<Env> {
   /** The slot whose join token this is, or null. */
   async checkJoin(token: string): Promise<string | null> {
     if (!token) return null;
-    const h = await sha256(token);
+    const h = await sha256hex(token);
     return Object.values(this.machines).find((m) => m.joinHash === h)?.id ?? null;
   }
 
@@ -842,8 +847,7 @@ export class Project extends DurableObject<Env> {
     const [client, server] = Object.values(pair);
 
     if (what === "agent") {
-      const h = req.headers.get("Authorization") ?? "";
-      const slot = await this.checkJoin(h.startsWith("Bearer ") ? h.slice(7) : "");
+      const slot = await this.checkJoin(bearer(req));
       if (!slot) return new Response("invalid join token\n", { status: 401 });
       for (const old of this.ctx.getWebSockets(`m:${slot}`)) old.close(4000, "replaced by a new connection");
       await this.dropRelays(slot);

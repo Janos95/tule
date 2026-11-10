@@ -10,6 +10,7 @@
 // ALLOWED_EMAILS (comma-separated, "*" for anyone) says who may sign up.
 import { SUPPORT_ID, type Accounts, type User } from "./accounts";
 import { stub } from "./rpc";
+import { bearer } from "./util";
 import { esc, html, layout, page } from "./pages";
 
 export const SESSION_COOKIE = "tule_session";
@@ -35,10 +36,6 @@ function same(a: string, b: string): boolean {
   return x.length === y.length && crypto.subtle.timingSafeEqual(x, y);
 }
 
-export function bearer(req: Request): string {
-  const h = req.headers.get("Authorization") ?? "";
-  return h.startsWith("Bearer ") ? h.slice(7).trim() : "";
-}
 
 /** The signed-in user, from the session cookie, an API key or the dev token. */
 export async function who(req: Request, env: Env): Promise<User | null> {
@@ -68,7 +65,7 @@ const b64url = (b: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(b)
 
 /** /auth/login, /auth/google/callback, /auth/logout. */
 export async function authRoutes(req: Request, env: Env, url: URL): Promise<Response | null> {
-  const origin = env.PUBLIC_URL || url.origin;
+  const origin = env.PUBLIC_URL;
   if (url.pathname === "/auth/login") {
     if (!env.GOOGLE_CLIENT_ID) return page("Sign-in is not set up", "<p>GOOGLE_CLIENT_ID is missing on this deployment.</p>", 500);
     const next = safeNext(url.searchParams.get("next"));
@@ -172,7 +169,6 @@ export function safeNext(next: string | null): string {
   return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/";
 }
 
-/** Forms post only from our own pages. */
 /** "admin": a person's account listed in ADMIN_EMAILS (signed in, or their own CLI key). "support": the support
     account (an agent's key on a dev machine; it may copy any project into its own account). Else null. */
 export function role(user: User | null, env: Env): "admin" | "support" | null {
@@ -182,6 +178,7 @@ export function role(user: User | null, env: Env): "admin" | "support" | null {
   return admins.includes(user.email.toLowerCase()) ? "admin" : null;
 }
 
+/** Forms post only from our own pages. */
 export function sameOrigin(req: Request, url: URL): boolean {
   const o = req.headers.get("Origin");
   return !o || o === url.origin;
@@ -190,7 +187,7 @@ export function sameOrigin(req: Request, url: URL): boolean {
 // ------------------------------------------------------------ device codes (tule login)
 
 export async function deviceApi(req: Request, env: Env, what: string): Promise<Response> {
-  const origin = env.PUBLIC_URL || new URL(req.url).origin;
+  const origin = env.PUBLIC_URL;
   let b: Record<string, unknown> = {};
   try {
     b = (await req.json()) as Record<string, unknown>;

@@ -1,0 +1,34 @@
+# Type-checks the control plane (control/, the Cloudflare Worker). Deploys stay manual (npm run deploy).
+name: control
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "control/**"
+      - "skills/**"
+      - "templates/project/AGENTS.md"
+      - ".github/workflows/control.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: control-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: control/package-lock.json
+      - run: npm ci --prefix control
+      - name: Generate src/skills.gen.ts (wrangler does this before dev and deploy)
+        run: node control/gen-skills.mjs
+      - run: npx --prefix control tsc --noEmit -p control

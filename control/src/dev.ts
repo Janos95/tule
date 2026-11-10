@@ -8,6 +8,7 @@
 import { accounts, safeNext } from "./auth";
 import * as ops from "./ops";
 import { snapshotKey } from "./project";
+import { sha256hex } from "./util";
 
 let boot = ""; // set on the first request (the clock is frozen while the module loads); new on every reload
 
@@ -88,7 +89,7 @@ async function devImport(req: Request, env: Env, url: URL): Promise<Response> {
   if (!p || p.userId !== user.id) return json({ error: "no such project of the dev user" }, 404);
   if (rest && /^[0-9a-f]{64}$/.test(rest) && req.method === "PUT") {
     const data = await req.arrayBuffer();
-    const h = [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((x) => x.toString(16).padStart(2, "0")).join("");
+    const h = await sha256hex(data);
     if (h !== rest) return json({ error: "the piece does not match its hash" }, 400);
     await env.WORKSPACES.put(`projects/${p.id}/blobs/${h}`, data);
     return json({ ok: true });

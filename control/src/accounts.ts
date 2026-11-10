@@ -14,6 +14,7 @@
 // hashes only. Project ids ("p_" + random) name the Project Durable Objects;
 // users address projects by name.
 import { DurableObject } from "cloudflare:workers";
+import { sha256hex } from "./util";
 
 // agent: the account's agent has used the connector at least once (the pages stop offering setup)
 export type User = { id: string; email: string; name: string; guest?: boolean; agent?: boolean };
@@ -31,11 +32,6 @@ const LOGIN_MINUTES = 10;
 
 export const rand = (bytes = 24) =>
   btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(bytes)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-
-export async function sha256hex(s: string): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("");
-}
 
 const month = (t = Date.now()) => new Date(t).toISOString().slice(0, 7);
 const day = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);

@@ -31,7 +31,7 @@ header nav{display:flex;gap:14px;margin-left:auto;align-items:center}header nav 
 main{max-width:860px;margin:0 auto;padding:24px 16px 64px}h1{font-size:var(--fs-title);font-weight:600;letter-spacing:-0.01em;margin:8px 0 12px}h2{font-size:var(--fs-body);font-weight:600;margin:32px 0 10px}
 a{color:var(--link)}code{font:13px var(--mono);background:var(--panel);padding:1px 5px;border-radius:4px}
 pre{font:13px/1.45 var(--mono);background:var(--panel);padding:12px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
-.muted{color:var(--muted)}.warn{color:var(--warn)}.ok{color:var(--ok)}
+.muted{color:var(--muted)}.warn{color:var(--warn)}
 button,.button{font:inherit;font-size:var(--fs-body);padding:6px 14px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);cursor:pointer;text-decoration:none;display:inline-block}
 button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:500}
 button.primary:hover,.button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
@@ -41,8 +41,6 @@ input:focus{border-color:var(--accent)}
 input{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--text);width:100%}
 label{display:flex;flex-direction:column;gap:4px;font-size:var(--fs-body)}
 .stack{display:flex;flex-direction:column;gap:12px;max-width:520px}.row{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.row>label{flex:1;min-width:200px}
-table{width:100%;border-collapse:collapse;font-size:var(--fs-body)}td,th{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle}th{color:var(--muted);font-weight:500}
-.card{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--panel)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--idle);margin-right:6px}.dot.running{background:var(--ok-fill)}.dot.starting{background:var(--warn-fill)}.dot.failed{background:var(--danger)}
 .plist{display:flex;flex-direction:column;border-top:1px solid var(--line)}
 .pgroup{border-bottom:1px solid var(--line)}
@@ -82,8 +80,7 @@ body:has(.guestbar) main{padding-bottom:64px}
 .copyfield .ck,.copyfield.copied .cp{display:none}.copyfield.copied .ck{display:block;stroke:var(--ok)}
 .notice{padding:8px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line)}
 @media (max-width:600px){.item{grid-template-columns:1fr auto}.item-meta{grid-column:1/-1;grid-row:2}}
-.hero{padding:48px 0 24px}.hero h1{font-size:30px}.hero p{font-size:17px;color:var(--muted);max-width:620px}
-@media (max-width:600px){td:nth-child(3),th:nth-child(3){display:none}.prow.sub{padding-left:20px}.pmachine,.pstate{font-size:var(--fs-small)}}
+@media (max-width:600px){.prow.sub{padding-left:20px}.pmachine,.pstate{font-size:var(--fs-small)}}
 `;
 
 const LOGO = `<svg width="22" height="22" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#23344a"/><path d="M325.4 222.0 L274.5 253.8" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="234.7" cy="278.7" rx="47.0" ry="26.0" transform="rotate(148 234.7 278.7)" fill="#e0a45a"/><path d="M325.4 222.0 L267.2 207.5" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="221.6" cy="196.1" rx="47.0" ry="26.0" transform="rotate(194 221.6 196.1)" fill="#e0a45a"/><path d="M325.4 222.0 L295.4 170.0" stroke="#e0a45a" stroke-width="13" stroke-linecap="round"/><ellipse cx="271.9" cy="129.3" rx="47.0" ry="26.0" transform="rotate(240 271.9 129.3)" fill="#e0a45a"/><path d="M336 452 Q323.5 257.0 323 62" fill="none" stroke="#8fc46a" stroke-width="32" stroke-linecap="round"/></svg>`;
@@ -142,8 +139,6 @@ function addRow(label: string, actionUrl: string, field: Html, open = false, not
     ${note ? html`<p class="newp-note">${note}</p>` : ""}</details>`;
 }
 
-export type GuestLimits = { projects: number; minutesPerDay: number; days: number };
-
 // Outline icons from Tabler (MIT), 24×24, drawn in currentColor.
 const ICONS: Record<string, string> = {
   cloud: '<path d="M6.657 18c-2.572 0 -4.657 -2.007 -4.657 -4.483c0 -2.475 2.085 -4.482 4.657 -4.482c.393 -1.762 1.794 -3.2 3.675 -3.773c1.88 -.572 3.956 -.193 5.444 1c1.488 1.19 2.162 3.007 1.77 4.769h.99c1.913 0 3.464 1.56 3.464 3.486c0 1.927 -1.551 3.487 -3.465 3.487h-11.878"/>',
@@ -192,7 +187,7 @@ function machineState(m: MachineRow): Html {
   return html`<span class="dot ${m.state}"></span>${m.state}${tail}`;
 }
 
-export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, limits?: GuestLimits): Response {
+export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string): Response {
   const create = addRow(
     "New project",
     "/projects/new",
@@ -255,7 +250,6 @@ const rowButton = (actionUrl: string, text: string, id?: string, danger = false)
 const copyField = (text: string) =>
   html`<button type="button" class="copyfield" data-copy="${text}" title="Copy"><span>${text}</span><svg class="cp" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg><svg class="ck" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg></button>`;
 
-/** Until the account's agent has used the connector: a strip under the header with its address. */
 /** Claude's own link that opens "Add custom connector" with Tule's name and address filled in
     (claude.com/docs/connectors/custom/add-unlisted). Connectors live on the Claude account, so this covers
     claude.ai, the desktop and mobile apps, and Claude Code signed in with that account. */

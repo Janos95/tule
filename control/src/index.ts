@@ -1,10 +1,12 @@
 // Tule's control plane Worker (see DESIGN.md, "Architecture", "Interfaces").
 //
-// Pages (pages.ts): /  /settings  /device  /authorize  /auth/*  and the
-// viewer /p/<name> (static, web/dist).
+// Pages (pages.ts): /  /settings  /device  /authorize  /auth/*, POST /projects/new, and the
+// viewer /p/<name> (static, web/dist); /p/<p_id> redirects to /p/<name>. In dev only: /__dev/* (dev.ts).
 //
 // API for the CLI and the pages (a session cookie or an API key; auth.ts):
 //   GET  /api/me                              the user, usage, RunPod connected
+//   GET  /api/hosts, DELETE /api/hosts/<id>   the user's own computers
+//   GET  /api/gpus                            the RunPod GPU catalog (needs a RunPod key)
 //   GET  /api/projects                        the user's projects;  POST {name} makes one
 //   GET  /api/projects/<name>                 status of the project and its machine
 //   DELETE /api/projects/<name>               delete it (machine, /workspace, snapshots)
@@ -25,14 +27,18 @@
 //   GET  /api/share/<token>[/file?path=]      what a link shows: the outputs list, or one file (no sign-in)
 //   GET/POST /api/keys/ssh, DELETE /api/keys/ssh/<id>; GET/POST /api/keys/api, DELETE /api/keys/api/<id>
 //   POST /api/device/code, /api/device/token  `tule login` (device code; no auth)
+//   /api/admin/*                              admins and the support account, by API key only (see below)
 //
-// Machines (join token), by project id: /api/projects/<p_id>/agent (WSS),
+// Computers (`tule host`): GET /install.sh, /cli.sh (install scripts); POST /api/hosts/pair {key, name};
+//   WSS /api/hosts/connect (host token).
+//
+// Machines (join token), by project id: /api/projects/<p_id>/agent (WSS), /git/*, /lfs/*,
 //   /blobs/missing, /blobs/<sha256> (PUT/GET), /snapshots (POST, GET), /cache (POST, GET).
 //
 // MCP: /mcp, behind the OAuth provider (tokens from /authorize, or an API key).
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Accounts, SUPPORT_COPY_DAYS, SUPPORT_ID, type ProjectRef, type User } from "./accounts";
-import { accounts, authorize, authRoutes, bearer, deviceApi, devicePage, role, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
+import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
@@ -41,6 +47,7 @@ import { Host } from "./host";
 import { gitKey, lfsKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
 import { gpuCatalog, runpodBalance } from "./runpod";
+import { bearer, sha256hex } from "./util";
 
 export { Project, Accounts, Host };
 
@@ -72,11 +79,6 @@ async function body(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
-async function sha256(data: ArrayBuffer): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join("");
-}
-
 const blobKey = (id: string, h: string) => `projects/${id}/blobs/${h}`;
 
 // ------------------------------------------------------------ chunks and snapshots
@@ -106,14 +108,13 @@ async function blobs(req: Request, env: Env, id: string, rest: string[], machine
     if (Number(req.headers.get("Content-Length") ?? 0) > MAX_CHUNK) return error(`a chunk is at most ${MAX_CHUNK} bytes`, 413);
     const data = await req.arrayBuffer();
     if (data.byteLength > MAX_CHUNK) return error(`a chunk is at most ${MAX_CHUNK} bytes`, 413);
-    if ((await sha256(data)) !== h) return error("the bytes do not match the hash", 400);
+    if ((await sha256hex(data)) !== h) return error("the bytes do not match the hash", 400);
     await env.WORKSPACES.put(blobKey(id, h), data);
     return json({ stored: h });
   }
   return error("method not allowed", 405);
 }
 
-/** `machine`: the slot of the machine asking (by its join token), or "" for the user. */
 // ------------------------------------------------------------ view-only links
 
 type Manifest = { files?: Record<string, { h: string[]; s: number }> };
@@ -232,6 +233,7 @@ async function adminCopy(env: Env, actor: User, r: "admin" | "support", b: Recor
   });
 }
 
+/** `machine`: the slot of the machine asking (by its join token), or "" for the user. */
 async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[], machine: string, url: URL): Promise<Response> {
   const project = ops.projectStub(env, id);
   if (machine && req.method === "POST" && rest.length === 0) {
@@ -358,7 +360,7 @@ const BUNDLE = /^[0-9a-z]{6,40}$/;
 /** The token from "Bearer x" or "Basic base64(user:x)". */
 function tokenOf(req: Request): string {
   const h = req.headers.get("Authorization") ?? "";
-  if (h.startsWith("Bearer ")) return h.slice(7);
+  if (h.startsWith("Bearer ")) return bearer(req);
   if (h.startsWith("Basic ")) {
     try {
       const s = atob(h.slice(6));
@@ -467,8 +469,7 @@ async function machineRoute(req: Request, env: Env, url: URL, id: string, what: 
   const project = ops.projectStub(env, id);
   if (what === "agent") return req.headers.get("Upgrade")?.toLowerCase() === "websocket" ? project.fetch(req) : error("expected a WebSocket", 426);
   if (what === "git" || what === "lfs") return gitRoute(req, env, url, id, what, rest, origin);
-  const h = req.headers.get("Authorization") ?? "";
-  const token = h.startsWith("Bearer ") ? h.slice(7) : "";
+  const token = bearer(req);
   const slot = token ? await project.checkJoin(token) : null;
   if (!slot) return error("invalid join token", 401);
   if (what === "blobs") return blobs(req, env, id, rest, true);
@@ -484,7 +485,6 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
   const a = accounts(env);
   const [area, name, what = "", ...rest] = parts;
   if (area === "me") return json({ user, ...(await ops.usage(env, user)) });
-  if (area === "usage") return json(await ops.usage(env, user));
   if (area === "hosts") {
     if (req.method === "GET") return json({ hosts: await ops.listHosts(env, user) });
     if (req.method === "DELETE" && name) return reply(await ops.removeHost(env, user, name));
@@ -654,7 +654,7 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
     newKey,
     hostKey,
     message,
-    origin: env.PUBLIC_URL || url.origin,
+    origin: env.PUBLIC_URL,
   });
 }
 
@@ -675,7 +675,7 @@ async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const dev = await devRoutes(req, env, url);
   if (dev) return dev;
-  const origin = env.PUBLIC_URL || url.origin;
+  const origin = env.PUBLIC_URL;
   const path = url.pathname;
 
   const m = path.match(/^\/api\/projects\/(p_[^/]+)(?:\/([a-z]+))?(?:\/(.*))?$/);
@@ -702,18 +702,17 @@ async function route(req: Request, env: Env): Promise<Response> {
     const r = await env.ASSETS.fetch(new Request(new URL(`/install${path}`, url)));
     // a missing file comes back as the viewer's page (single-page fallback), not a 404
     if (!r.ok || r.headers.get("Content-Type")?.startsWith("text/html")) return error(`${path.slice(1)} is missing from this deploy`, 500);
-    const text = (await r.text()).replaceAll("__TULE_URL__", env.PUBLIC_URL || url.origin);
+    const text = (await r.text()).replaceAll("__TULE_URL__", env.PUBLIC_URL);
     return new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
   }
   // a computer's `tule host run` service, by its host token
   if (path === "/api/hosts/connect") {
     if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error("expected a WebSocket", 426);
-    const h = req.headers.get("Authorization") ?? "";
-    const host = h.startsWith("Bearer tuleh_") ? await accounts(env).hostByToken(h.slice(7)) : null;
+    const t = bearer(req);
+    const host = t.startsWith("tuleh_") ? await accounts(env).hostByToken(t) : null;
     if (!host) return error("unknown computer", 401, "pair it again: tule host up");
     const fwd = new Request(req);
     fwd.headers.set("X-Tule-Host-Id", host.id);
-    fwd.headers.set("X-Tule-Host-Owner", host.userId);
     fwd.headers.set("X-Tule-Host-Name", host.name);
     return env.HOST.getByName(host.id).fetch(fwd);
   }
@@ -779,11 +778,11 @@ async function route(req: Request, env: Env): Promise<Response> {
     return userApi(req, env, url, user, origin);
   }
   if (path === "/") {
-    if (user) return projectsPage(user, await projectRows(env, user), origin, undefined, user.guest ? await accounts(env).limits() : undefined);
+    if (user) return projectsPage(user, await projectRows(env, user), origin);
     // a first visit: a guest account, so Tule can be tried without signing in
     const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
     if ("error" in g) return landing(origin, g.error);
-    const res = projectsPage(g.user, [], origin, undefined, await accounts(env).limits());
+    const res = projectsPage(g.user, [], origin);
     res.headers.append("Set-Cookie", setCookie(req, SESSION_COOKIE, g.session, 30 * 86400));
     return res;
   }
@@ -792,7 +791,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403, user);
     const name = String((await req.formData()).get("name") ?? "").trim();
     const r = await ops.createProject(env, user, name, origin);
-    if (r.error) return projectsPage(user, await projectRows(env, user), origin, `${r.error}${r.hint ? ` (${r.hint})` : ""}`, user.guest ? await accounts(env).limits() : undefined);
+    if (r.error) return projectsPage(user, await projectRows(env, user), origin, `${r.error}${r.hint ? ` (${r.hint})` : ""}`);
     return new Response(null, { status: 303, headers: { Location: `/p/${name}` } });
   }
   if (path === "/settings" || path.startsWith("/settings/")) {
