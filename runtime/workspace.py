@@ -22,6 +22,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import shutil
 import stat
 import time
 import urllib.error
@@ -29,7 +30,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 CHUNK = 16 << 20
-IGNORE = ["__pycache__", ".pytest_cache", "*.tule-tmp", "._*", ".DS_Store"]
+IGNORE = ["__pycache__", ".pytest_cache", "*.tule-tmp", ".tule-restore", "._*", ".DS_Store"]
 
 
 class Api:
@@ -219,10 +220,6 @@ class Workspace:
         """Makes /workspace match manifest `m`; returns the number of files written."""
         os.makedirs(self.root, exist_ok=True)
         want = set(m["files"]) | set(m.get("links", {}))
-        # remove what the snapshot does not have
-        for rel, st in list(self.walk()):
-            if st is not None and rel not in want:
-                os.remove(os.path.join(self.root, rel))
         todo = []
         for rel, f in m["files"].items():
             p = os.path.join(self.root, rel)
@@ -234,24 +231,41 @@ class Workspace:
                 pass
             todo.append((rel, f))
 
+        # first every file that differs is downloaded beside /workspace's own (.tule-restore/, which no snapshot
+        # or save takes); only when all of them are there is anything removed or replaced. A download that fails
+        # leaves /workspace as it was, not half restored.
+        stage = os.path.join(self.root, ".tule-restore")
+        shutil.rmtree(stage, ignore_errors=True)
+        os.makedirs(stage)
+
         def fetch(item):
-            rel, f = item
-            p = os.path.join(self.root, rel)
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            tmp = p + ".tule-tmp"
+            i, (rel, f) = item
+            tmp = os.path.join(stage, str(i))
             with open(tmp, "wb") as out:
                 for h in f["h"]:
                     out.write(self.api.get(h))
             os.chmod(tmp, 0o755 if f.get("x") else 0o644)
             os.utime(tmp, ns=(f["t"] * 1_000_000, f["t"] * 1_000_000))
+            return i
+
+        try:
+            list(self.pool.map(fetch, enumerate(todo)))
+        except BaseException:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+        # remove what the snapshot does not have
+        for rel, st in list(self.walk()):
+            if st is not None and rel not in want:
+                os.remove(os.path.join(self.root, rel))
+        for i, (rel, f) in enumerate(todo):
+            p = os.path.join(self.root, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
             if os.path.isdir(p) and not os.path.islink(p):
                 os.rmdir(p)
-            os.replace(tmp, p)
-            return rel
-
-        for rel in self.pool.map(fetch, todo):
-            st = os.lstat(os.path.join(self.root, rel))
-            self.cache[rel] = ((st.st_size, st.st_mtime_ns, st.st_ino), m["files"][rel]["h"])
+            os.replace(os.path.join(stage, str(i)), p)
+            st = os.lstat(p)
+            self.cache[rel] = ((st.st_size, st.st_mtime_ns, st.st_ino), f["h"])
+        shutil.rmtree(stage, ignore_errors=True)
         for rel, target in m.get("links", {}).items():
             p = os.path.join(self.root, rel)
             os.makedirs(os.path.dirname(p), exist_ok=True)

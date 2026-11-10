@@ -64,7 +64,8 @@ def configure(root: str, url: str | None = None, project: str | None = None):
     _exclude(root)
 
 
-EXCLUDE = ["._*", ".DS_Store"]  # macOS copies (a tar made on a Mac): never saved, whatever .gitignore says
+# never saved, whatever .gitignore says: macOS copies (a tar made on a Mac), and a restore's files on their way in
+EXCLUDE = ["._*", ".DS_Store", "*.tule-tmp", ".tule-restore/"]
 
 
 def _exclude(root: str):
@@ -82,7 +83,9 @@ def _exclude(root: str):
 
 def has_main(root: str) -> bool:
     r = git(root if os.path.isdir(root) else "/", "ls-remote", f"tule::{_base()}/git", "refs/heads/main", timeout=120)
-    return r.returncode == 0 and bool(r.stdout.strip())
+    if r.returncode:  # the server or the network, not "never saved": a boot must not start a saved project from the template
+        raise RuntimeError(f"cannot ask for the latest save: {(r.stderr or r.stdout).strip()[-300:] or 'git ls-remote failed'}")
+    return bool(r.stdout.strip())
 
 
 def _base() -> str:

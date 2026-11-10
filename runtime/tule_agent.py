@@ -54,6 +54,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import websockets
 
@@ -274,10 +275,14 @@ class Outputs:
                     f["basedOn"] = {"sources": n["sources"], "changed": n["changed"]}
 
     def mesh(self, rel: str, digest: str) -> bytes:
-        if not rel.startswith(tuple(r + "/" for r in self.ROOTS)):
-            rel = "outputs/" + rel  # a page from before paths were relative to /workspace
         path = resolve(self.root, rel)  # as files.read: no "..", no symlinks out of /workspace
-        return self.cached(digest, lambda: mesh_apart(path))
+        # kept under the hash of the bytes meshed, not the one asked for: a file rebuilt in between is refused
+        # (the page asks again with the new index), not shown later as the old one
+        st = os.stat(path)
+        actual = self._hash(os.path.relpath(path, self.root), st.st_size, st.st_mtime_ns)
+        if digest and digest != actual:
+            raise RuntimeError("the file changed since the list was made")
+        return self.cached(actual, lambda: mesh_apart(path))
 
     def cached(self, key: str, make) -> bytes:
         if key in self.meshes:
@@ -547,6 +552,7 @@ class Agent:
         self.token = token
         self.sshd = Sshd()
         self.outputs = Outputs(WORKSPACE)
+        self.mesh_threads = ThreadPoolExecutor(2, thread_name_prefix="mesh")
         self.streams: dict[int, Stream] = {}
         self.ws = None
         self.workspace = Workspace(WORKSPACE, Api(url, project, token), log=lambda *a: log(*a))
@@ -656,7 +662,8 @@ class Agent:
 
     async def mesh(self, rid: int, path: str, digest: str):
         try:
-            data = await asyncio.to_thread(self.outputs.mesh, path, digest)
+            # their own two threads (as many as mesh processes): a big assembly's requests do not hold up autosave or stop
+            data = await asyncio.get_running_loop().run_in_executor(self.mesh_threads, self.outputs.mesh, path, digest)
             await self.send_bytes(rid, data)
         except Exception as e:  # report every failure to the viewer
             await self.send({"t": "mesh-error", "rid": rid, "error": f"{type(e).__name__}: {e}"})
@@ -740,6 +747,8 @@ class Agent:
                     if manifest is None:
                         raise RuntimeError(f"no snapshot {m['id']}")
                     n = await asyncio.to_thread(self.workspace.restore, manifest)
+                    # recorded as this copy's newest autosave, or the next boot would bring back "before restore"
+                    await asyncio.to_thread(self.workspace.snapshot, f"restored {m['id']}", True)
                     reply = {"snapshot": m["id"], "files": n}
                 elif t == "save":
                     reply = await asyncio.to_thread(saves.save, WORKSPACE, m.get("message") or "")
