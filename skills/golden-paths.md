@@ -119,4 +119,4 @@ with outputs.sequence("plate-study", "Plate thickness vs. 99.9 % stress") as seq
 tule build plate-study      # goes on if this command ends; rerun to follow. The viewer plots stress and mass
 ```
 
-4. When it is done: `tule save` on it, `tule down --machine gpu-rtx4090` so the GPU stops billing, and summarize the result with numbers. After a `tule save` there, `tule build study` elsewhere downloads its outputs from the build cache.
+4. When it is done: `tule save` on it, `tule down --machine gpu-rtx4090` so the GPU stops billing, and summarize the result with numbers. After a `tule save` there, `tule build plate-study` elsewhere downloads its outputs from the build cache.

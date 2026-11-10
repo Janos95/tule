@@ -24,7 +24,7 @@ tule down -p bracket [--machine …]      # stop them, or one (each stops after 
 
 The project name comes from `-p`, else `$TULE_PROJECT`, else the last one used.
 
-**Several machines:** a project can run on several machines at once (Tule cloud, a GPU, one of the user's computers by name), each with its own copy of `/workspace`. A machine that ran the project before gets its own copy back; a new one starts from the latest save. When several run, `ssh`, `save`, `snapshot` and `down` need `--machine` (`cloud`, `gpu-<type>`, a computer's name; the ids are in `tule status`).
+**Several machines:** a project can run on several machines at once (Tule cloud, a GPU, one of the user's computers by name), each with its own copy of `/workspace`. A machine that ran the project before gets its own copy back; a new one starts from the latest save. When several run, `ssh`, `build`, `save` and `snapshot` need `--machine` (`cloud`, `gpu-<type>`, a computer's name; the ids are in `tule status`); `down` without it stops them all.
 
 **GPUs** run on RunPod and are paid from the user's RunPod balance: the user connects a RunPod API key in Tule's settings, then `--machine gpu-<type>` (connector: `machine_start`). Same image plus CUDA 12 and CuPy. Alternatively, the user's own RunPod connector can create a pod from `ghcr.io/janos95/tule-runtime:cuda` with the environment that `tule join -p bracket` prints; the pod joins the project.
 
@@ -37,7 +37,7 @@ tule ssh -p bracket --machine gpu-rtx4090   # one of several machines
 tule ssh -p bracket --config            # then plain `ssh tule-bracket` (`tule-bracket.<machine>` when several run), `scp`, `rsync`
 ```
 
-The CLI makes its own key (`~/.config/tule/id_ed25519`) and adds it to the project on first use; `tule keys add ~/.ssh/id_ed25519.pub -p bracket` adds another. The machine's host key is pinned in `~/.config/tule/known_hosts`. Everything goes through one HTTPS tunnel: no ports to open, and it works wherever the Tule host is reachable.
+The CLI makes its own key (`~/.config/tule/id_ed25519`) and adds it to the account on first use; `tule keys add ~/.ssh/id_ed25519.pub` adds another (keys work on every project). The machine's host key is pinned in `~/.config/tule/known_hosts`. Everything goes through one HTTPS tunnel: no ports to open, and it works wherever the Tule host is reachable.
 
 ## Saving
 

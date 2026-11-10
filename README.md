@@ -40,6 +40,7 @@ Secrets (`npx wrangler secret put …`): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECR
 `ENCRYPTION_KEY` (32 random bytes, base64), `DEV_TOKEN` (a token for tests).
 
 Local: `npx wrangler dev` in `control/` with a `.dev.vars` holding those plus
+`DEV_LOGIN=1` (turns on `/auth/dev` and `tule admin pull`),
 `PUBLIC_URL=http://127.0.0.1:8787` and `MACHINE_URL=http://host.docker.internal:8787`
 (the container reaches the dev server through Docker's host name);
 `tule login --url http://127.0.0.1:8787 --token <DEV_TOKEN>`.
@@ -49,6 +50,7 @@ A real project, to try changes on (nothing is deployed):
 
 ```sh
 tule admin pull pomodore          # signed in to production: your project's newest autosave, into the dev server
+docker build -f runtime/Dockerfile -t tule-runtime:dev .   # once, and when dependencies change
 tools/dev-machine.sh pomodore     # a Docker machine running this checkout's python/, cli/ and runtime/
 open http://127.0.0.1:8787/auth/dev?next=/p/pomodore
 ```

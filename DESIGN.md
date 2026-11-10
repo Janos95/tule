@@ -2,7 +2,7 @@
 
 Tule is an engineering computer for your own AI agent. Each project gets an
 isolated machine with OpenCascade, Tule's Python modeling API and engineering
-libraries (topology optimization, later FEA) preinstalled. Your agent
+libraries (topology optimization, FEA) preinstalled. Your agent
 manages projects through the Tule connector and works on the machine over
 SSH; everything in the project's `/workspace` is saved; a web viewer shows
 the project's outputs, live.
@@ -10,7 +10,8 @@ the project's outputs, live.
 It is the successor to sprig and reuses the viewer, editor and project UI of
 [genau](https://github.com/Janos95/genau)'s web playground. genau's mesh
 kernel is replaced by OpenCascade (OCCT), and all computation moves from the
-browser to the server.
+browser to the server (except view-only links, which mesh STEP in the
+visitor's browser with occt-import-js).
 
 Status: draft. Open decisions are listed at the end, each with the default
 assumed here.
@@ -56,7 +57,7 @@ Tule does not run or bill for an agent. Users bring their own.
 
 1. **Open the site:** it is the projects page, with nothing to sign up for:
    a first visit makes a guest account (see "Guests") to try Tule with. **Sign
-   in** with Google (GitHub as an alternative) to keep projects.
+   in** with Google (GitHub: not built) to keep projects.
 2. **Add the connector** to the agent: in Claude or ChatGPT as a custom
    connector (`https://<tule>/mcp`), in Claude Code as a remote MCP server or
    the Tule plugin, in Codex/Cursor as a remote MCP server.
@@ -225,7 +226,8 @@ the Project Durable Object asks it to snapshot and stop, starts the new
 size, and that copy resumes there.
 
 **Shutdown and budgets:** the Durable Object stops a machine after an idle
-timeout (no SSH sessions, no running processes it was told about). Spending
+timeout (30 min without SSH sessions or traffic, 10 for guests; a background
+job does not count). Spending
 limits come from RunPod: it stops pods when the prepaid balance reaches $0
 and enforces an account spend limit.
 
@@ -392,17 +394,19 @@ outputs/
   and measurements, what the agent understood from an annotation;
   `{"file", "faces": {"12": {"role" | "severity" | "value", "label"}},
   "scale": {"label", "unit", "min", "max"}, "arrows": [{"at", "dir",
-  "label"}]}`). Any kind may carry `"info"`: facts about the output
-  (material, mass, ...), shown as rows under the view. The viewer shows
-  info, the value scale and an overlay's legend in a strip under the view,
-  never over the part. An overlay's `"fields"` color the whole surface
+  "label"}]}`). The viewer shows the value scale and an overlay's legend in a
+  strip under the view, never over the part. A print plate or an overlay may
+  carry `"fact"`, a few words shown in the outputs list ("2 h 10 min · 31 g");
+  a sequence `"fps"`. A part's color is `"#rrggbb"`, or `"#rrggbbaa"` when it
+  is see-through. An overlay's `"fields"` color the whole surface
   (stress, displacement): each is a node grid in a `.npy` file of the output
   (`origin`, `step`; a vector deforms the shape `deform` times), sampled at
   the mesh's vertices by the viewer and `tule screenshot --field` alike;
   buttons in the strip switch fields. Later: `variants` (side by side).
 - **The JSON is optional.** Without it the viewer infers the kind: one file is
   a part, several an assembly, numbered files a sequence.
-- **Formats:** STEP (B-rep) and STL, 3MF, OBJ, glTF (meshes).
+- **Formats:** STEP (B-rep) and STL are drawn in 3D; 3MF, OBJ and glTF are
+  downloads.
 - **Names, colors, tags travel in the file.** `export_step` writes part names,
   colors and tags (as named faces), so the viewer shows `f14 · load` without a
   sidecar.
@@ -502,8 +506,8 @@ under `projects/<id>/cache/<script>/` (the newest 5 per script). When an
 output is out of date on another machine, `tule build` looks for an upload
 whose record matches the files there (same script, modules, inputs, outputs
 read, and tule and Python versions) and downloads it instead of running the
-script; `--check` says so ("built on gpu-rtx4090: tule build downloads
-it"); `--force` runs it anyway. Every output is uploaded, not only slow
+script; `--check` says so ("the cache has a matching build from gpu-rtx4090: tule
+build fetches it"); `--force` runs it anyway. Every output is uploaded, not only slow
 ones: a slow output records the bytes of the outputs it read, so those must
 be the same bytes on the other machine. Considered and not done: outputs in
 git (every rerun of a big study in history, and merges of files nobody
@@ -538,7 +542,7 @@ which, and `output.json` only adds meaning (titles, units, colors):
 
 | Type | Files | View |
 |---|---|---|
-| geometry | STEP, STL, 3MF, OBJ, glTF | 3D: a part, or an assembly when there are several files |
+| geometry | STEP, STL | 3D: a part, or an assembly when there are several files |
 | sequence | numbered geometry files | 3D with a slider and a plot of the values |
 | overlay | geometry plus per-face values | 3D colored by value, with a legend |
 | table | CSV, TSV, a JSON list of records | a sortable table (BOM, results, supplier lists) |
@@ -576,7 +580,7 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
 - **Drawings** (built 2026-11-02): `outputs.drawing(name, part)` writes a
   dimensioned 2D drawing as `<name>.pdf` and `<name>.svg` (a document and an
   image, so no new view), and with `dxf="top"` that view at 1:1 as an R12
-  DXF for laser, waterjet or CNC (a download). Agents used to draw these by
+  DXF for laser, waterjet or CNC (shown by layer; a download). Agents used to draw these by
   hand with reportlab, computing projections and dimension positions
   themselves; the drawings went stale and had stray leaders. Now they come
   from the model (`tule/drawing.py`): views by OCCT hidden-line removal
@@ -629,7 +633,8 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
   three times for "a file I can just hit print on"; agents wrote 3MF XML by
   hand or one STL per part plus a page of slicer settings. `export_3mf` packs
   footprints in rows (the most compact layout that fits; parts that do not
-  fit raise with a hint), drops each part to z = 0 as oriented, and writes
+  fit raise with a hint; `outputs.plate` puts them on further plates,
+  `<name>-2.3mf`, and `{"down": "base"}` lays that face on the bed), drops each part to z = 0 as oriented, and writes
   one object per part (watertight mesh in mm, name, color as core
   basematerials). The settings (`layer_height`, `walls`, `infill`,
   `supports`, `brim`) go on every object, in `Metadata/model_settings.config`
@@ -668,9 +673,9 @@ embed charts, tables and images next to them (`![](cost.vl.json)`).
 
 ### Isolation and quotas
 
-- One machine per project; full freedom inside; isolated from other users.
-- Outbound network: package registries (PyPI, npm, GitHub) by default, a
-  per-project allowlist for more; no open internet.
+- Several machines per project (one slot each); full freedom inside;
+  isolated from other users.
+- Outbound network: open (pip, git, datasheets). Not built: an allowlist.
 - Quotas: CPU machine-hours per user and month (`CPU_HOURS_MONTH`, 100 by
   default; Tule pays), counted by the Project Durable Object while a machine
   runs. GPU time is paid from the user's RunPod balance and limited by RunPod;
@@ -695,7 +700,7 @@ request `id`.
   the Durable Object, which hands it to every later machine; `tule ssh` pins
   it in `~/.config/tule/known_hosts` (`StrictHostKeyChecking=yes`).
 - **Keys:** the CLI makes its own key (`~/.config/tule/id_ed25519`) and adds
-  it to the project the first time; `tule keys add` adds others.
+  it to the account the first time; `tule keys add` adds others.
 - **Outputs:** the agent polls `outputs/`, `work/`, `inputs/`, `src/` and `lib/`
   (0.5 s; the last two only for build state), hashes changed files and sends
   the index; the Durable Object stores the last index and broadcasts it
@@ -807,10 +812,12 @@ tule up [--machine gpu-rtx4090] # load the project on a machine (others keep run
 tule save [-m "what changed"]  # commit, merge the latest save, push it
 tule ssh [cmd]                 # shell or command on the machine (also: plain ssh via ProxyCommand)
 tule build [names] [--check]   # run the scripts in src/ whose inputs changed; --check: what needs it
-tule sync [--pull]             # copy /workspace to or from a local folder
+tule based-on work/x.json outputs/bracket   # record what hand-made work was made from
 tule screenshot -o /tmp/view.png [--output bracket] [--labels] [--view iso]
 tule open                      # open the viewer for this project
-tule snapshot | down | forget | ls | logs   # --machine picks one when several run
+tule status | snapshot | snapshots | restore <id> | down | forget   # --machine picks one when several run
+tule ls | delete | gpus | hosts | join | keys | host up|status|down   # projects, GPU prices, your computers, keys
+tule admin ls | copy | pull | browser | support-key | log   # admins and the support account
 ```
 
 `tule ssh --config` writes an `~/.ssh/config` entry with
@@ -850,16 +857,23 @@ later. Content:
 
 genau's page, rewired as a renderer of `outputs/`.
 
-- Kept: viewer, project picker, Parts panel, Download, layout and tests.
+- Kept: the 3D viewer, Parts panel, Download, layout.
 - Per part, from the machine's tessellation: positions, normals (from the
   surfaces), indices, a B-rep face id per triangle, B-rep edges as polylines
   with ids, and metadata (name, color, tags, bounds).
-- New: the outputs list; sequence slider and value plot; wireframe of real
-  CAD edges; hover/click a face or edge to see its id and tags and copy a
-  selector; STEP/3MF download; settings (RunPod key, API and SSH keys);
-  usage.
-- The code editor stays for small edits; saving writes to `/workspace`
-  (not built yet).
+- New: the outputs, work and inputs list with a view per file; sequence
+  slider, play and value plot; real CAD edges; hover a face for its id and
+  tags; annotations; Share.
+- Not built: a code editor, copying a selector.
+- **Share:** one click makes a view-only link (`/s/tules_…`) to the project as
+  it is now (the outputs, work and inputs of one autosave; no sources) and
+  copies it; the button then reads "Shared" and opens Copy link, Update link
+  and Stop sharing. A shared page needs no account and no machine: files come
+  from R2 and STEP is meshed in the browser. Not for guests or the support
+  account.
+- **Motion:** a sequence whose frames place the same parts plays smoothly
+  (placements blended between frames on every screen refresh) at its `fps`
+  (4 a second by default); paused, it shows only real frames.
 
 As built (milestone 5): the outputs list; overlays
 (faces colored by severity or role, load arrows, a legend); the sequence
@@ -918,7 +932,7 @@ source and tests are a reference for OCCT edge cases).
   provenance.
 - `Profile`: a planar region with 2D Booleans, `round`, `chamfer` and
   transforms, as in genau.
-- `Path`: a wire for sweeps (lines, arcs, splines, helices).
+- `Path`: not built; `sweep` and `pipe` take a list of 3D points.
 - `Faces`, `Edges`, `Vertices`: ordered selections that filter further.
 
 ### Modeling
@@ -939,12 +953,12 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   `polyhedron`.
 - Profiles: `polygon` (`(x, y, r)` rounds a corner), `rect`, `circle`,
   `ellipse`, `regular_polygon`, `slot`, `text`; `| - & ^`.
-- Sweeps: `extrude` (`twist`, `scale`, `draft`), `revolve`, `loft`,
-  `sweep(profile, path)`.
+- Sweeps: `extrude` (`twist`, `scale`), `revolve`, `loft`,
+  `sweep(profile, points)`, `pipe(points, r, wall=)`.
 - Booleans: `| + - & ^`, `union`, `difference`, `intersection`.
-- Transforms: `at`/`translate`, `rotate`, `scale`, `mirror`, `transform`.
-- Features: `fillet`, `chamfer`, `shell`, `offset`, `draft`, `split`,
-  `linear_pattern`, `polar_pattern`.
+- Transforms: `at`, `rotate`, `rotate_about`, `scale`, `mirror`, `transform`.
+- Features: `fillet`, `chamfer`, `shell`. Not built: offset, draft, split,
+  patterns (a loop with `.at` does it).
 - Parts: `named(name, color)`, `Assembly(*children)`.
 - Gears (2026-11-02): `spur_gear`, `internal_gear`, `gear_pair`. In a QA
   run an agent sampled involutes into polygons by hand: a 20-tooth pinion
@@ -956,11 +970,12 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   `gear_pair` gives the center distance (with profile shift), the contact
   ratio and `place` (gear 2 turned to mesh), and raises when the pair
   interferes (checked by turning it through a pitch) or the contact ratio
-  is under 1.2, with a profile shift that works as the hint. Not built:
-  helical and bevel gears, racks.
+  is under 1.2, with a profile shift that works as the hint. Also
+  `bevel_gear`/`bevel_pair` (straight bevel, spherical involute) and
+  `cycloidal_disc`/`cycloidal_drive`. Not built: helical gears, racks.
 - Sheet metal (2026-11-02): `sheet(profile, t, bend_radius, k)`,
   `part.flange(edges, length, angle, inset=, relief=)`, `part.unfold()`,
-  `bends`, `bend_table()`, `export_dxf`. In a QA run (a laser-cut Raspberry
+  `bends`, `bend_table()`, `dfm()`, `export_dxf`. In a QA run (a laser-cut Raspberry
   Pi enclosure) an agent hand-rolled 170 lines of flat development and DXF
   writing and kept the flat and the 3D part in sync by an assertion: every
   change was made twice. Now the formed part is the model and the flat is
@@ -974,13 +989,14 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   meeting at a square corner stop at each other's bend (square relief),
   inset ones get rect or obround reliefs. Drawings of a flat draw dash-dot
   bend lines with `B1 UP 90° R1.5` and a bend table; the DXF is a clean cut
-  file: closed outlines on CUT, bend lines on BEND_UP / BEND_DOWN, no text
+  file: closed outlines on CUT only (a portal cuts every line);
+  `export_dxf(bends=True)` adds bend lines on BEND_UP / BEND_DOWN, no text
   (shops reject or cut stray TEXT; labels only with `notes=True`), R12 written
   by hand, no ezdxf; the viewer colors DXF layers. A sheet without bends (a
   lid) unfolds to itself. Not built: hems, jogs, louvers, closed or non-90°
   corners, flanges on curved edges, rolled sheet.
-- Measure: `volume`, `area`, `bounds`, `center_of_mass`, `inertia`,
-  `mass(material)`, `distance`.
+- Measure: `volume`, `area`, `bounds`, `size`, `center_of_mass`,
+  `mass(density)`, `distance`, `closest`; `clearance(...)`, `touch(...)`.
 - I/O: `export_step` (names, colors, tags), `export_stl`, `export_3mf` (a print plate),
   `export_gltf`, `import_step`.
 
@@ -1010,8 +1026,6 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
 
 - `TuleError` with structured fields (`op`, `faces`, `edges`, `hint`, data
   such as `max_radius`); OCCT exceptions never surface unwrapped.
-- Operations cached by a hash of their inputs within a machine, so small
-  edits rerun fast.
 
 ## Engineering libraries
 
@@ -1034,9 +1048,12 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   is untested.
 - **Not now:** design-for-manufacturing checks (CNC, 3D printing). A `tule.dfm`
   v0 was built and removed on 2026-11-01 to keep the feature set small;
-  overlays with a `severity` per face still show checks an agent writes itself.
-- **`tule.fea`** v0: linear static analysis of one part on the same voxel
-  grid and solver (no mesher to fail on CAD). Voxels cut by the surface are
+  overlays with a `severity` per face still show checks an agent writes itself
+  (sheet metal has its own: `part.dfm()`).
+- **`tule.fea`**: static analysis of one part on the same voxel
+  grid and solver (no mesher to fail on CAD) or, for thin walls, on quadratic
+  tetrahedra (gmsh); also `modes`, linear `buckling` and large deflection
+  (`nonlinear=True`) on tetrahedra. Voxels cut by the surface are
   finite cells integrated exactly over their inside (moments from rays along
   z), hexahedra carry Wilson's incompatible modes so bending is right a few
   voxels thick, and the multigrid coarse levels store only voxels with
@@ -1048,7 +1065,7 @@ outputs.part("bracket", part.named("bracket", "#4a8"))
   `.show()` writes an overlay with stress and displacement fields. The tests
   check it against hand calculations: a cantilever and a bar within 1 %, a
   shaft in torsion within 5 % (6 voxels across its radius).
-- **Later:** cost estimates, nonlinear analysis (contact, plasticity, buckling).
+- **Later:** cost estimates, contact, plasticity.
 
 ## Repository layout
 
@@ -1057,9 +1074,9 @@ tule/
   python/tule/        modeling API + outputs, topopt, fea (pip package)
   python/tests/
   cli/                the `tule` CLI (Python, pip package `tule-cli`)
-  runtime/            Dockerfiles (cpu, later cuda), tule-agent
+  runtime/            Dockerfiles (cpu, cuda), tule-agent, git hooks
   control/            Worker + Durable Objects: auth, MCP, backends, tunnel
-  web/                the viewer and site (from genau web/src, minus Pyodide/wasm)
+  web/                the viewer and site (from genau web/src, minus Pyodide)
   templates/project/  new-project template with AGENTS.md, CLAUDE.md, tule.toml
   skills/             agent instructions (source for AGENTS.md, tule docs, plugin)
   examples/
@@ -1067,7 +1084,7 @@ tule/
 
 ## From genau
 
-- Reused: `web/src` (viewer, projects, picker, parts panel, editor), the
+- Reused: `web/src` (viewer, parts panel), the
   relay's Durable Object and WebSocket plumbing, the e2e test approach.
 - Rewritten: the page's data source (outputs instead of Pyodide frames),
   viewer normals and wireframe inputs, examples, API docs.
@@ -1095,7 +1112,7 @@ tule/
 2. **API v0** (native, pytest): primitives, profiles, sweeps, Booleans,
    transforms, fillet/chamfer/shell, queries, provenance, tags, parameters,
    measurements, STEP (with names, colors, tags) and mesh export.
-3. **Workspace:** R2 snapshots, sync, lock, restore; the project template.
+3. **Workspace:** R2 snapshots, restore; the project template.
    **Done** (2026-11-01): see "The workspace"; restoring a small project
    takes about 0.2 s.
 4. **Accounts and connector:** Google sign-in, MCP server with OAuth, device
@@ -1120,9 +1137,9 @@ tule/
 | Decision | Default |
 |---|---|
 | Domain | `tule.janosmeny.com` (a custom domain of the Worker; `tule.genau-mcp-relay.workers.dev` still answers) |
-| Sign-in | Google, GitHub as an alternative |
+| Sign-in | Google (GitHub: not built) |
 | Default machine | `cpu-1` (1 vCPU / 6 GiB), also `cpu-2` (2 / 8) and `cpu-4` (4 vCPU / 12 GiB) |
-| Outbound network | package registries + per-project allowlist |
+| Outbound network | open (an allowlist later) |
 | First GPU backend | RunPod |
 | Python version | 3.10+ (tested on 3.13 with OCP 8.0) |
 | Workspace size limit | a few GB per project in v0 |
