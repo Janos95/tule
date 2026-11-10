@@ -248,10 +248,17 @@ class Shape:
 
     def face(self, i: int) -> Faces:
         """The face with stable id ``i`` (as shown in the viewer: ``f12``)."""
-        return Faces(self, [self._sub("face")[i]])
+        return Faces(self, [self._nth("face", i)])
 
     def edge(self, i: int) -> Edges:
-        return Edges(self, [self._sub("edge")[i]])
+        return Edges(self, [self._nth("edge", i)])
+
+    def _nth(self, kind: str, i: int):
+        sub = self._sub(kind)
+        if not isinstance(i, int) or not 0 <= i < len(sub):
+            raise TuleError(f"no {kind} {i!r}: this shape has {kind}s 0 to {len(sub) - 1}", op="select",
+                            hint=f"ids as the viewer shows them ({kind[0]}12 is {kind}(12)); tule inspect lists them")
+        return sub[i]
 
     # ------------------------------------------------------------ groups, tags
     @property
@@ -294,8 +301,19 @@ class Shape:
         """Find a selection made on another shape in this shape."""
         kind = kind or sel.kind
         cls = SELECTION_TYPES[kind]
+        if sel.kind != kind:
+            if (sel.kind, kind) != ("face", "edge"):
+                raise TuleError(f"expected {kind}s, got a {sel.kind} selection", op="select",
+                                hint=f"select {kind}s, e.g. part.{kind}s[...]")
+            # faces where edges are wanted (fillet(part.faces["top"], 1)): the edges around those faces
+            faces = self._resolve(sel, "face").items
+            edges = []
+            for f in faces:
+                edges += [e for e in subshapes(f, "edge") if not any(e.IsSame(x) for x in edges)]
+            target = self._sub("edge")
+            return cls(self, [next(t for t in target if t.IsSame(e)) for e in edges])
         if sel.owner is self:
-            return sel if sel.kind == kind else cls(self, sel.items, sel.keys)
+            return sel
         if sel.keys and all(k in self._groups or k.removesuffix(":edges") in self._groups for k in sel.keys):
             items = []
             for k in sel.keys:
@@ -580,11 +598,14 @@ class Shape:
         return None
 
     def shell(self, remove: Selection | None, thickness: float, inward: bool = True) -> "Shape":
-        """Hollow the solid: remove the ``remove`` faces and keep walls of ``thickness``.
+        """Hollow the solid: remove the ``remove`` faces and keep walls of ``thickness``. ``remove=None``
+        removes none: a closed hollow body.
 
-        Inner faces get the role ``inner``.
+        The new faces get the role ``inner`` (``outer`` with ``inward=False``, where they are the outside).
         """
-        faces = self._resolve(remove, "face").items if remove is not None else []
+        if remove is None:
+            return self._closed_shell(thickness, inward)
+        faces = self._resolve(remove, "face").items
         mk = BRepOffsetAPI_MakeThickSolid()
         off = -abs(thickness) if inward else abs(thickness)
         try:
@@ -605,7 +626,38 @@ class Shape:
         inner = []
         for f in self._sub("face"):
             inner.extend(g for g in from_list(mk.Generated(f)) if kind_of(g) == "face")
-        return self._derive(res, groups)._with_roles({"inner": inner})
+        return self._derive(res, groups)._with_roles({"inner" if inward else "outer": inner})
+
+    def _closed_shell(self, thickness: float, inward: bool) -> "Shape":
+        """A hollow body with no opening: the solid minus its inset (or its outset minus the solid)."""
+        from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
+
+        mk = BRepOffsetAPI_MakeOffsetShape()
+        off = -abs(thickness) if inward else abs(thickness)
+        try:
+            mk.PerformByJoin(self._s, off, 1e-4)
+            ok = mk.IsDone()
+        except OCC_ERRORS:
+            ok = False
+        if not ok:
+            raise TuleError(f"could not shell with thickness {thickness:g}", op="shell",
+                            hint="try a smaller thickness, or shell before filleting")
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+        from OCP.TopoDS import TopoDS
+
+        sh = mk.Shape()
+        if kind_of(sh) != "solid":  # an offset of a solid comes back as its shell
+            shells = list(subshapes(sh, "shell"))
+            if len(shells) != 1:
+                raise TuleError(f"could not shell with thickness {thickness:g}", op="shell", hint="try a smaller thickness")
+            sh = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(shells[0])).Solid()
+        other = Shape(sh)
+        new = list(other._sub("face"))
+        res = (self - other) if inward else (other - self)  # roles do not carry through Booleans: found again here
+        res = res._with_roles({"inner" if inward else "outer": [f for f in res._sub("face") if any(f.IsSame(n) for n in new)]})
+        if res.volume <= 0 or abs(res.volume - abs(self.volume - other.volume)) > 1e-3 * max(abs(self.volume), 1):
+            raise TuleError(f"could not shell with thickness {thickness:g}", op="shell", hint="try a smaller thickness")
+        return res if inward else res._renamed(self.name, self.color)
 
     # ------------------------------------------------------------ sheet metal
     @property
@@ -834,6 +886,8 @@ def _boolean(op_cls, op_name: str, args: list[Shape], tools: list[Shape], simpli
 def union(*shapes) -> Shape:
     """Union of any number of shapes (``union(a, b, c)`` or ``union([a, b, c])``)."""
     s = _flatten(shapes)
+    if not s:
+        raise TuleError("union of nothing", op="union", hint="pass at least one shape")
     if len(s) == 1:
         return s[0]
     return _boolean(BRepAlgoAPI_Fuse, "union", s[:1], s[1:])

@@ -575,7 +575,7 @@ def export_gltf(item: Union["Shape", "Assembly"], path: str, tolerance: float = 
 
 PRINT_SETTINGS = {
     "layer_height": "layer height in mm (0.2)",
-    "walls": "wall loops / perimeters (3)",
+    "walls": "wall loops / perimeters (2, as the slicers default)",
     "infill": "sparse infill in percent (15)",
     "supports": "True or False",
     "brim": "brim width in mm, True (5 mm) or False",

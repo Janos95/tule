@@ -41,17 +41,18 @@ class Assembly:
             return Assembly(*self.children, name=name)
         return Assembly(*self._map(lambda s: s.named(s.name, color)).children, name=name)
 
-    def parts(self, prefix: str = "") -> list[tuple[str, Shape]]:
+    def parts(self, prefix: str = "", _count: list | None = None) -> list[tuple[str, Shape]]:
         """Every part with its path (``"gripper/finger_l"``); unnamed parts are ``part1``, ``part2``, …"""
         out = []
         base = f"{prefix}{self.name}/" if self.name else prefix
-        n = 0
+        # an unnamed sub-assembly shares its parent's folder, so it continues the parent's numbering
+        n = _count if _count is not None and not self.name else [0]
         for c in self.children:
             if isinstance(c, Assembly):
-                out.extend(c.parts(base))
+                out.extend(c.parts(base, n))
             else:
-                n += 1
-                out.append((base + (c.name or f"part{n}"), c))
+                n[0] += 1
+                out.append((base + (c.name or f"part{n[0]}"), c))
         return out
 
     def __iter__(self) -> Iterator[Child]:

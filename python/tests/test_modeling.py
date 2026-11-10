@@ -401,3 +401,52 @@ def test_transform_stretches_and_shears():
     small, big = box(2, 2, 2, center=True).at(5, 0, 0), box(20, 20, 20, center=True)
     d, p, q = small.closest(big)  # one inside the other: a point inside both
     assert d == 0 and tuple(p) == tuple(q) and 4 <= p.x <= 6
+
+
+def test_closed_shell_is_hollow():
+    b = box(20)
+    h = b.shell(None, 2)
+    assert abs(h.volume - (20**3 - 16**3)) < 1e-6 and len(h.faces["inner"].ids) == 6
+    o = b.shell(None, 2, inward=False)
+    assert o.volume > 20**3 * 0.3 and o.faces["outer"].ids
+
+
+def test_shell_outward_names_new_faces_outer():
+    b = box(10)
+    assert b.shell(b.faces["top"], 1, inward=False).faces["outer"].ids
+
+
+def test_fillet_takes_a_face_for_its_edges():
+    b = box(10)
+    f = b.fillet(b.faces["top"], 1)
+    assert len(f.faces["fillet"].ids) == 4
+
+
+@pytest.mark.parametrize("make", [
+    lambda: circle(-1), lambda: sphere(-1), lambda: cylinder(0, 5), lambda: rect(0, 5),
+    lambda: rect(2).extrude(5, scale=0), lambda: rect(2).translate(5, 0).revolve(0),
+    lambda: union([]), lambda: box(1).face(99),
+])
+def test_bad_sizes_say_so(make):
+    with pytest.raises(TuleError):
+        make()
+
+
+def test_cone_with_equal_radii_is_a_cylinder():
+    assert abs(cone(2, 5, r2=2).volume - cylinder(2, 5).volume) < 1e-6
+
+
+def test_unnamed_parts_in_unnamed_subassemblies_get_distinct_names():
+    a = Assembly(box(1), Assembly(box(2)), box(3))
+    names = [n for n, _ in a.parts()]
+    assert len(set(names)) == 3, names
+
+
+def test_tapered_extrude_down_keeps_top_on_top():
+    e = rect(4).extrude(-10, scale=0.5)
+    assert e.faces["top"].info()[0]["center"][2] > e.faces["bottom"].info()[0]["center"][2]
+
+
+def test_sweep_caps_for_tubes_and_holed_profiles():
+    t = pipe([(0, 0, 0), (0, 0, 10), (10, 0, 20)], 3, wall=1)
+    assert len(t.faces["start"].ids) == 1 and len(t.faces["end"].ids) == 1 and len(t.faces["side"].ids) == 2

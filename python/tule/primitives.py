@@ -59,6 +59,14 @@ def _make(shape, curved_role: str = "side") -> Shape:
     return s._with_roles(_roles(shape, curved_role))
 
 
+def _positive(op: str, **sizes: float):
+    """A clear error for a size that is zero or negative (OpenCascade's own says little or nothing)."""
+    bad = {k: v for k, v in sizes.items() if not v > 0}
+    if bad:
+        raise TuleError(f"{', '.join(bad)} must be positive", op=op,
+                        hint="got " + ", ".join(f"{k}={v}" for k, v in sizes.items()))
+
+
 def box(x: float = 1, y: float | None = None, z: float | None = None, center: bool = False) -> Shape:
     """A box of size ``x`` × ``y`` × ``z`` (``box(2)`` is a cube), from the origin or centered."""
     y = x if y is None else y
@@ -77,6 +85,7 @@ def cylinder(r: float = 1, h: float = 1, center: bool = False, r2: float | None 
     """A cylinder along +Z of radius ``r`` and height ``h`` (``r2`` makes it a cone frustum)."""
     if r2 is not None and r2 != r:
         return cone(r, h, r2=r2, center=center)
+    _positive("cylinder", r=r, h=h)
     z0 = -h / 2 if center else 0.0
     ax = gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1))
     return _make(BRepPrimAPI_MakeCylinder(ax, float(r), float(h)).Shape())
@@ -84,6 +93,11 @@ def cylinder(r: float = 1, h: float = 1, center: bool = False, r2: float | None 
 
 def cone(r: float = 1, h: float = 1, r2: float = 0.0, center: bool = False) -> Shape:
     """A cone along +Z from radius ``r`` at the bottom to ``r2`` at the top."""
+    _positive("cone", h=h)
+    if r < 0 or r2 < 0 or r == r2 == 0:
+        raise TuleError("a cone's radii must be ≥ 0 and not both 0", op="cone", hint=f"got r={r}, r2={r2}")
+    if r == r2:
+        return cylinder(r, h, center=center)
     z0 = -h / 2 if center else 0.0
     ax = gp_Ax2(gp_Pnt(0, 0, z0), gp_Dir(0, 0, 1))
     return _make(BRepPrimAPI_MakeCone(ax, float(r), float(r2), float(h)).Shape())
@@ -91,11 +105,13 @@ def cone(r: float = 1, h: float = 1, r2: float = 0.0, center: bool = False) -> S
 
 def sphere(r: float = 1) -> Shape:
     """A sphere of radius ``r`` at the origin."""
+    _positive("sphere", r=r)
     return _make(BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, 0), float(r)).Shape(), "surface")
 
 
 def torus(R: float = 1, r: float = 0.25) -> Shape:
     """A torus around +Z: ring radius ``R``, tube radius ``r``."""
+    _positive("torus", R=R, r=r)
     ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
     return _make(BRepPrimAPI_MakeTorus(ax, float(R), float(r)).Shape(), "surface")
 

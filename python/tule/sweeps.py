@@ -40,6 +40,9 @@ def extrude(profile: Profile, h: float = 1, center: bool = False, twist: float =
     """
     if h == 0:
         raise TuleError("extrusion height must not be zero", op="extrude")
+    if not scale > 0:
+        raise TuleError("scale must be positive", op="extrude",
+                        hint=f"got {scale}; to a point: cone(), or a small scale such as 0.01")
     src = profile.wrapped
     if center:
         t = gp_Trsf()
@@ -76,6 +79,8 @@ def revolve(profile: Profile, angle: float = 360) -> Shape:
     A partial ``angle`` starts in the xz plane, runs counter-clockwise seen
     from above, and gets end faces ``start`` and ``end``.
     """
+    if not angle or abs(angle) > 360:
+        raise TuleError("the angle must be between -360 and 360 degrees, not 0", op="revolve", hint=f"got {angle}")
     lo, hi = profile.bounds
     if lo.x < -1e-9:
         raise TuleError("a revolved profile must lie at x ≥ 0", op="revolve",
@@ -142,10 +147,9 @@ def _loft(profiles: Sequence[Profile], heights: Sequence[float], ruled: bool = T
         raise TuleError("could not loft the sections", op="loft",
                         hint="sections with very different shapes or point counts can fail; try similar outlines")
     s = mk.Shape()
-    roles = {"bottom": _faces_of(mk.FirstShape()), "top": _faces_of(mk.LastShape())}
-    caps = set()
-    for f in roles["bottom"] + roles["top"]:
-        caps.add(hash(f))
+    first, last = _faces_of(mk.FirstShape()), _faces_of(mk.LastShape())
+    # bottom is the lower end: the last section when the heights go down (extrude(-h, scale=...))
+    roles = {"bottom": first, "top": last} if heights[-1] >= heights[0] else {"bottom": last, "top": first}
     roles["side"] = [f for f in subshapes(s, "face") if not any(f.IsSame(c) for c in roles["bottom"] + roles["top"])]
     return Shape(s)._with_roles(roles)
 
@@ -255,7 +259,7 @@ def _placed(shape, start, tangent):
     t = gp_Trsf()
     z = gp_Dir(*tangent)
     x = gp_Dir(1, 0, 0) if abs(tangent[0]) < 0.9 else gp_Dir(0, 1, 0)
-    x = gp_Dir(gp_Vec(z).Crossed(gp_Vec(x)).Crossed(gp_Vec(z)).Reversed())
+    x = gp_Dir(gp_Vec(z).Crossed(gp_Vec(x)).Crossed(gp_Vec(z)))  # a path going up +z keeps the profile as extrude does
     t.SetTransformation(gp_Ax3(gp_Pnt(*start), z, x), gp_Ax3())
     return cast(BRepBuilderAPI_Transform(shape, t, True).Shape())
 
@@ -356,7 +360,7 @@ def sweep(profile: Profile, path, smooth: bool = True) -> Shape:
     segments, that corner an arc of radius ``r``: a tendon around a pulley), or an edge or wire.
 
     The profile's xy plane is set square to the path at its start, its origin on the path, and is
-    carried along without twisting. Faces: ``start``, ``end``, ``side``. A tube: a profile with a hole.
+    carried along without twisting (a path going up +z places it as ``extrude`` would). Faces: ``start``, ``end``, ``side``. A tube: a profile with a hole.
     """
     from OCP.BRepAdaptor import BRepAdaptor_CompCurve
 
@@ -387,9 +391,29 @@ def sweep(profile: Profile, path, smooth: bool = True) -> Shape:
         raise TuleError("sweeping the profile along the path left nothing", op="sweep",
                         hint="a bend tighter than the profile folds it onto itself: smooth the path, "
                              "make the profile smaller, or try smooth=False")
-    if len(faces) == 1 and len(list(subshapes(faces[0], "wire"))) == 1:
-        side = [f for f in out._sub("face") if not any(f.IsSame(c) for c in roles["start"] + roles["end"])]
-        return out._with_roles({"start": roles["start"], "end": roles["end"], "side": side})
+    p1, v1 = gp_Pnt(), gp_Vec()
+    c.D1(c.LastParameter(), p1, v1)
+    start_caps = _caps(out, p0, v0)
+    end_caps = _caps(out, p1, v1) if v1.Magnitude() > 1e-12 else []
+    caps = start_caps + end_caps
+    side = [f for f in out._sub("face") if not any(f.IsSame(x) for x in caps)]
+    return out._with_roles({"start": start_caps, "end": end_caps, "side": side})
+
+
+def _caps(shape: Shape, at, direction) -> list:
+    """The planar faces of shape lying in the plane through ``at`` square to ``direction`` (a sweep's end)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    d = gp_Dir(direction)
+    out = []
+    for f in shape._sub("face"):
+        srf = BRepAdaptor_Surface(f)
+        if srf.GetType() != GeomAbs_SurfaceType.GeomAbs_Plane:
+            continue
+        pln = srf.Plane()
+        if abs(pln.Axis().Direction().Dot(d)) > 1 - 1e-6 and pln.Distance(at) < 1e-6 * max(1.0, abs(at.X()) + abs(at.Y()) + abs(at.Z())):
+            out.append(f)
     return out
 
 

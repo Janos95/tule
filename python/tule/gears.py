@@ -513,7 +513,13 @@ def _mesh(m, z1, z2, internal, pressure_angle, x1, x2, b1, b2):
         raise TuleError("a ring gear needs more teeth than the pinion inside it", op=op)
     sign = -1 if internal else 1
     zs = z2 + sign * z1
-    aw = _inv_inverse(_inv(a) + 2 * math.tan(a) * (x2 + sign * x1) / zs)
+    inv_w = _inv(a) + 2 * math.tan(a) * (x2 + sign * x1) / zs
+    if inv_w <= 0:  # the shifts pull the gears together past where their teeth can roll on each other
+        least = -_inv(a) * zs / (2 * math.tan(a))
+        raise TuleError(f"the profile shifts add up to {x2 + sign * x1:.3g}, which these gears cannot mesh at", op=op,
+                        hint=f"the {'ring minus pinion' if internal else 'sum'} of the shifts must stay above {least:.3g}; "
+                             "shift the other gear positively, or both less")
+    aw = _inv_inverse(inv_w)
     dist = m * zs / 2 * math.cos(a) / math.cos(aw)
     l1 = math.sqrt(g1.ra ** 2 - g1.rb ** 2)
     l2 = math.sqrt(g2.ra ** 2 - g2.rb ** 2)

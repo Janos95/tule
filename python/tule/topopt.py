@@ -76,6 +76,11 @@ def backend(device: str = "auto"):
 
             if cupy.cuda.runtime.getDeviceCount() > 0:
                 return cupy
+            if device == "gpu":
+                raise TuleError("no GPU on this machine (CuPy sees none)", op="topopt",
+                                hint='start a GPU machine (tule up --gpu …), or use device="cpu" or "auto"')
+        except TuleError:
+            raise
         except Exception as e:  # no CuPy, no driver, no GPU
             if device == "gpu":
                 raise TuleError("no GPU backend available", op="topopt",

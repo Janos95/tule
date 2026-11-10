@@ -364,12 +364,16 @@ def polygon(points: Sequence[Sequence[float]], holes: Iterable[Sequence[Sequence
 def rect(w: float, h: float | None = None, center: bool = False) -> Profile:
     """A ``w`` × ``h`` rectangle from the origin, or centered."""
     h = w if h is None else h
+    if not (w > 0 and h > 0):
+        raise TuleError("w and h must be positive", op="rect", hint=f"got w={w}, h={h}")
     x0, y0 = (-w / 2, -h / 2) if center else (0.0, 0.0)
     return Profile(_polygon_face([(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)]))
 
 
 def circle(r: float, center: Point2 = (0, 0)) -> Profile:
     """A circle of radius ``r``."""
+    if not r > 0:
+        raise TuleError("r must be positive", op="circle", hint=f"got r={r}")
     c = gp_Circ(gp_Ax2(gp_Pnt(center[0], center[1], 0), gp_Dir(0, 0, 1)), float(r))
     e = BRepBuilderAPI_MakeEdge(c).Edge()
     w = BRepBuilderAPI_MakeWire(e).Wire()

@@ -197,10 +197,14 @@ def folder(name: str | None = None) -> "Folder":
     return Folder(_folder(name))
 
 
-def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
+def _not_empty(item, what: str):
     if isinstance(item, Shape) and not item.faces:
-        raise TuleError(f"{item.name or os.path.basename(path)} is empty (no faces)", op="outputs",
+        raise TuleError(f"{item.name or what} is empty (no faces)", op="outputs",
                         hint="the operation that made it left nothing: check len(part.faces) after each step")
+
+
+def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
+    _not_empty(item, os.path.basename(path))
     ext = os.path.splitext(path)[1].lower()
     if ext in (".step", ".stp"):
         return export_step(item, path)
@@ -248,6 +252,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
     """
     if isinstance(shape, Assembly):
         raise TuleError(f"{name}: this is an assembly", op="outputs", hint=f'use outputs.assembly("{name}", …)')
+    _not_empty(shape, name)  # before the folder: an empty part leaves no empty output behind
     folder = _folder(name)
     if isinstance(shape, Mesh):
         fname = f"{_slug(name.rsplit('/', 1)[-1])}.stl"
@@ -533,15 +538,19 @@ class Sequence:
 
 
 def _brep_hash(shape) -> str:
-    """The solid's geometry as text, hashed: equal for two shapes made the same way."""
+    """The solid's geometry as text, hashed: equal for two shapes made the same way, whether or not one was
+    meshed since (a copy without the mesh, and without the 0/1 flag lines that a check or a mesh changes)."""
     import hashlib
     import io
+    import re
 
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
     from OCP.BRepTools import BRepTools
 
+    copy = BRepBuilderAPI_Copy(shape, True, False).Shape()
     f = io.BytesIO()
-    BRepTools.Write_s(shape, f)
-    return hashlib.sha1(f.getvalue()).hexdigest()
+    BRepTools.Write_s(copy, f)
+    return hashlib.sha1(re.sub(rb"(?m)^[01]{7}\r?$", b"", f.getvalue())).hexdigest()
 
 
 def sequence(name: str, title: str | None = None, fmt: str | None = None, fps: float | None = None) -> Sequence:
@@ -708,6 +717,7 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
             raise TuleError("scale is a dict with label, unit, min and max (all optional)", op="overlay",
                             hint='{"label": "wall thickness", "unit": "mm", "min": 0, "max": 3}')
         scale = {k: (float(v) if k in ("min", "max") else str(v)) for k, v in scale.items() if v is not None}
+    _not_empty(part, name)
     entries = _face_entries(part, faces)
     grids = _fields(fields)
     folder = _folder(name)
