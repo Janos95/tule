@@ -30,8 +30,7 @@ COPY runtime/prune_vtk.sh /tmp/prune_vtk.sh
 RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh lxml networkx pymupdf ezdxf python-fcl \
  && sh /tmp/prune_vtk.sh && rm /tmp/prune_vtk.sh
 
-COPY python /opt/tule/python
-RUN pip install --no-cache-dir --no-deps /opt/tule/python \
+RUN --mount=type=bind,source=python,target=/tmp/py,rw pip install --no-cache-dir --no-deps /tmp/py \
  && echo /workspace > "$(python -c 'import site; print(site.getsitepackages()[0])')/workspace.pth"
 # (any script imports the project's lib/, as under tule build; appended, so it shadows nothing)
 # the tule CLI: screenshot, inspect, docs, snapshot on the machine (and ssh/up from a laptop)
