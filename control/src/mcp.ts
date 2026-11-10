@@ -74,13 +74,16 @@ async function call(env: Env, user: User, name: string, a: Record<string, unknow
       const m = String(a.machine || "cpu-1");
       const slot = m.startsWith("cpu-") ? "cloud" : m;
       const ready = (s: ops.Result) => (s.machines as ops.Result[] | undefined)?.find((x) => x.id === slot);
+      const p = await ops.resolve(env, user, a.project); // once: the loop asks the project itself
+      if (!ops.isRef(p)) return p;
+      const status = async (): Promise<ops.Result> => ({ ...(await ops.projectStub(env, p.id).status()), viewer: ops.viewerUrl(origin, p.name) });
       for (let i = 0; i < (m.startsWith("cpu-") ? 100 : 150); i++) {
-        const s = await ops.status(env, user, a.project, origin);
+        const s = await status();
         const x = ready(s);
         if (s.error || x?.state === "running" || (x?.state === "stopped" && x.lastError)) return s;
         await new Promise((res) => setTimeout(res, 600));
       }
-      return { ...(await ops.status(env, user, a.project, origin)), note: "still starting; check machine_status again shortly" };
+      return { ...(await status()), note: "still starting; check machine_status again shortly" };
     }
     case "gpus_list": {
       const key = await acc.runpodKey(user.id);

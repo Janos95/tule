@@ -255,12 +255,46 @@ async function snapshotsRoute(req: Request, env: Env, id: string, rest: string[]
 // elsewhere downloads it instead of running the script when the files it read are the same.
 //   GET  /cache[?name=<script>]    {entries: [{name, key, record, files, machine, at}]}, newest first
 //   POST /cache                    {name, key, record, files}; the newest KEEP per script are kept
+// Every entry is its own object; cache-index.json holds them all, so a build's GET reads one object. A POST
+// updates the index by compare-and-swap (two machines may upload at once); a missing index is rebuilt from the entries.
 
 // a script in a group (src/checks/fit.py) is "checks/fit", stored as checks~fit
 const cacheKey = (id: string, name: string, key: string) => `projects/${id}/cache/${name.replace("/", "~")}/${key}.json`;
 const SCRIPT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}(\/[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?$/;
 const KEEP = 5;
 const MAX_ENTRY = 4 << 20;
+type CacheEntry = { name: string; key: string; at: number; [k: string]: unknown };
+const cacheIndexKey = (id: string) => `projects/${id}/cache-index.json`;
+
+/** Every entry object (at most 2000), read one by one: the index's source when it is missing. */
+async function cacheListing(env: Env, id: string): Promise<CacheEntry[]> {
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/`, cursor, limit: 1000 });
+    keys.push(...l.objects.map((o) => o.key));
+    cursor = l.truncated ? l.cursor : undefined;
+  } while (cursor && keys.length < 2000);
+  return (await Promise.all(keys.map(async (k) => (await env.WORKSPACES.get(k))?.json<CacheEntry>()))).filter((e): e is CacheEntry => !!e);
+}
+
+/** The index's entries and its etag (null: no index yet). */
+async function cacheIndex(env: Env, id: string): Promise<{ entries: CacheEntry[]; etag: string | null }> {
+  const o = await env.WORKSPACES.get(cacheIndexKey(id));
+  if (!o) return { entries: await cacheListing(env, id), etag: null };
+  try {
+    return { entries: (await o.json<{ entries: CacheEntry[] }>()).entries ?? [], etag: o.etag };
+  } catch {
+    return { entries: await cacheListing(env, id), etag: o.etag }; // unreadable: rebuilt (and replaced on the next write)
+  }
+}
+
+/** Writes the index if it is still the version read (etag), or absent when it was absent: false when another write won. */
+async function putCacheIndex(env: Env, id: string, entries: CacheEntry[], etag: string | null): Promise<boolean> {
+  const body = JSON.stringify({ entries });
+  const r = await env.WORKSPACES.put(cacheIndexKey(id), body, { onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: "*" } });
+  return r !== null;
+}
 
 async function cacheRoute(req: Request, env: Env, id: string, machine: string, url: URL): Promise<Response> {
   if (req.method === "POST") {
@@ -280,24 +314,31 @@ async function cacheRoute(req: Request, env: Env, id: string, machine: string, u
     const chunks = Object.values(files as Record<string, { chunks?: unknown }>).flatMap((f) => (Array.isArray(f?.chunks) ? f.chunks : [null]));
     if (!chunks.every((h) => typeof h === "string" && HASH.test(h))) return error("each file is {chunks: [sha256 hex, ...], size}", 400);
     const at = Date.now();
-    await env.WORKSPACES.put(cacheKey(id, name, key), JSON.stringify({ name, key, record, files, machine, at }));
-    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name.replace("/", "~")}/` });
-    const old = l.objects.sort((x, y) => y.uploaded.getTime() - x.uploaded.getTime()).slice(KEEP);
-    if (old.length) await env.WORKSPACES.delete(old.map((o) => o.key));
+    const entry: CacheEntry = { name, key, record, files, machine, at };
+    await env.WORKSPACES.put(cacheKey(id, name, key), JSON.stringify(entry));
+    // the index: this entry in, the script's oldest beyond KEEP out (their objects deleted)
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { entries, etag } = await cacheIndex(env, id);
+      const others = entries.filter((e) => !(e.name === name && e.key === key));
+      const mine = [entry, ...others.filter((e) => e.name === name)].sort((a, b) => b.at - a.at);
+      const old = mine.slice(KEEP);
+      const next = [...others.filter((e) => e.name !== name), ...mine.slice(0, KEEP)];
+      if (await putCacheIndex(env, id, next, etag)) {
+        if (old.length) await env.WORKSPACES.delete(old.map((e) => cacheKey(id, e.name, e.key)));
+        return json({ stored: key });
+      }
+      await new Promise((res) => setTimeout(res, 50 + Math.random() * 200 * (attempt + 1)));
+    }
+    // the entry is stored; the index missed it this time (it is read again from the entries if it is removed)
+    console.log(JSON.stringify({ event: "cache-index-busy", project: id, name }));
     return json({ stored: key });
   }
   if (req.method !== "GET") return error("method not allowed", 405);
   const name = url.searchParams.get("name");
   if (name !== null && !SCRIPT.test(name)) return error("no such script", 400);
-  const keys: string[] = [];
-  let cursor: string | undefined;
-  do {
-    const l = await env.WORKSPACES.list({ prefix: `projects/${id}/cache/${name ? name.replace("/", "~") + "/" : ""}`, cursor, limit: 1000 });
-    keys.push(...l.objects.map((o) => o.key));
-    cursor = l.truncated ? l.cursor : undefined;
-  } while (cursor && keys.length < 2000);
-  const entries = (await Promise.all(keys.map(async (k) => (await env.WORKSPACES.get(k))?.json<{ at: number }>()))).filter((e) => !!e);
-  return json({ entries: entries.sort((a, b) => b.at - a.at) });
+  const { entries, etag } = await cacheIndex(env, id);
+  if (etag === null && entries.length) await putCacheIndex(env, id, entries, null); // built once from the entries; kept from now on
+  return json({ entries: entries.filter((e) => name === null || e.name === name).sort((a, b) => b.at - a.at) });
 }
 
 // ------------------------------------------------------------ git and Git LFS (saves)
