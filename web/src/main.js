@@ -34,7 +34,6 @@
 // puts it.
 import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
-import { color } from "./colors.js";
 import { render as renderFile, size, typeOf, TYPE_ICONS } from "./files.js";
 import { initOverlay } from "./overlay.js";
 import { initParts } from "./parts.js";
@@ -1235,17 +1234,12 @@ function renderShare(s, err) {
   if (!kids.length) shareMenu(false);
   shareLabel();
 }
-/** The link's preview, the picture sites show when the link is posted: the 3D view as it is now, 1200×630.
+/** The link's preview, the picture sites show when the link is posted: the 3D view from its direction, 1200×630.
  * Only a drawn 3D view (not a page or a loading one); false when there is none. */
 async function sendPreview() {
   if (!viewer || !state.shown || state.shown === "page" || state.drawn !== state.shown) return false;
-  const shot = viewer.capture();
-  const out = Object.assign(document.createElement("canvas"), { width: 1200, height: 630 });
-  const g = out.getContext("2d");
-  const k = Math.min(out.width / shot.width, out.height / shot.height); // all of the view, centered
-  g.fillStyle = color("--view-mid");
-  g.fillRect(0, 0, out.width, out.height);
-  g.drawImage(shot, (out.width - shot.width * k) / 2, (out.height - shot.height * k) / 2, shot.width * k, shot.height * k);
+  const out = viewer.preview(1200, 630); // from the view's direction, the model filling the picture
+  if (!out) return false;
   const png = await new Promise((done) => out.toBlob(done, "image/png"));
   const r = await auth.api(`/api/projects/${project}/share/preview`, { method: "PUT", headers: { "content-type": "image/png" }, body: png });
   return r.ok;

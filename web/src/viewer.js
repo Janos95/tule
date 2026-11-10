@@ -786,6 +786,62 @@ export class Viewer {
     return { index, mesh, face, rest: at, surf, point: [hit.point.x, hit.point.y, hit.point.z] };
   }
 
+  /** A picture for a link's preview: w×h pixels, from the camera's direction, the model filling it
+   * (the view itself is left as it was). Null with nothing drawn. */
+  preview(w = 1200, h = 630, background = palette("--view-mid")) {
+    if (!this.bounds) return null;
+    const r = this.renderer;
+    const cam = this.camera;
+    const saved = { cam: this.getCamera(), size: r.getSize(new THREE.Vector2()), ratio: r.getPixelRatio(), moved: this.moved, fitted: this.fitted };
+    r.setPixelRatio(1);
+    r.setSize(w, h, false);
+    cam.aspect = w / h;
+    cam.clearViewOffset();
+    const c = this.bounds.getCenter(new THREE.Vector3());
+    const dir = cam.position.clone().sub(this.controls.target).normalize();
+    const right = new THREE.Vector3().crossVectors(cam.up, dir).normalize();
+    if (right.lengthSq() < 0.5) right.set(1, 0, 0);
+    const up = new THREE.Vector3().crossVectors(dir, right);
+    const tv = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+    const th = tv * cam.aspect;
+    const { min, max } = this.bounds;
+    let dist = 0;
+    for (let i = 0; i < 8; i++) {
+      const p = new THREE.Vector3(i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z).sub(c);
+      const z = p.dot(dir);
+      dist = Math.max(dist, z + (1.08 * Math.abs(p.dot(right))) / th, z + (1.1 * Math.abs(p.dot(up))) / tv);
+    }
+    const rad = this.bounds.getBoundingSphere(new THREE.Sphere()).radius || 1;
+    cam.position.copy(c).addScaledVector(dir, Math.max(dist, 1e-3));
+    cam.lookAt(c);
+    this.clip(dist, rad);
+    // the box's corners as drawn: zoom until the farthest one is near the edge
+    let reach = 0;
+    for (let i = 0; i < 8; i++) {
+      const q = new THREE.Vector3(i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z).project(cam);
+      reach = Math.max(reach, Math.abs(q.x), Math.abs(q.y));
+    }
+    cam.zoom = reach > 0 ? 0.94 / reach : 1;
+    cam.updateProjectionMatrix();
+    r.render(this.scene, cam);
+    cam.zoom = 1;
+    const out = Object.assign(document.createElement("canvas"), { width: w, height: h });
+    const g = out.getContext("2d");
+    g.fillStyle = background;
+    g.fillRect(0, 0, w, h);
+    g.drawImage(r.domElement, 0, 0);
+    // the view as it was
+    r.setPixelRatio(saved.ratio);
+    r.setSize(saved.size.x, saved.size.y, false);
+    cam.aspect = saved.size.x / saved.size.y;
+    this.setCamera(saved.cam);
+    this.moved = saved.moved;
+    this.fitted = saved.fitted;
+    this.offset();
+    r.render(this.scene, cam);
+    return out;
+  }
+
   /** The view as drawn, on a plain background: a canvas at the device's resolution. */
   capture(background = palette("--view-mid")) {
     const src = this.renderer.domElement;

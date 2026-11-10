@@ -38,7 +38,7 @@
     "GUEST_DAYS": "1",
     // SHOWCASE: examples for newcomers on the projects page, JSON [{"token": "tules_…", "title", "text"}]
     // (view-only links; each shows the preview picture saved when it was shared)
-    "SHOWCASE": "[]",
+    "SHOWCASE": "[{\"token\": \"tules_6bLGN7RV8PjrJDS2KkSPEFpz\", \"title\": \"Walking machine\", \"text\": \"Twelve printed linkage legs driven by one motor. Watch it walk.\"}, {\"token\": \"tules_woYmyQ8jpiWhMooW7BXgNj_U\", \"title\": \"Xylophone\", \"text\": \"Eleven aluminium bars, C5 to C7, tuned by simulation to within half a cent.\"}, {\"token\": \"tules_kTW43jA0jydEjTUs78AhdZBx\", \"title\": \"Bike hook\", \"text\": \"A 36 g printed wall hook that holds about 72 kg, 43% lighter than a plain one.\"}]",
     // GPU machines run this image on RunPod (built by .github/workflows/runtime.yml)
     "GPU_IMAGE": "ghcr.io/janos95/tule-runtime:cuda"
   },
