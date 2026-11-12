@@ -97,6 +97,12 @@ type Snapshot = { id: string; at: number; reason: string; files: number; bytes: 
 
 /** A snapshot's manifest in R2. */
 export const snapshotKey = (p: string, id: string) => `projects/${p}/snapshots/${id}.json`;
+/** A file's mesh as the viewer reads it (the machine's pack_mesh, "TMZ2…"), by the file's content hash. */
+export const meshKey = (p: string, hash: string) => `projects/${p}/meshes/v2/${hash}`;
+const MESH_MAGIC = [84, 77, 90, 50]; // "TMZ2": pack_mesh's format, the one kept
+const MESH_CACHE_MAX = 64 << 20; // a bigger mesh is not kept
+const VIEW_CHUNK = 8 << 20; // a cached mesh goes to the viewer in parts of this size, as the machine sends them
+const HASH = /^[0-9a-f]{32}$/;
 /** A pushed git bundle, and a Git LFS object, in R2. */
 export const gitKey = (p: string, id: string) => `projects/${p}/git/${id}.bundle`;
 export const lfsKey = (p: string, oid: string) => `projects/${p}/lfs/${oid}`;
@@ -134,7 +140,9 @@ function dirty(u: unknown) {
 export class Project extends DurableObject<Env> {
   state: State = {};
   outputs = new Map<string, unknown[]>(); // per slot
-  pending = new Map<number, { ws: WebSocket; rid: number }>(); // viewer requests in flight (also in storage as rq:<id>: hibernation forgets this map)
+  // viewer requests in flight (also in storage as rq:<id>: hibernation forgets this map); a mesh's hash and parts so far,
+  // to keep it in the mesh cache (no ws: a mesh made only for the cache, for a link)
+  pending = new Map<number, { ws?: WebSocket; rid: number; hash?: string; parts?: Uint8Array[] }>();
   asks = new Map<number, (reply: Result) => void>(); // commands to agents awaiting a reply
   lastSaved = 0;
   cloudUps: Promise<unknown> = Promise.resolve(); // up() calls for the cloud machine, in order
@@ -787,16 +795,16 @@ export class Project extends DurableObject<Env> {
   // ------------------------------------------------------------ sockets
 
   /** A viewer request passed on to a machine: its id there, remembered in memory and in storage. */
-  relay(ws: WebSocket, rid: number, kind: "req" | "mesh", slot: string): number {
+  relay(ws: WebSocket | undefined, rid: number, kind: "req" | "mesh", slot: string, hash?: string): number {
     const grid = crypto.getRandomValues(new Uint32Array(1))[0];
-    this.pending.set(grid, { ws, rid });
-    const v = (ws.deserializeAttachment() as { v?: string } | null)?.v;
+    this.pending.set(grid, { ws, rid, hash });
+    const v = (ws?.deserializeAttachment() as { v?: string } | null)?.v;
     if (v) void this.ctx.storage.put(`rq:${grid}`, { v, rid, kind, slot, at: Date.now() });
     return grid;
   }
 
   /** Who asked request `grid` (it is answered: forgotten, unless `more` of the answer is to come). */
-  async answer(grid: number, more = false): Promise<{ ws: WebSocket; rid: number } | undefined> {
+  async answer(grid: number, more = false): Promise<{ ws?: WebSocket; rid: number; hash?: string; parts?: Uint8Array[] } | undefined> {
     const p = this.pending.get(grid);
     if (!more) this.pending.delete(grid);
     const key = `rq:${grid}`;
@@ -885,6 +893,51 @@ export class Project extends DurableObject<Env> {
     }
   }
 
+  /** A mesh from the cache, to a viewer as a machine's would come; false when it is not there. */
+  async sendCached(ws: WebSocket, rid: number, hash: string): Promise<boolean> {
+    const o = this.state.id ? await this.env.WORKSPACES.get(meshKey(this.state.id, hash)) : null;
+    if (!o) return false;
+    const data = new Uint8Array(await o.arrayBuffer());
+    for (let at = 0; ; at += VIEW_CHUNK) {
+      const last = at + VIEW_CHUNK >= data.byteLength;
+      const part = data.subarray(at, Math.min(at + VIEW_CHUNK, data.byteLength));
+      const out = new Uint8Array(4 + part.byteLength);
+      new DataView(out.buffer).setUint32(0, last ? rid : (rid | 0x80000000) >>> 0);
+      out.set(part, 4);
+      ws.send(out);
+      if (last) return true;
+    }
+  }
+
+  /** A machine's packed mesh as it comes in: kept in the cache once complete. */
+  keepMesh(p: { hash?: string; parts?: Uint8Array[] }, part: Uint8Array, last: boolean) {
+    (p.parts ??= []).push(part);
+    if (!last) return;
+    const size = p.parts.reduce((n, c) => n + c.byteLength, 0);
+    const first = p.parts[0];
+    if (!this.state.id || size > MESH_CACHE_MAX || !MESH_MAGIC.every((v, i) => first?.[i] === v)) return;
+    const data = new Uint8Array(size);
+    let at = 0;
+    for (const c of p.parts) data.set(c, at), (at += c.byteLength);
+    p.parts = undefined;
+    this.ctx.waitUntil(this.env.WORKSPACES.put(meshKey(this.state.id, p.hash!), data).then(() => undefined, () => undefined));
+  }
+
+  /** For a link: the machine meshes its models now, so visitors read them from the cache (not meshed in their browser). */
+  async warmMeshes(machine: string | undefined, files: { path: string; hash: string }[]): Promise<number> {
+    const slot = machine && own(this.machines, machine) ? machine : this.viewSlot();
+    const agent = slot ? this.agent(slot) : undefined;
+    if (!agent || !this.state.id) return 0;
+    let n = 0;
+    for (const f of files) {
+      if (!HASH.test(f.hash) || !/\.(step|stp|stl)$/i.test(f.path) || (await this.env.WORKSPACES.head(meshKey(this.state.id, f.hash)))) continue;
+      const grid = this.relay(undefined, 0, "mesh", slot!, f.hash);
+      agent.send(JSON.stringify({ t: "mesh", rid: grid, path: f.path, hash: f.hash, v: 2 }));
+      n++;
+    }
+    return n;
+  }
+
   async webSocketMessage(ws: WebSocket, msg: string | ArrayBuffer) {
     const tags = this.ctx.getTags(ws);
     if (tags.includes("agent")) return this.fromAgent(ws, msg);
@@ -898,7 +951,7 @@ export class Project extends DurableObject<Env> {
       return;
     }
     if (tags.includes("view") && typeof msg === "string") {
-      let m: { t?: string; rid?: number; path?: string; hash?: string; op?: unknown; args?: unknown; machine?: unknown };
+      let m: { t?: string; rid?: number; path?: string; hash?: string; v?: number; op?: unknown; args?: unknown; machine?: unknown };
       try {
         m = JSON.parse(msg);
       } catch {
@@ -924,9 +977,12 @@ export class Project extends DurableObject<Env> {
         return;
       }
       if (m.t !== "mesh" || typeof m.path !== "string") return;
+      // a viewer that reads packed meshes: one made before (any machine, by the file's content) comes from the cache
+      const hash = m.v === 2 && typeof m.hash === "string" && HASH.test(m.hash) ? m.hash : undefined;
+      if (hash && (await this.sendCached(ws, m.rid, hash))) return;
       if (!agent) return ws.send(JSON.stringify({ t: "mesh-error", rid: m.rid, error: away }));
-      const grid = this.relay(ws, m.rid, "mesh", slot!);
-      agent.send(JSON.stringify({ t: "mesh", rid: grid, path: m.path, hash: m.hash ?? "" }));
+      const grid = this.relay(ws, m.rid, "mesh", slot!, hash);
+      agent.send(JSON.stringify({ t: "mesh", rid: grid, path: m.path, hash: m.hash ?? "", ...(hash ? { v: 2 } : {}) }));
     }
   }
 
@@ -945,7 +1001,8 @@ export class Project extends DurableObject<Env> {
         this.touch(slot);
       } else if (kind === MESH || kind === MESH_PART) {
         const p = kind === MESH ? await this.answer(id) : await this.answer(id, true);
-        if (p && p.ws.readyState === WebSocket.OPEN) {
+        if (p?.hash) this.keepMesh(p, b.slice(5), kind === MESH);
+        if (p?.ws && p.ws.readyState === WebSocket.OPEN) {
           const out = new Uint8Array(b.byteLength - 1);
           new DataView(out.buffer).setUint32(0, kind === MESH ? p.rid : (p.rid | 0x80000000) >>> 0);
           out.set(b.subarray(5), 4);
@@ -1004,7 +1061,7 @@ export class Project extends DurableObject<Env> {
       }
       case "res": {
         const p = await this.answer(Number(m.rid));
-        if (p && p.ws.readyState === WebSocket.OPEN) p.ws.send(JSON.stringify({ ...m, rid: p.rid }));
+        if (p?.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(JSON.stringify({ ...m, rid: p.rid }));
         break;
       }
       case "broadcast": {
@@ -1022,7 +1079,7 @@ export class Project extends DurableObject<Env> {
       }
       case "mesh-error": {
         const p = await this.answer(Number(m.rid));
-        if (p && p.ws.readyState === WebSocket.OPEN) p.ws.send(JSON.stringify({ t: "mesh-error", rid: p.rid, error: m.error }));
+        if (p?.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(JSON.stringify({ t: "mesh-error", rid: p.rid, error: m.error }));
         break;
       }
       case "ready":

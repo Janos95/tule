@@ -24,7 +24,7 @@
 //   WSS  /api/projects/<name>/ssh             one SSH session (`tule proxy`)
 //   WSS  /api/projects/<name>/view            the viewer
 //   GET/POST/DELETE /api/projects/<name>/share  a view-only link to a frozen autosave (POST replaces it)
-//   GET  /api/share/<token>[/file?path=]      what a link shows: the outputs list, or one file (no sign-in)
+//   GET  /api/share/<token>[/file?path=|/mesh?hash=]  what a link shows: the outputs list, a file, a cached mesh (no sign-in)
 //   GET/POST /api/keys/ssh, DELETE /api/keys/ssh/<id>; GET/POST /api/keys/api, DELETE /api/keys/api/<id>
 //   POST /api/device/code, /api/device/token  `tule login` (device code; no auth)
 //   /api/admin/*                              admins and the support account, by API key only (see below)
@@ -44,7 +44,7 @@ import { mcp } from "./mcp";
 import * as ops from "./ops";
 import { adminPage, landing, page, projectsPage, settingsPage, type Example, type MachinesData, type MachineRow, type ProjectRow } from "./pages";
 import { Host } from "./host";
-import { gitKey, lfsKey, Project, snapshotKey } from "./project";
+import { gitKey, lfsKey, meshKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
 import { gpuCatalog, runpodBalance } from "./runpod";
 import { bearer, sha256hex } from "./util";
@@ -169,12 +169,21 @@ async function sharePage(req: Request, env: Env, token: string, url: URL): Promi
     .transform(page);
 }
 
-async function shareRoute(env: Env, token: string, file: boolean, url: URL): Promise<Response> {
+async function shareRoute(req: Request, env: Env, token: string, what: string, url: URL): Promise<Response> {
   const p = await accounts(env).shared(token);
   const o = p && (await env.WORKSPACES.get(shareKey(p.id, token)));
   if (!p || !o) return error("this link was turned off or the project deleted", 404, "ask for a new link");
   const s = (await o.json()) as { project: string; snapshot: string; at: number; outputs: unknown[] };
-  if (!file) return json({ project: s.project, at: s.at, outputs: s.outputs });
+  if (!what) return json({ project: s.project, at: s.at, outputs: s.outputs });
+  if (what === "/mesh") {
+    // a model's mesh, made by the machine when it was viewed or shared; 404: the viewer meshes the file itself
+    const hash = url.searchParams.get("hash") ?? "";
+    const files = (s.outputs as { files?: { hash?: string }[] }[]).flatMap((x) => x.files ?? []);
+    if (!/^[0-9a-f]{32}$/.test(hash) || !files.some((f) => f.hash === hash)) return error("not a file of this link", 404);
+    const m = await env.WORKSPACES.get(meshKey(p.id, hash));
+    if (!m) return error("not meshed yet", 404);
+    return new Response(m.body, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(m.size), "Cache-Control": "private, max-age=86400" } });
+  }
   const rel = url.searchParams.get("path");
   if (!viewable(rel)) return error("a view-only link reads files under outputs/, inputs/ and work/", 403);
   let man = manifests.get(s.snapshot);
@@ -186,21 +195,29 @@ async function shareRoute(env: Env, token: string, file: boolean, url: URL): Pro
   }
   const f = man.files?.[rel];
   if (!f) return error(`${rel} is not in this link's snapshot`, 404);
-  const headers = { "Content-Type": "application/octet-stream", "Content-Length": String(f.s), "Cache-Control": "private, max-age=86400" };
+  const headers: Record<string, string> = { "Content-Type": "application/octet-stream", "Cache-Control": "private, max-age=86400" };
+  let body: ReadableStream;
   if (f.h.length === 1) {
     const b = await env.WORKSPACES.get(blobKey(p.id, f.h[0]));
-    return b ? new Response(b.body, { headers }) : error("a part of the file is missing", 500);
+    if (!b) return error("a part of the file is missing", 500);
+    body = b.body;
+  } else {
+    const { readable, writable } = new FixedLengthStream(f.s);
+    (async () => {
+      for (const h of f.h) {
+        const b = await env.WORKSPACES.get(blobKey(p.id, h));
+        if (!b) return writable.abort(new Error("a part of the file is missing"));
+        await b.body.pipeTo(writable, { preventClose: true });
+      }
+      await writable.close();
+    })();
+    body = readable;
   }
-  const { readable, writable } = new FixedLengthStream(f.s);
-  (async () => {
-    for (const h of f.h) {
-      const b = await env.WORKSPACES.get(blobKey(p.id, h));
-      if (!b) return writable.abort(new Error("a part of the file is missing"));
-      await b.body.pipeTo(writable, { preventClose: true });
-    }
-    await writable.close();
-  })();
-  return new Response(readable, { headers });
+  // models and JSON are text, 4 to 10 times smaller gzipped; pictures and archives are not
+  if (/gzip/.test(req.headers.get("Accept-Encoding") ?? "") && f.s > 1024 && !/\.(png|jpe?g|gif|webp|zip|3mf|glb|pdf)$/i.test(rel!)) {
+    return new Response(body.pipeThrough(new CompressionStream("gzip")), { headers: { ...headers, "Content-Encoding": "gzip" }, encodeBody: "manual" });
+  }
+  return new Response(body, { headers: { ...headers, "Content-Length": String(f.s) } });
 }
 
 // ------------------------------------------------------------ admin copies
@@ -592,7 +609,11 @@ async function userApi(req: Request, env: Env, url: URL, user: User, origin: str
     if (!man) return error("the autosave for the link is missing", 500, "try again");
     await drop();
     const s = await a.shareProject(ref.id);
-    await env.WORKSPACES.put(shareKey(ref.id, s.token), JSON.stringify({ project: ref.name, snapshot: f.snapshot, at: f.at, outputs: frozen(f.outputs, man) }));
+    const outputs = frozen(f.outputs, man);
+    await env.WORKSPACES.put(shareKey(ref.id, s.token), JSON.stringify({ project: ref.name, snapshot: f.snapshot, at: f.at, outputs }));
+    // the machine meshes the link's models now (in the background), so visitors do not wait for their browser to
+    const files = (outputs as { files?: { path?: string; hash?: string }[] }[]).flatMap((o) => o.files ?? []);
+    await project.warmMeshes(typeof b.machine === "string" ? b.machine : undefined, files.filter((x) => x.path && x.hash) as { path: string; hash: string }[]);
     return json(link(s));
   }
   if (what === "snapshots") return snapshotsRoute(req, env, ref.id, rest, "", url);
@@ -742,8 +763,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (path === "/api/device/code" || path === "/api/device/token") return deviceApi(req, env, path.split("/").pop()!);
   // a view-only link (/s/<token>): GET /api/share/<token> is the frozen outputs list, /api/share/<token>/file?path= a file
   // of its snapshot. Only storage is read: the viewer turns models into meshes in the visitor's browser.
-  const share = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})(\/file)?$/);
-  if (share && req.method === "GET") return shareRoute(env, share[1], !!share[2], url);
+  const share = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})(\/file|\/mesh)?$/);
+  if (share && req.method === "GET") return shareRoute(req, env, share[1], share[2] ?? "", url);
   const preview = path.match(/^\/api\/share\/(tules_[A-Za-z0-9_-]{8,64})\/preview\.png$/);
   if (preview && req.method === "GET") {
     const p = await accounts(env).shared(preview[1]);

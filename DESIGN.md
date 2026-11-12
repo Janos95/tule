@@ -10,8 +10,8 @@ the project's outputs, live.
 It is the successor to sprig and reuses the viewer, editor and project UI of
 [genau](https://github.com/Janos95/genau)'s web playground. genau's mesh
 kernel is replaced by OpenCascade (OCCT), and all computation moves from the
-browser to the server (except view-only links, which mesh STEP in the
-visitor's browser with occt-import-js).
+browser to the server (except view-only links to models no machine has
+meshed yet, which mesh STEP in the visitor's browser with occt-import-js).
 
 Status: draft. Open decisions are listed at the end, each with the default
 assumed here.
@@ -707,7 +707,13 @@ request `id`.
   to viewers. A viewer asks for a file by path and hash; the agent
   tessellates it (`import_step` + `tessellate`, cached by hash) and answers
   with positions, normals, indices, B-rep face ids, B-rep edge segments,
-  name, color and tags (as face ids).
+  name, color and tags (as face ids). Packed (`pack_mesh`: a 0.01 mm grid,
+  octahedral normals, vertices in first-use order, zlib; about 7x smaller),
+  the Durable Object keeps each mesh in R2 by the file's content hash
+  (`projects/<id>/meshes/v2/<hash>`): opening the project again, or a
+  view-only link, reads it from there instead of waiting for a machine or
+  meshing in the visitor's browser. Making a link meshes its models ahead.
+  A link's files are sent gzipped.
 - **Viewer requests:** the page sends `{t: "req", rid, op, args}`; the
   Project Durable Object relays it to the agent unchanged (with its own
   request id) and the answer back, so a new request (annotations, the files

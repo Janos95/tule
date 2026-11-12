@@ -175,6 +175,11 @@ let stepWorker;
 const stepJobs = new Map();
 /** A model of the shared snapshot as the machine's mesh message would decode, meshed in a worker. */
 async function sharedMesh(file) {
+  // the machine's mesh, kept when the project was viewed or shared; else this browser meshes the model
+  if (file.hash) {
+    const r = await fetch(`/api/share/${shareToken}/mesh?hash=${file.hash}`).catch(() => null);
+    if (r?.ok) return unpack(await r.arrayBuffer(), 0);
+  }
   const bytes = await sharedFile(file.path ?? file.wire);
   if (!stepWorker) {
     stepWorker = new Worker(new URL("./stepmesh.js", import.meta.url));
@@ -182,7 +187,7 @@ async function sharedMesh(file) {
       const job = stepJobs.get(data.id);
       stepJobs.delete(data.id);
       if (data.error) job?.reject(new Error(data.error));
-      else job?.resolve(decode(data.buf, 0));
+      else job?.resolve(unpack(data.buf, 0));
     };
     stepWorker.onerror = (e) => { // it could not start: fail what waits, and start a new one next time
       for (const job of stepJobs.values()) job.reject(new Error(e.message || "could not start the mesher"));
@@ -257,10 +262,71 @@ function onMesh(buf) {
     buf = whole.buffer;
   }
   try {
-    p.resolve(p.raw ? buf.slice(4) : decode(buf, 4));
+    p.resolve(p.raw ? buf.slice(4) : unpack(buf, 4));
   } catch (e) {
     p.reject(e);
   }
+}
+
+/** A mesh message from the machine or the mesh cache: pack_mesh's (it starts with "TMZ2") or encode_mesh's. */
+async function unpack(buf, at) {
+  const b = new Uint8Array(buf, at);
+  if (!(b[0] === 84 && b[1] === 77 && b[2] === 90 && b[3] === 50)) return decode(buf, at);
+  const raw = await new Response(new Blob([b.subarray(4)]).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer();
+  return decodePacked(raw);
+}
+
+/** pack_mesh's arrays (runtime/tule_agent.py) back into encode_mesh's. */
+function decodePacked(buf) {
+  const dv = new DataView(buf);
+  const hl = dv.getUint32(0, true);
+  const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl)));
+  const base = 4 + hl;
+  const arr = (Type, r, n) => new Type(buf.slice(base + r[0], base + r[0] + n * Type.BYTES_PER_ELEMENT));
+  const grid = (p, r, n) => {
+    const q = arr(Uint16Array, r, 3 * n);
+    const out = new Float32Array(n * 3);
+    let x = 0, y = 0, z = 0;
+    for (let i = 0; i < n; i++) {
+      x = (x + q[3 * i]) & 0xffff;
+      y = (y + q[3 * i + 1]) & 0xffff;
+      z = (z + q[3 * i + 2]) & 0xffff;
+      out[3 * i] = p.lo[0] + x * p.step[0];
+      out[3 * i + 1] = p.lo[1] + y * p.step[1];
+      out[3 * i + 2] = p.lo[2] + z * p.step[2];
+    }
+    return out;
+  };
+  return header.parts.map((p) => {
+    const I = p.wide ? Uint32Array : Uint16Array;
+    const nv = p.nv;
+    const oct = arr(Int16Array, p.normals, 2 * nv);
+    const normals = new Float32Array(nv * 3);
+    for (let i = 0; i < nv; i++) {
+      let x = oct[2 * i] / 1023, y = oct[2 * i + 1] / 1023;
+      const z = 1 - Math.abs(x) - Math.abs(y);
+      if (z < 0) [x, y] = [(1 - Math.abs(y)) * (x >= 0 ? 1 : -1), (1 - Math.abs(x)) * (y >= 0 ? 1 : -1)];
+      const l = Math.hypot(x, y, z) || 1;
+      normals[3 * i] = x / l, normals[3 * i + 1] = y / l, normals[3 * i + 2] = z / l;
+    }
+    const codes = arr(I, p.indices, 3 * p.nt);
+    const indices = new Uint32Array(codes.length);
+    for (let i = 0, next = 0; i < codes.length; i++) {
+      indices[i] = next - codes[i];
+      if (codes[i] === 0) next++;
+    }
+    return {
+      name: p.name || null,
+      color: p.color,
+      tags: p.tags ?? {},
+      positions: grid(p, p.positions, nv),
+      normals,
+      indices,
+      faceIds: Uint32Array.from(arr(I, p.faceIds, p.nt)),
+      edges: grid(p, p.edges, p.ne),
+      sorted: true, // by face, as sortByFace
+    };
+  });
 }
 
 function decode(buf, at) {
@@ -292,7 +358,7 @@ function request(file) {
       const timer = setTimeout(() => (pending.delete(id), reject(new Error("no answer from the machine; reload to try again"))), 960_000);
       const done = (f) => (v) => (clearTimeout(timer), f(v));
       pending.set(id, { resolve: done(resolve), reject: done(reject) });
-      ws.send(JSON.stringify({ t: "mesh", rid: id, path: file.wire, hash: file.hash }));
+      ws.send(JSON.stringify({ t: "mesh", rid: id, path: file.wire, hash: file.hash, v: 2 }));
     });
     promise.catch(() => meshes.delete(file.hash)); // retry later
     meshes.set(file.hash, promise);

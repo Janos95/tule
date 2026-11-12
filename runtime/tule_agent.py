@@ -32,7 +32,8 @@ Wire protocol on the one WebSocket (text frames are JSON, binary frames are
                 kind 3: a chunk of a big binary reply, before its last one (kind 2)
   DO -> agent   {"t": "config", "keys": [...], "hostKey": {...} | null}
                 {"t": "ssh-open", "sid": n} / {"t": "ssh-close", "sid": n}
-                {"t": "mesh", "rid": n, "path": "outputs/bracket/bracket.step", "hash": "..."}
+                {"t": "mesh", "rid": n, "path": "outputs/bracket/bracket.step", "hash": "...", "v": 2}
+                  (v 2: the reply is pack_mesh's, else encode_mesh's)
                 {"t": "stop" | "snapshot", "rid": n, "reason": "..."}  save now (stop: the machine is going away)
                 {"t": "restore", "rid": n, "id": "..."}  make /workspace match a snapshot
                 {"t": "save", "rid": n, "message": "..."}  commit, merge main, push (saves.py)
@@ -275,7 +276,7 @@ class Outputs:
                 if f["path"] == n["path"] or f["path"].startswith(n["path"] + "/"):
                     f["basedOn"] = {"sources": n["sources"], "changed": n["changed"]}
 
-    def mesh(self, rel: str, digest: str) -> bytes:
+    def mesh(self, rel: str, digest: str, packed: bool = False) -> bytes:
         path = resolve(self.root, rel)  # as files.read: no "..", no symlinks out of /workspace
         # kept under the hash of the bytes meshed, not the one asked for: a file rebuilt in between is refused
         # (the page asks again with the new index), not shown later as the old one
@@ -283,6 +284,8 @@ class Outputs:
         actual = self._hash(os.path.relpath(path, self.root), st.st_size, st.st_mtime_ns)
         if digest and digest != actual:
             raise RuntimeError("the file changed since the list was made")
+        if packed:
+            return self.cached(actual + ":2", lambda: mesh_apart(path, True))
         return self.cached(actual, lambda: mesh_apart(path))
 
     def cached(self, key: str, make) -> bytes:
@@ -331,17 +334,17 @@ MESH_SECONDS = 900
 BIG_META = 256 << 10  # an output.json larger than this keeps its frames out of the index
 
 
-def mesh_apart(path: str) -> bytes:
+def mesh_apart(path: str, packed: bool = False) -> bytes:
     """encode_mesh in worker processes: a file that crashes OpenCascade (or never finishes)
     fails that one request instead of taking the machine's agent down with it. A crash is
     tried once more: the pool is shared (another file's crash fails this one too), and a file
     read while it was still being written can crash the reader."""
     try:
-        return _mesh_apart(path)
+        return _mesh_apart(path, packed)
     except _Crashed:
         time.sleep(1)
         try:
-            return _mesh_apart(path)
+            return _mesh_apart(path, packed)
         except _Crashed:
             raise RuntimeError(f"reading {os.path.basename(path)} crashed OpenCascade twice (the machine is fine); "
                                "check it with tule inspect") from None
@@ -351,7 +354,7 @@ class _Crashed(Exception):
     pass
 
 
-def _mesh_apart(path: str) -> bytes:
+def _mesh_apart(path: str, packed: bool = False) -> bytes:
     global _pool
     import concurrent.futures as cf
     import multiprocessing as mp
@@ -364,7 +367,7 @@ def _mesh_apart(path: str) -> bytes:
     name = os.path.basename(path)
     kills = oom_kills()
     try:
-        return pool.submit(encode_mesh, path).result(timeout=MESH_SECONDS)
+        return pool.submit(encode_packed if packed else encode_mesh, path).result(timeout=MESH_SECONDS)
     except (BrokenProcessPool, cf.TimeoutError) as e:
         with _pool_lock:
             if _pool is pool:
@@ -447,6 +450,95 @@ def encode_mesh(path: str) -> bytes:
     header = json.dumps({"parts": parts}).encode()
     header += b" " * (-len(header) % 4)
     return struct.pack("<I", len(header)) + header + b"".join(arrays)
+
+
+MESH_MAGIC = b"TMZ2"
+
+
+def encode_packed(path: str) -> bytes:
+    return pack_mesh(encode_mesh(path))
+
+
+def pack_mesh(data: bytes) -> bytes:
+    """encode_mesh's message, about 7x smaller (for the wire and the control plane's mesh cache):
+    MESH_MAGIC, then zlib of [u32 header length][JSON header][arrays].
+
+    Header: {"v": 2, "parts": [{"name", "color", "tags", "lo": [x, y, z], "step": [x, y, z],
+    "positions", "normals", "indices", "faceIds", "edges": [offset, length], "wide": bool,
+    "nv", "nt", "ne": vertices, triangles, edge points}]} (arrays are padded to 4 bytes).
+    Positions and edge points are on a grid (lo + q * step, step at least 0.01 mm: the tessellation's
+    tolerance is 0.05), u16 per axis, each the difference to the one before (mod 2^16). Normals are
+    octahedral, i16 pairs scaled by 1023. Vertices are in the order the triangles first use them and
+    each index is coded as (next new vertex - index): 0 is a new vertex. Indices and face ids are u16,
+    or u32 when "wide". Triangles are sorted by face. Edge ids are left out (the viewer does not read them).
+    """
+    import zlib
+
+    import numpy as np
+
+    (hl,) = struct.unpack_from("<I", data)
+    head = json.loads(data[4:4 + hl])
+    base = 4 + hl
+    arrays: list[bytes] = []
+    offset = 0
+
+    def put(a) -> list[int]:
+        nonlocal offset
+        b = np.ascontiguousarray(a).tobytes()
+        b += b"\0" * (-len(b) % 4)
+        arrays.append(b)
+        start = offset
+        offset += len(b)
+        return [start, len(b)]
+
+    def get(p, k, dt):
+        r = p.get(k)
+        return np.frombuffer(data, dt, r[1] // np.dtype(dt).itemsize, base + r[0]) if r else np.zeros(0, dt)
+
+    parts = []
+    for p in head["parts"]:
+        P = get(p, "positions", np.float32).reshape(-1, 3)
+        N = get(p, "normals", np.float32).reshape(-1, 3)
+        tri = get(p, "indices", np.uint32).reshape(-1, 3).astype(np.int64)
+        F = get(p, "faceIds", np.uint32)
+        E = get(p, "edges", np.float32).reshape(-1, 3)
+        o = np.argsort(F, kind="stable")
+        tri, F = tri[o], F[o]
+        flat = tri.reshape(-1)
+        used = flat[np.sort(np.unique(flat, return_index=True)[1])] if len(flat) else flat
+        order = np.concatenate([used, np.setdiff1d(np.arange(len(P)), used)]).astype(np.int64)
+        remap = np.empty(len(P), np.int64)
+        remap[order] = np.arange(len(P))
+        P, N, flat = P[order], N[order], remap[flat]
+        hwm = np.maximum.accumulate(np.concatenate([[0], flat[:-1] + 1])) if len(flat) else flat
+        allp = np.vstack([P, E]) if len(E) else P
+        lo = allp.min(0) if len(allp) else np.zeros(3, np.float32)
+        step = np.maximum((allp.max(0) - lo) / 65535 if len(allp) else np.zeros(3), 0.01)
+
+        def grid(X):
+            q = np.round((X - lo) / step).clip(0, 65535).astype(np.int64)
+            return (np.diff(q, axis=0, prepend=np.zeros((1, 3), np.int64)) & 0xFFFF).astype(np.uint16)
+
+        n = N / np.maximum(np.abs(N).sum(1, keepdims=True), 1e-20)
+        sx, sy = np.where(n[:, 0] >= 0, 1.0, -1.0), np.where(n[:, 1] >= 0, 1.0, -1.0)
+        under = n[:, 2] < 0
+        ox = np.where(under, (1 - np.abs(n[:, 1])) * sx, n[:, 0])
+        oy = np.where(under, (1 - np.abs(n[:, 0])) * sy, n[:, 1])
+        wide = len(P) > 65535 or (len(F) and int(F.max()) > 65535)
+        it = np.uint32 if wide else np.uint16
+        parts.append({
+            "name": p.get("name"), "color": p.get("color"), "tags": p.get("tags", {}),
+            "lo": [float(v) for v in lo], "step": [float(v) for v in step], "wide": bool(wide),
+            "nv": len(P), "nt": len(F), "ne": len(E),
+            "positions": put(grid(P)),
+            "normals": put(np.round(np.stack([ox, oy], 1) * 1023).astype(np.int16)),
+            "indices": put((hwm - flat).astype(it)),
+            "faceIds": put(F.astype(it)),
+            "edges": put(grid(E)),
+        })
+    header = json.dumps({"v": 2, "parts": parts}).encode()
+    header += b" " * (-len(header) % 4)
+    return MESH_MAGIC + zlib.compress(struct.pack("<I", len(header)) + header + b"".join(arrays), 6)
 
 
 def _faces_ok(shp, tag) -> bool:
@@ -633,7 +725,7 @@ class Agent:
             if w:
                 w.close()
         elif t == "mesh":
-            asyncio.create_task(self.mesh(m["rid"], m["path"], m.get("hash", "")))
+            asyncio.create_task(self.mesh(m["rid"], m["path"], m.get("hash", ""), m.get("v") == 2))
 
     async def ssh(self, sid: int):
         if self.sshd.proc and self.sshd.proc.poll() is not None:  # killed (out of memory): start it again
@@ -661,10 +753,10 @@ class Agent:
                 writer.close()
                 await self.send({"t": "ssh-close", "sid": sid})
 
-    async def mesh(self, rid: int, path: str, digest: str):
+    async def mesh(self, rid: int, path: str, digest: str, packed: bool = False):
         try:
             # their own two threads (as many as mesh processes): a big assembly's requests do not hold up autosave or stop
-            data = await asyncio.get_running_loop().run_in_executor(self.mesh_threads, self.outputs.mesh, path, digest)
+            data = await asyncio.get_running_loop().run_in_executor(self.mesh_threads, self.outputs.mesh, path, digest, packed)
             await self.send_bytes(rid, data)
         except Exception as e:  # report every failure to the viewer
             await self.send({"t": "mesh-error", "rid": rid, "error": f"{type(e).__name__}: {e}"})
