@@ -237,7 +237,7 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, o: 
             )}</div>`,
         )}
         ${create}
-      </div>${machines ? machinesSection(user, machines, true, names, html`Projects run on Tule cloud unless you pick another machine: tell your agent, or <code>tule up --machine NAME</code>.`) : ""}`;
+      </div>${machines ? machinesSection(user, machines, true, names) : ""}`;
   // after a form (a new project, a RunPod key) the address is the page's own again, so a reload does not resend it
   const home = new Html(`<script>if(location.pathname!=="/")history.replaceState(null,"","/")</script>`);
   return page("Projects", html`${message ? html`<p class="notice">${message}</p>` : ""}${body}${home}`, 200, user, user.agent ? "" : agentStart(origin, shown));
