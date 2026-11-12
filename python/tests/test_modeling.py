@@ -450,3 +450,15 @@ def test_tapered_extrude_down_keeps_top_on_top():
 def test_sweep_caps_for_tubes_and_holed_profiles():
     t = pipe([(0, 0, 0), (0, 0, 10), (10, 0, 20)], 3, wall=1)
     assert len(t.faces["start"].ids) == 1 and len(t.faces["end"].ids) == 1 and len(t.faces["side"].ids) == 2
+
+
+def test_a_profile_in_a_solid_boolean_says_to_extrude_it():
+    with pytest.raises(TypeError, match=r"prof\.extrude\(h\)"):
+        box(10) - circle(2)
+
+
+def test_assembly_takes_the_pairs_parts_lists():
+    a = Assembly(box(1).named("a", "#f00"), box(1).named("b").at(3, 0, 0), name="pair")
+    b = Assembly(a.parts(), name="copy")
+    c = Assembly(*a.parts())
+    assert [p for p, _ in b.parts()] == ["copy/a", "copy/b"] and [p for p, _ in c.parts()] == ["a", "b"]

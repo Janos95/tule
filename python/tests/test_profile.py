@@ -101,3 +101,51 @@ def test_offset_grows_shrinks_and_closes_holes():
     assert rim.extrude(3).is_valid
     with pytest.raises(TuleError, match="leaves nothing"):
         rect(10, 4).offset(-3)
+
+
+def test_union_with_a_clockwise_profile_is_one_clean_face():
+    import pytest
+
+    from tule import circle, polygon, rect
+
+    # clockwise points make a face facing -z; it used to stay a separate face from a circle's (+z) after a union
+    prof = polygon([(0, 0), (45.5, 0), (18.9, -65.8)]).offset(5) - circle(1.65)
+    a, b = prof | circle(3), circle(3) | prof  # the circle covers the hole
+    assert len(a.faces) == len(b.faces) == 1 and a.area == pytest.approx(b.area)
+    assert len(a.extrude(3).solids) == 1
+    toe = circle(6.5).at(18.9, -65.8)  # concentric with a rounded corner
+    assert len((prof | toe).faces) == len((toe | prof).faces) == 1
+    assert len((rect(10, 10) | rect(10, 10).mirror().at(5, 0)).faces) == 1
+
+
+def test_spline_profiles_offset_and_round():
+    import math
+
+    import pytest
+
+    from tule import TuleError, rect, spline
+
+    t = [2 * math.pi * k / 60 for k in range(60)]
+    blob = spline([(30 * math.cos(a) + 3 * math.cos(3 * a), 30 * math.sin(a)) for a in t], tol=0.1)
+    assert blob.round(1.5).area == pytest.approx(blob.area)  # a spline's smooth joins are not corners
+    with pytest.raises(TuleError, match="only joins lines and arcs"):
+        (blob | rect(10, 40).at(25, -20)).round(1.5)  # not "no size works"
+    with pytest.raises(TuleError, match="leaves nothing"):
+        blob.offset(-40)
+
+
+def test_offset_retries_when_opencascade_fails_on_a_spline():
+    import math
+
+    import numpy as np
+
+    from tule import rect, spline
+
+    rng = np.random.default_rng(1)
+    for _ in range(18):  # the 18th blob of this sequence made OpenCascade's offset fail on the way back
+        t = np.linspace(0, 2 * math.pi, 60, endpoint=False)
+        r = 30 + sum(rng.uniform(-4, 4) * np.cos(m * t + rng.uniform(0, 6)) for m in range(2, 7))
+    pts = np.c_[r * np.cos(t), r * np.sin(t)]
+    p = spline(pts, tol=0.1) - spline(pts * 0.4 + 2, tol=0.1) | rect(10, 40).at(25, -20)
+    q = p.offset(2).offset(-2)  # it used to say "leaves nothing"
+    assert len(q.faces) == 1 and p.area <= q.area < p.area * 1.02 and q.extrude(1).is_valid

@@ -401,6 +401,9 @@ function bigFrames(ff) {
   return framesOf.get(ff.hash);
 }
 
+/** A long study whose frames are still being read from its output.json. */
+const framesLoading = (o) => !!o.meta?.framesFile && framesOf.get(o.meta.framesFile.hash) == null;
+
 /** The index as the page uses it: id (an output's name, or work/<name>, inputs/<name>), files (geometry,
  * drawn in 3D) and docs (the other files, a view each); paths relative to /workspace. */
 function prepare(list) {
@@ -504,7 +507,7 @@ function fact(o) {
   if (!o.files.length) return ["", ""];
   const kind = kindOf(o);
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
-  if (kind === "sequence") return o.meta?.status === "running" ? ["running", "live"] : [plural(frames(o).length, "frame"), ""];
+  if (kind === "sequence") return o.meta?.status === "running" ? ["running", "live"] : framesLoading(o) ? ["loading", ""] : [plural(frames(o).length, "frame"), ""];
   if (kind === "assembly" && o.meta?.fact) return [String(o.meta.fact), ""]; // a print plate: "2 h 10 min · 31 g"
   if (kind === "assembly") return [plural(Array.isArray(o.meta?.parts) ? o.meta.parts.length : o.files.length, "part"), ""];
   if (kind === "overlay") {
@@ -892,7 +895,7 @@ async function show() {
     const cur = fr[state.frame];
     plot.set(fr, state.frame);
     // the plot's legend names the frame and its values; without values, the label goes here
-    $("frame").textContent = `${state.frame + 1} / ${fr.length}${$("plot").hidden && cur?.label ? ` · ${cur.label}` : ""}`;
+    $("frame").textContent = !fr.length && framesLoading(o) ? "Loading frames…" : `${state.frame + 1} / ${fr.length}${$("plot").hidden && cur?.label ? ` · ${cur.label}` : ""}`;
     $("live").hidden = o.meta?.status !== "running";
     placed = cur?.parts ?? null;
     shownFiles = placed ? placed.map((p) => p.f) : cur ? [cur.f] : [];

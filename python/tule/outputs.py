@@ -440,6 +440,10 @@ class Sequence:
             fname = f"frame_{i:04d}.stl"
             P, I = _mesh_arrays(mesh)
             write_stl_mesh(os.path.join(self.folder, fname), P, I)
+        elif isinstance(shape, Shape) and self.fmt is None:
+            # one part, as outputs.part writes it (STEP, with its color: an STL draws faceted and gray)
+            fname = None
+            placed = [self._place(shape.name or self.name, shape)]
         elif isinstance(shape, (list, tuple, Assembly)) and self.fmt is None:
             # an assembly's frame: each part's file is written once; a part that only moved
             # (.at, .rotate: the same solid) costs its placement, so a motion study stays small

@@ -1688,16 +1688,20 @@ def _tet_mesh(part: Shape, dofs: int, size: float | None, say, notes: list, patc
     balls = [(tuple(at), r, min(H, r / 2)) for at, r in patches]
     smallest = min([thin / 2 if thin else H, H / 25] + [b[2] for b in balls])
     m = tetfe.mesh(part, H, faces, smallest=smallest, balls=balls)
-    for _ in range(0 if size else 2):  # curved detail (gear teeth) took far more: coarser, at most twice
-        if 3 * len(m.nodes) <= 2.5 * dofs:
+    tries = [(H, 3 * len(m.nodes))]
+    for _ in range(0 if size else 3):  # small faces and curved detail take more than planned: coarser, up to 3 times
+        if tries[-1][1] <= 1.25 * dofs:
             break
-        k = (3 * len(m.nodes) / dofs) ** (1 / 3)
-        say(f"fea: {3 * len(m.nodes):,} DOFs is over the budget of {dofs:,}; meshing again {k:.2g}× coarser …")
+        # DOFs go as size^-p: p from the last two meshes (2 at first, between a shell's 2 and a solid's 3)
+        p = 2.0 if len(tries) < 2 else float(np.clip(math.log(tries[-2][1] / tries[-1][1]) / math.log(tries[-1][0] / tries[-2][0]), 1.0, 3.0))
+        k = (tries[-1][1] / dofs) ** (1 / p)
+        say(f"fea: {tries[-1][1]:,} DOFs is over the budget of {dofs:,}; meshing again {k:.2g}× coarser …")
         H, faces, smallest = H * k, {f: x * k for f, x in faces.items()}, smallest * k
         balls = [(at, r, min(H, h * k)) for at, r, h in balls]
         m = tetfe.mesh(part, H, faces, smallest=smallest, balls=balls)
+        tries.append((H, 3 * len(m.nodes)))
     notes += m.notes
-    if 3 * len(m.nodes) > 2.5 * dofs:
+    if 3 * len(m.nodes) > 1.5 * dofs:
         notes.append(f"the mesh has {3 * len(m.nodes):,} DOFs, over the budget of {dofs:,}: thin walls and small "
                      "curved faces need small elements; size= coarsens the rest")
     return m
@@ -1743,7 +1747,7 @@ def _tet_fixed(m, supports, moves=()) -> np.ndarray:
     return _tet_constraints(m, supports, moves)[0]
 
 
-def _tet_pieces(m, fixed, need: bool = True, balanced: bool = False):
+def _tet_pieces(m, fixed, need: bool = True, balanced: bool = False, what: str = "balanced=True"):
     """Refuses pieces of the mesh that no support holds (they would float); with ``balanced``, any second piece."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
@@ -1759,7 +1763,7 @@ def _tet_pieces(m, fixed, need: bool = True, balanced: bool = False):
     if balanced:
         pieces = np.unique(lab[used])
         if len(pieces) > 1:
-            raise TuleError(f"balanced=True needs the part in one piece: it has {len(pieces)}", op="fea",
+            raise TuleError(f"{what} needs the part in one piece: it has {len(pieces)}", op="fea",
                             hint="join them (union) where they touch")
         return
     held = set(np.unique(lab[fixed.any(1)]).tolist())
@@ -2414,13 +2418,18 @@ class Modes:
     seconds: float
     notes: tuple = ()
 
-    def show(self, name: str, title: str | None = None, deform: float | None = None) -> str:
+    def show(self, name: str, title: str | None = None, deform: float | None = None, labels=None) -> str:
         """An overlay output: a field per mode (the buttons under the view), each drawn swinging
-        through its shape; ``deform`` sets the drawn amplitude (mm for the largest motion)."""
+        through its shape; ``deform`` sets the drawn amplitude (mm for the largest motion);
+        ``labels``: one per mode instead of "mode 1: 440 Hz"."""
         from . import outputs
 
         faces, _ = _conditions(self.supports, ())
-        labels = [f"mode {i + 1}: {f:.4g} Hz" for i, f in enumerate(self.frequencies)]
+        if labels is None:
+            labels = [f"mode {i + 1}: {f:.4g} Hz" for i, f in enumerate(self.frequencies)]
+        elif len(labels) != len(self.frequencies):
+            raise TuleError(f"{len(labels)} labels for {len(self.frequencies)} modes", op="fea.Modes.show",
+                            hint="one label per mode")
         fields = _shape_fields(self.mesh, self.shapes, labels, float(np.array(self.part.size).max()), deform)
         return outputs.overlay(name, self.part, faces, fields=fields,
                                title=title or f"Vibration modes: {self.part.name or name}, {self.material.name}",
@@ -2431,7 +2440,8 @@ class Modes:
         lines = [f"fea.modes: {self.part.name or 'part'} in {m.name} (E {m.E:g} MPa, {m.density:g} g/cm³), "
                  f"{self.elements:,} quadratic tetrahedra, {self.dofs:,} DOFs, {self.seconds:.1f} s"]
         for i, f in enumerate(self.frequencies):
-            lines.append(f"  mode {i + 1}: {f:10.4g} Hz   {_moves(self.effective_mass[i])}")
+            lines.append(f"  mode {i + 1}: {f:10.4g} Hz   "
+                         + (_moves(self.effective_mass[i]) if self.supports else _free_motion(self.mesh, self.shapes[i])))
         lines += [f"  note: {n}" for n in self.notes]
         return "\n".join(lines)
 
@@ -2444,6 +2454,44 @@ def _moves(frac) -> str:
     k = int(np.argmax(frac))
     lead = f"moves along {'xyz'[k]}" if frac[k] >= 0.05 else "bends or twists in place"
     return f"{lead} (effective mass {', '.join(parts)})"
+
+
+def _free_motion(m, s) -> str:
+    """How a free part's mode moves: the part cut into 20 slices across its longest extent (a),
+    each slice's motion fitted by a rigid one; the shares of the kinetic energy in bending (slices
+    moving and turning across a), twisting (turning about a), stretching (moving along a) and the
+    rest (slices changing shape: plate and ring modes)."""
+    tets = m.tets[:, :4]
+    P = m.nodes[tets]
+    vol = np.abs(np.einsum("ij,ij->i", np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), P[:, 3] - P[:, 0])) / 6
+    w = np.bincount(tets.reshape(-1), weights=np.repeat(vol / 4, 4), minlength=len(m.nodes))  # lumped at corners
+    on = np.flatnonzero(w > 0)
+    X, u, w = m.nodes[on], np.asarray(s[on], dtype=np.float64), w[on]
+    a = int(np.argmax(np.ptp(X, axis=0)))
+    b, c = [d for d in range(3) if d != a]
+    sl = np.clip(((X[:, a] - X[:, a].min()) / max(np.ptp(X[:, a]), 1e-12) * 20).astype(int), 0, 19)
+    e = np.zeros(4)  # bending in a-b, in a-c, twisting, stretching
+    for k in range(20):
+        i = sl == k
+        if i.sum() < 4:
+            continue
+        wk = w[i]
+        mass = wk.sum()
+        r = X[i] - wk @ X[i] / mass
+        t = wk @ u[i] / mass
+        J = np.eye(3) * (wk @ (r * r).sum(1)) - (r * wk[:, None]).T @ r
+        th = np.linalg.pinv(J) @ (wk @ np.cross(r, u[i]))
+        Jth = J @ th
+        e += [mass * t[b] ** 2 + th[c] * Jth[c], mass * t[c] ** 2 + th[b] * Jth[b], th[a] * Jth[a], mass * t[a] ** 2]
+    total = float(w @ (u * u).sum(1))
+    share = np.maximum(np.append(e, total - e.sum()) / max(total, 1e-300), 0.0)
+    A, B, C = "xyz"[a], "xyz"[b], "xyz"[c]
+    names = [f"bends in the {A}-{B} plane", f"bends in the {A}-{C} plane", f"twists about {A}", f"stretches along {A}",
+             "changes its cross-sections (plate or ring-like)"]
+    k = int(np.argmax(share))
+    lead = names[k] if share[k] >= 0.5 else "mixed motion"
+    return (f"{lead} (bending {A}-{B} {100 * share[0]:.0f} %, {A}-{C} {100 * share[1]:.0f} %, twist {100 * share[2]:.0f} %, "
+            f"stretch {100 * share[3]:.0f} %, other {100 * share[4]:.0f} %)")
 
 
 def modes(
@@ -2459,28 +2507,48 @@ def modes(
     """The ``n`` lowest natural frequencies (Hz) and mode shapes of ``part`` held at ``fixed``
     (as for ``static``), on quadratic tetrahedra (needs gmsh). Print it; ``.show(name)`` draws the
     shapes. ``dofs``/``size`` as for ``static(mesh="tet")``: frequencies converge sooner than
-    stresses, so the default budget is 100,000."""
+    stresses, so the default budget is 100,000. ``fixed=None``: a free part (hung on soft cords);
+    its six rigid-body modes (0 Hz) are left out, and each mode is described by how it moves."""
     from scipy.sparse.linalg import eigsh
 
 
     t_start = time.time()
     say = (lambda msg: print(f"{msg} [{time.time() - t_start:.1f} s]", flush=True)) if verbose else (lambda *a, **k: None)
-    part, mat, supports, _, _ = _inputs(part, material, fixed, (), None, "fea.modes")
+    part, mat, supports, _, _ = _inputs(part, material, fixed, (), None, "fea.modes", need_fixed=False)
     if not mat.density > 0:
         raise TuleError("modes need a density", op="fea", hint="fea.Material(..., density=1.2)")
     n = int(n)
     if not 1 <= n <= 50:
         raise TuleError(f"n={n}", op="fea.modes", hint="1 to 50 modes")
     notes: list[str] = []
-    m, model, fixed_mask, K, solver = _tet_setup(part, mat, supports, dofs, size, say, notes)
     rho = mat.density * TONNE_PER_MM3
-    Mfull = model.mass(rho)
-    idx = solver.idx
-    M = Mfull[idx][:, idx].tocsr()
-    say(f"fea: {n} modes of {len(idx):,} unknowns (shift-invert Lanczos) …")
-    w, v = _eigsh(eigsh, solver.K, n, M=M, sigma=0, which="LM", OPinv=solver.operator(1e-8), tol=1e-9)
+    if supports:
+        m, model, fixed_mask, K, solver = _tet_setup(part, mat, supports, dofs, size, say, notes)
+        Mfull = model.mass(rho)
+        idx = solver.idx
+        M = Mfull[idx][:, idx].tocsr()
+        say(f"fea: {n} modes of {len(idx):,} unknowns (shift-invert Lanczos) …")
+        w, v = _eigsh(eigsh, solver.K, n, M=M, sigma=0, which="LM", OPinv=solver.operator(1e-8), tol=1e-9)
+    else:  # free: shift below the first elastic mode (K - σM is then positive definite), drop the six rigid modes
+        from . import tetfe
+
+        m = _tet_mesh(part, dofs, size, say, notes)
+        model = tetfe.Model(m)
+        _tet_pieces(m, np.zeros((len(m.nodes), 3), bool), need=False, balanced=True, what="a free part (fixed=None)")
+        say(f"fea: {len(m.tets):,} quadratic tetrahedra, {3 * len(m.nodes):,} DOFs; assembling …")
+        K = model.stiffness(mat.E, mat.nu)
+        M = Mfull = model.mass(rho)
+        d = np.sort(np.array(part.size, dtype=float))
+        f_low = 0.05 * math.sqrt(mat.E / rho) * d[0] / d[2] ** 2  # well under a free beam's first bending (≈0.36 c t/L²)
+        sigma = -(2 * math.pi * f_low) ** 2
+        solver = tetfe.Solver(m, (K - sigma * M).tocsr(), np.ones(K.shape[0], bool))
+        idx = solver.idx
+        say(f"fea: {n} modes of {len(idx):,} unknowns, free (shift-invert Lanczos) …")
+        w, v = _eigsh(eigsh, K, n + 6, M=M, sigma=sigma, which="LM", OPinv=solver.operator(1e-8), tol=1e-9)
     order = np.argsort(w)
     w, v = w[order], v[:, order]
+    if not supports:
+        w, v = w[6:], v[:, 6:]
     freqs = np.sqrt(np.maximum(w, 0)) / (2 * np.pi)
     total = np.array([float(np.ones(len(m.nodes)) @ Mfull[c::3, c::3] @ np.ones(len(m.nodes))) for c in range(3)])
     eff = np.zeros((len(w), 3))

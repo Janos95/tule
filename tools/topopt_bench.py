@@ -1,6 +1,7 @@
 """Benchmark: CG iterations per solve of tule.topopt's multigrid-preconditioned solver as the grid gets finer.
 
-Usage: python tools/topopt_bench.py [iterations]   (a 60 × 20 × 30 cantilever, three voxel sizes)
+Usage: python tools/topopt_bench.py [iterations]   (a 60 × 20 × 30 cantilever, three voxel sizes;
+then a 150 × 3 × 150 plate two voxels thick, which coarsens in its plane only)
 
 For each voxel size it runs the optimization without continuation and
 prints the CG iteration count of the first solve (uniform density) and at a
@@ -24,5 +25,15 @@ for voxel in (2.5, 1.25, 0.625):
     dt = (time.time() - t) / r.iterations
     cg = [r.history[m - 1]["cg_iterations"] for m in marks]
     dims = r.density.shape
-    levels = topopt._levels_for(dims)
+    levels = len(topopt._coarsening(dims)) + 1
     print(f"{voxel:>6} {r.density.size:>9} {levels:>6}  " + "  ".join(f"{c:<5}" for c in cg) + f"   {dt:.2f}")
+
+plate = box(150, 3, 150)
+plate = plate.tag("fixed", plate.faces["left"]).tag("load", plate.faces["right"])
+problem = topopt.Problem(plate, fixed=plate.faces["fixed"], loads={plate.faces["load"]: (0, 0, -100)}, volume_fraction=0.3)
+t = time.time()
+r = topopt.optimize(problem, voxel=1.5, iterations=iterations, continuation=False, output=None, tol=0)
+dt = (time.time() - t) / r.iterations
+cg = [r.history[m - 1]["cg_iterations"] for m in marks]
+print(f"{'plate':>6} {r.density.size:>9} {len(topopt._coarsening(r.density.shape)) + 1:>6}  "
+      + "  ".join(f"{c:<5}" for c in cg) + f"   {dt:.2f}")

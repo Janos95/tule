@@ -217,14 +217,16 @@ def test_outputs_part_assembly_sequence(outdir):
     assert [p["file"] for p in meta["parts"]] == ["a.step", "b.step"]
 
     seq = outputs.sequence("grow", "Growing")
-    seq.add(box(1), label="one", volume=1)
+    seq.add(box(1).named("cube", "#f00"), label="one", volume=1)
     meta = json.load(open(outdir / "grow" / "output.json"))
     assert meta["status"] == "running" and len(meta["frames"]) == 1
     seq.add(mesh=([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]))
     seq.done()
     meta = json.load(open(outdir / "grow" / "output.json"))
     assert meta["status"] == "done"
-    assert [f["file"] for f in meta["frames"]] == ["frame_0000.stl", "frame_0001.stl"]
+    # a shape's frame is STEP with its name and color, as outputs.part writes it (an STL drew faceted and gray)
+    assert meta["frames"][0]["parts"] == [{"file": "cube.step", "name": "cube", "color": "#ff0000"}]
+    assert meta["frames"][1]["file"] == "frame_0001.stl"
     assert meta["frames"][0]["values"] == {"volume": 1.0}
     assert not [f for f in os.listdir(outdir / "grow") if f.startswith(".")]  # no temp files left
 

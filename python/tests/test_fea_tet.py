@@ -214,6 +214,33 @@ def test_modes_of_a_cantilever(tmp_path, monkeypatch):
 
 
 @needs_gmsh
+def test_free_modes_of_a_beam(tmp_path, monkeypatch):
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path))
+    L, al = 200.0, fea.material("aluminium 6061-T6")
+    md = fea.modes(box(L, 20, 10), al, fixed=None, n=4, dofs=20_000, verbose=False)
+    # Euler-Bernoulli, free-free, bending across the 10 mm
+    f1 = 4.730 ** 2 / (2 * math.pi * L ** 2) * math.sqrt(al.E * 10 ** 2 / 12 / (al.density * 1e-9))
+    assert md.frequencies[0] == pytest.approx(f1, rel=0.03)  # the six rigid-body modes are left out
+    assert md.frequencies[1] == pytest.approx(2 * f1, rel=0.05)  # across the 20 mm
+    lines = str(md).splitlines()
+    assert "bends in the x-z plane" in lines[1] and "bends in the x-y plane" in lines[2]
+    assert "twists about x" in lines[4]  # after the second x-z bending mode
+    meta = json.load(open(os.path.join(md.show("free-beam", labels=["a", "b", "c", "d"]), "output.json")))
+    assert [f["label"] for f in meta["fields"]] == ["a", "b", "c", "d"]
+    with pytest.raises(TuleError, match="labels"):
+        md.show("x", labels=["a"])
+
+
+@needs_gmsh
+def test_mesh_keeps_near_the_dof_budget():
+    p = box(150, 30, 6)
+    for x in (20, 50, 80, 110, 130):
+        p = p - cylinder(2, 6).at(x, 15, 0)
+    m = fea._tet_mesh(p, 20_000, None, lambda *a: None, [])
+    assert 3 * len(m.nodes) <= 1.3 * 20_000
+
+
+@needs_gmsh
 def test_euler_buckling():
     col = box(5, 5, 100)
     col = col.tag("bottom", col.faces["bottom"]).tag("top", col.faces["top"])

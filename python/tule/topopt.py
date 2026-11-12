@@ -31,7 +31,8 @@ element's ``E(ρ)``, and a scatter-add, all array operations. Conjugate
 gradients are preconditioned by a geometric multigrid V-cycle: factor-2
 coarsening with trilinear transfer, coarse operators that are the exact
 Galerkin products ``PᵀKP`` built element by element (one 24×24 matrix per
-coarse element, from the 8 children), damped Jacobi smoothing, and a
+coarse element, from the 8 children; an axis under 8 elements across is not
+coarsened, so a thin plate still coarsens in its plane), damped Jacobi smoothing, and a
 sparse direct solve on the coarsest grid. The CG iteration count stays
 flat as the grid gets finer (``tools/topopt_bench.py``: 9–11 per solve at
 2,300, 18,000 and 147,000 elements for the same design). With
@@ -98,6 +99,7 @@ def _host(a) -> np.ndarray:
 
 # local node a = (i, j, k) corner offsets; dof 3a + c
 CORNERS = [(i, j, k) for i in (0, 1) for j in (0, 1) for k in (0, 1)]
+ALL = (True, True, True)  # coarsen along x, y and z
 
 
 def element_stiffness(nu: float) -> np.ndarray:
@@ -170,7 +172,7 @@ class _Level:
         if self.Ke is None:
             fe = (self.KE @ ue) * self.coef.reshape(1, -1)
         else:
-            fe = (self.Ke.reshape(-1, 24, 24) @ ue.T[:, :, None])[:, :, 0].T
+            fe = self.xp.einsum("eij,je->ie", self.Ke.reshape(-1, 24, 24), ue)  # twice as fast as a batched @
         return self.scatter(fe)
 
     def A(self, u):
@@ -191,38 +193,46 @@ class _Level:
         self.free = self.free * stiff  # dofs no element touches are not unknowns
         self.diag = xp.where(self.free > 0, d, 1.0)
 
-    def coarsen(self, P):
-        """The Galerkin operator on the grid twice as coarse, element by element.
+    def coarsen(self, P, axes=ALL):
+        """The Galerkin operator on the grid twice as coarse (along ``axes`` only), element by element.
 
         Trilinear prolongation inside a coarse element only uses that
         element's 8 nodes, so ``Pᵀ K P`` is a sum over each coarse element's
-        8 children of ``P_cᵀ K_child P_c`` (``P`` holds the 8 ``P_c``).
+        children of ``P_cᵀ K_child P_c`` (``P`` holds the ``P_c``, 8 or fewer: ``_p_child(axes)``).
         """
         xp = self.xp
         Kc = None
-        for c, (i, j, k) in enumerate(CORNERS):
+        for c, off in enumerate(_children(axes)):
             Pc = P[c]
+            sl = tuple(slice(o, None, 2) if a else slice(None) for o, a in zip(off, axes))
             if self.Ke is None:
                 G = Pc.T @ self.KE @ Pc
-                term = self.coef[i::2, j::2, k::2][..., None, None] * G
+                term = self.coef[sl][..., None, None] * G
             else:
-                term = Pc.T @ self.Ke[i::2, j::2, k::2] @ Pc
+                term = Pc.T @ self.Ke[sl] @ Pc
             if Kc is None:
                 Kc = term
             else:
                 Kc += term  # in place: these are the biggest arrays of a solve
         # a coarse dof is fixed when any fine dof it interpolates to is: supports that fall between
         # coarse nodes (a bolt hole) must not vanish, or the coarse problem floats
-        free = (_restrict(1.0 - self.free, xp) <= 1e-12).astype(self.free.dtype)
+        free = (_restrict(1.0 - self.free, xp, axes) <= 1e-12).astype(self.free.dtype)
         return _Level(xp, free, Ke=Kc)
 
 
-def _child_prolongations() -> np.ndarray:
+def _children(axes=ALL) -> list:
+    """The offsets of a coarse element's children: two along each coarsened axis, one along the others."""
+    return [c for c in CORNERS if all(a or not o for o, a in zip(c, axes))]
+
+
+def _child_prolongations(axes=ALL) -> np.ndarray:
     """``P[c]`` (24×24): the dofs of child ``c`` of a coarse element from the coarse element's dofs."""
-    P = np.zeros((8, 24, 24))
-    for c, off in enumerate(CORNERS):
+    kids = _children(axes)
+    P = np.zeros((len(kids), 24, 24))
+    for c, off in enumerate(kids):
         for a, corner in enumerate(CORNERS):
-            t = [(off[d] + corner[d]) / 2 for d in range(3)]  # the child's node, in coarse-element coordinates
+            # the child's node, in coarse-element coordinates
+            t = [(off[d] + corner[d]) / 2 if axes[d] else corner[d] for d in range(3)]
             for b, cb in enumerate(CORNERS):
                 w = np.prod([t[d] if cb[d] else 1 - t[d] for d in range(3)])
                 for comp in range(3):
@@ -230,9 +240,9 @@ def _child_prolongations() -> np.ndarray:
     return P
 
 
-def _prolong(c, xp):
-    """Trilinear interpolation of node fields ``(3, ...)`` to the grid twice as fine (separable)."""
-    for axis in (1, 2, 3):
+def _prolong(c, xp, axes=ALL):
+    """Trilinear interpolation of node fields ``(3, ...)`` to the grid twice as fine along ``axes`` (separable)."""
+    for axis in [d + 1 for d in range(3) if axes[d]]:
         n = c.shape[axis]
         shape = list(c.shape)
         shape[axis] = 2 * n - 1
@@ -248,9 +258,9 @@ def _prolong(c, xp):
     return c
 
 
-def _restrict(f, xp):
+def _restrict(f, xp, axes=ALL):
     """The transpose of ``_prolong``."""
-    for axis in (1, 2, 3):
+    for axis in [d + 1 for d in range(3) if axes[d]]:
         ev = [slice(None)] * f.ndim
         od = [slice(None)] * f.ndim
         ev[axis], od[axis] = slice(0, None, 2), slice(1, None, 2)
@@ -292,6 +302,14 @@ def _sparse_stiffness(level: _Level):
 
 
 _P_CHILD = _child_prolongations()
+_P_AXES = {ALL: _P_CHILD}
+
+
+def _p_child(axes=ALL) -> np.ndarray:
+    axes = tuple(bool(a) for a in axes)
+    if axes not in _P_AXES:
+        _P_AXES[axes] = _child_prolongations(axes)
+    return _P_AXES[axes]
 
 
 class _Multigrid:
@@ -301,14 +319,17 @@ class _Multigrid:
     small right-hand side and solution cross the bus.
     """
 
-    def __init__(self, xp, KE, coef, free, levels: int, sweeps: int = 2, omega: float = 0.6, fine: "_Level | None" = None):
+    def __init__(self, xp, KE, coef, free, levels, sweeps: int = 2, omega: float = 0.6, fine: "_Level | None" = None):
+        """``levels``: a count (coarsening along every axis), or ``_coarsening``'s list of axes per step."""
         from scipy.sparse.linalg import splu
 
         self.xp, self.sweeps, self.omega = xp, sweeps, omega
         self.levels = [fine or _Level(xp, free, KE=KE, coef=coef)]  # fine: a level of its own (tule.fea's cut cells)
-        P = xp.asarray(_P_CHILD)
-        for _ in range(levels - 1):
-            self.levels.append(self.levels[-1].coarsen(P))
+        self.axes = [ALL] * (levels - 1) if isinstance(levels, int) else [tuple(a) for a in levels]
+        for axes in self.axes:
+            P = xp.asarray(_p_child(axes))
+            lv = self.levels[-1]
+            self.levels.append(lv.coarsen(P) if axes == ALL else lv.coarsen(P, axes))
         for lv in self.levels:
             lv.make_diag()
         A = _sparse_stiffness(self.levels[-1])
@@ -332,9 +353,9 @@ class _Multigrid:
         for _ in range(self.sweeps - 1):
             z = z + w * (r - lv.A(z))
         res = r - lv.A(z)
-        nxt = self.levels[l + 1]
-        rc = nxt.free * _restrict(lv.free * res, xp)
-        z = z + lv.free * _prolong(self.apply(rc, l + 1), xp)
+        nxt, axes = self.levels[l + 1], self.axes[l]
+        rc = nxt.free * _restrict(lv.free * res, xp, axes)
+        z = z + lv.free * _prolong(self.apply(rc, l + 1), xp, axes)
         for _ in range(self.sweeps):
             z = z + w * (r - lv.A(z))
         return z
@@ -471,7 +492,7 @@ class _Grid:
     void: np.ndarray
     fixed: np.ndarray  # bool nodes (nx+1, ny+1, nz+1)
     force: np.ndarray  # (nx+1, ny+1, nz+1, 3)
-    levels: int
+    levels: Any  # a count, or the axes coarsened per multigrid step
 
     @property
     def elements(self) -> int:
@@ -547,14 +568,15 @@ class Problem:
 
     ``fixed`` are faces of ``domain`` held in place; ``loads`` maps face
     selections of ``domain`` to the total force on them (N, spread over the
-    grid nodes on those faces); ``volume_fraction`` is the share of the
+    grid nodes on those faces), or is a list of ``fea.force(faces, f, at=, r=)``
+    (a force on the faces within ``r`` of ``at`` only); ``volume_fraction`` is the share of the
     domain to keep; ``keep`` and ``void`` are Shapes whose voxels stay solid
     or empty. ``E`` (MPa) and ``nu`` are the material.
     """
 
     domain: Shape
     fixed: Faces
-    loads: Any  # {Faces: force}; stored as a tuple of (Faces, Vec)
+    loads: Any  # {Faces: force} or [fea.force]; stored as a tuple of (Faces, Vec), patches in ._patches
     volume_fraction: float = 0.3
     keep: Any = ()
     void: Any = ()
@@ -568,9 +590,21 @@ class Problem:
             raise TuleError("fixed must be a non-empty face selection of the domain", op="topopt",
                             hint='e.g. fixed=part.faces["bolt"] after part = part.tag("bolt", ...)')
         object.__setattr__(self, "fixed", self.domain._resolve(self.fixed, "face"))
-        loads = self.loads.items() if isinstance(self.loads, Mapping) else self.loads
-        norm = []
-        for faces, force in loads:
+        from . import fea
+
+        loads = self.loads.items() if isinstance(self.loads, Mapping) else \
+            [self.loads] if isinstance(self.loads, fea.Load) else self.loads
+        norm, patches = [], []
+        for ld in loads:
+            if isinstance(ld, fea.Load):
+                if ld.kind != "force":
+                    raise TuleError(f"topopt loads are forces, got fea.{ld.kind}", op="topopt",
+                                    hint='fea.force(part.faces["load"], (0, 0, -500), at=(x, y, z), r=5)')
+                faces, force = fea._faces(self.domain, ld.faces, "the load"), ld.value
+                patches.append((ld.at, ld.r) if ld.at is not None else None)
+            else:
+                faces, force = ld
+                patches.append(None)
             if not isinstance(faces, Faces) or not faces:
                 raise TuleError("each load needs a non-empty face selection", op="topopt",
                                 hint='loads={part.faces["load"]: (0, 0, -500)}')
@@ -581,6 +615,7 @@ class Problem:
         if not norm:
             raise TuleError("no loads given", op="topopt", hint='loads={part.faces["load"]: (0, 0, -500)}')
         object.__setattr__(self, "loads", tuple(norm))
+        object.__setattr__(self, "_patches", tuple(patches))
         if not 0 < self.volume_fraction < 1:
             raise TuleError("volume_fraction must be between 0 and 1", op="topopt", hint="0.2 to 0.4 is typical")
         for name in ("keep", "void"):
@@ -600,23 +635,27 @@ class Problem:
         for i in self.fixed.ids:
             faces[i] = {"role": "fixed", "label": "fixed"}
         arrows = []
-        for sel, f in self.loads:
-            label = _force_label(f)
+        for (sel, f), patch in zip(self.loads, self._patches):
+            label = _force_label(f) + (f" within {patch[1]:g} mm of ({', '.join(f'{v:g}' for v in patch[0])})" if patch else "")
             for i in sel.ids:
                 faces[i] = {"role": "load", "label": label}
             w = [face_area(x) for x in sel.items]
             c = sum((np.array(face_center(x)) * a for x, a in zip(sel.items, w)), np.zeros(3)) / max(sum(w), 1e-30)
+            if patch:
+                c = np.array(patch[0])
             arrows.append({"at": c.tolist(), "dir": list(f.normalized()), "label": label})
         return outputs.overlay(name, self.domain, faces, arrows=arrows,
                                title=title or f"Topology optimization setup, volume fraction {self.volume_fraction:g}")
 
     # -- discretization
-    def _grid(self, voxel: float, levels: int) -> _Grid:
+    def _grid(self, voxel: float, levels) -> _Grid:
+        """The grid, padded so it coarsens ``levels`` times (a count, or ``_coarsening``'s axes per step)."""
         lo, hi = self.domain.bounds
         size = np.array(hi - lo)
-        mult = 2 ** (levels - 1)
+        plan = [ALL] * (levels - 1) if isinstance(levels, int) else levels
+        mult = [2 ** sum(bool(a[d]) for a in plan) for d in range(3)]
         dims = tuple(int(max(1, math.ceil(s / voxel - 1e-9))) for s in size)
-        dims = tuple(int(math.ceil(d / mult) * mult) for d in dims)
+        dims = tuple(int(math.ceil(d / m) * m) for d, m in zip(dims, mult))
         origin = Vec(*lo)
         domain = voxelize(self.domain, origin, voxel, dims)
         if not domain.any():
@@ -637,12 +676,17 @@ class Problem:
             raise TuleError("no grid nodes found on the fixed faces", op="topopt", faces=self.fixed.ids,
                             hint="use a smaller voxel so the faces are resolved")
         force = np.zeros(node_active.shape + (3,))
-        for sel, f in self.loads:
+        for (sel, f), patch in zip(self.loads, self._patches):
             nodes = _face_nodes(self.domain, sel, origin, voxel, node_active)
+            if patch:  # the nodes within r of the point (at least those within a voxel)
+                at, r = np.array(patch[0]), max(patch[1], voxel)
+                X = np.stack(np.meshgrid(*[np.arange(n) for n in nodes.shape], indexing="ij"), -1) * voxel + np.array(origin)
+                nodes &= np.linalg.norm(X - at, axis=-1) <= r
             n = int(nodes.sum())
             if n == 0:
-                raise TuleError("no grid nodes found on a load's faces", op="topopt", faces=sel.ids,
-                                hint="use a smaller voxel so the faces are resolved")
+                raise TuleError("no grid nodes found on a load's faces" + (f" within {patch[1]:g} mm of the point" if patch else ""),
+                                op="topopt", faces=sel.ids,
+                                hint="put at= on the faces, or a larger r" if patch else "use a smaller voxel so the faces are resolved")
             force[nodes] += np.array(f) / n
         return _Grid(origin, voxel, dims, domain, keep, void, fixed, force, levels)
 
@@ -830,6 +874,21 @@ def _levels_for(dims: Sequence[int], max_coarse_dofs: int = 3000, min_coarse_ele
         levels += 1
 
 
+def _coarsening(dims: Sequence[int], max_coarse_dofs: int = 3000, min_coarse_elements: int = 4, most: int = 8) -> list:
+    """Multigrid steps for a grid, the axes each one coarsens by 2: every axis still at least
+    ``2 · min_coarse_elements`` across (semi-coarsening: a plate two voxels thick still coarsens in
+    its plane), until the coarsest grid is small."""
+    d = np.array(dims, dtype=float)
+    plan = []
+    while 3 * np.prod(d + 1) > max_coarse_dofs and len(plan) < most - 1:
+        axes = tuple(bool(n >= 2 * min_coarse_elements) for n in d)
+        if not any(axes):
+            break
+        plan.append(axes)
+        d = np.where(axes, np.ceil(d / 2), d)
+    return plan
+
+
 def _oc(x, dc, dv, design, apply_bounds, volume_of, target: float, move: float, xp):
     """One optimality-criteria update: the bisection on the multiplier hits the volume target."""
     l1, l2 = 0.0, 1e9 * float(xp.max(-dc) + 1e-30) / float(xp.max(dv) + 1e-30) + 1e-30
@@ -908,11 +967,11 @@ def optimize(
     try:
         for si, (hs, n_it) in enumerate(stages):
             dims0 = tuple(int(max(1, math.ceil(s / hs - 1e-9))) for s in np.array(hi - lo))
-            levels = _levels_for(dims0)
+            levels = _coarsening(dims0)
             g = problem._grid(hs, levels)
             if verbose:
                 print(f"topopt: {g.elements} elements of {hs:.3g} mm in a {g.dims[0]}×{g.dims[1]}×{g.dims[2]} grid, "
-                      f"{levels} multigrid levels, {dev}")
+                      f"{len(levels) + 1} multigrid levels, {dev}")
             domain = xp.asarray(g.domain.astype(np.float64))
             keep = xp.asarray(g.keep)
             void = xp.asarray(g.void)

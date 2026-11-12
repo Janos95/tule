@@ -140,7 +140,7 @@ def test_frames_from_a_sequence_and_its_folder(outdir):
         assert p.overlap == pytest.approx((lever.rotate(z=90) & post).volume, rel=1e-5)
     with pytest.raises(TuleError, match="not placed parts"):
         with outputs.sequence("single") as single:
-            single.add(box(3))
+            single.add(mesh=([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [(0, 1, 2)]))  # a mesh frame has no parts
         clearance(single)
 
 
@@ -204,3 +204,14 @@ def test_held_checks_containment_itself():
     assert _held(big._s, small._s, False)[0] == 0 and _held(small._s, big._s, False)[0] == 0
     assert _held(big._s, box(4, 4, 4).at(9, 9, 9)._s, False)[0] == 0  # overlapping
     assert big.distance(small) == 0 and plate.distance(pin) > 0.19
+
+
+def test_show_leaves_out_many_contacts(outdir):
+    plate = box(100, 100, 2).named("plate")
+    pegs = [cylinder(1, 5).at(8 + 7 * i, 50, 2).named(f"peg{i}") for i in range(12)]
+    r = clearance(Assembly(plate, *pegs), contacts=[("plate", "peg*")])
+    assert len(r) == 12 and r.ok and r.below == 0.5
+    meta = json.load(open(os.path.join(r.show("pegs"), "output.json")))
+    assert not meta["faces"]  # 12 contacts: left out
+    meta = json.load(open(os.path.join(r.show("pegs", contacts=True), "output.json")))
+    assert {f["severity"] for f in meta["faces"].values()} == {"ok"}

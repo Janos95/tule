@@ -27,7 +27,7 @@ RUN printf 'user-agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 
 # OCP links against VTK libraries at import (vtk is its only heavy dependency)
 COPY runtime/prune_vtk.sh /tmp/prune_vtk.sh
-RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh lxml networkx pymupdf ezdxf python-fcl \
+RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh lxml networkx pymupdf ezdxf python-fcl vl-convert-python==1.9.0.post1 \
  && sh /tmp/prune_vtk.sh && rm /tmp/prune_vtk.sh
 
 RUN --mount=type=bind,source=python,target=/tmp/py,rw pip install --no-cache-dir --no-deps /tmp/py \

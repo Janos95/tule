@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from tule import *
-from tule import topopt
+from tule import fea, topopt
 
 
 
@@ -82,6 +82,31 @@ def test_coarse_operator_is_galerkin():
     assert np.allclose(R, P.T)
     A = _dense_stiffness(lv)
     assert np.allclose(_dense_stiffness(coarse), P.T @ A @ P)
+
+
+def test_semi_coarsening_is_galerkin():
+    rng = np.random.default_rng(2)
+    lv = grid_level(rng, shape=(4, 1, 4))
+    lv.free[:] = 1
+    axes = (True, False, True)  # one voxel thick: coarsen in its plane only
+    coarse = lv.coarsen(topopt._p_child(axes), axes)
+    assert coarse.shape == (2, 1, 2)
+    coarse.free[:] = 1
+    P = np.stack([topopt._prolong(e.reshape(coarse.free.shape), np, axes).reshape(-1) for e in np.eye(coarse.free.size)], axis=1)
+    assert np.allclose(_dense_stiffness(coarse), P.T @ _dense_stiffness(lv) @ P)
+    # a plate two voxels thick still gets levels
+    assert topopt._coarsening((100, 2, 100)) == [(True, False, True)] * 3
+
+
+def test_a_force_on_a_patch():
+    b = cantilever()
+    p = topopt.Problem(b, fixed=b.faces["fixed"], loads=[fea.force(b.faces["load"], (0, 0, -100), at=(40, 5, 15), r=3)])
+    g = p._grid(1.0, 1)
+    on = np.argwhere(np.linalg.norm(g.force, axis=-1) > 0)
+    assert np.allclose(g.force.sum((0, 1, 2)), (0, 0, -100))
+    assert (on[:, 0] == 40).all() and np.abs(on[:, 2] - 15).max() <= 3 and len(on) < 40
+    with pytest.raises(TuleError, match="forces"):
+        topopt.Problem(b, fixed=b.faces["fixed"], loads=[fea.pressure(b.faces["load"], 1.0)])
 
 
 def test_cg_iterations_stay_flat_as_the_grid_gets_finer():

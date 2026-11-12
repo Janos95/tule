@@ -35,7 +35,6 @@ from OCP.BRep import BRep_Builder
 from ._occ import cast, static, subshapes
 from .errors import OCC_ERRORS, TuleError
 from .geom import Vec, from_pnt
-from .selection import edge_type
 
 Point2 = Sequence[float]
 
@@ -53,6 +52,39 @@ def _unify(shape):
     u = ShapeUpgrade_UnifySameDomain(shape, True, True, False)
     u.Build()
     return u.Shape()
+
+
+def _up(shape):
+    """``shape``'s faces all facing +z: a face facing down (a clockwise outline, a mirror) does not
+    merge with one facing up after a Boolean, leaving the overlap as a separate face."""
+    from OCP.BRepGProp import BRepGProp_Face
+
+    faces = list(subshapes(shape, "face"))
+    out, flipped = [], False
+    for f in faces:
+        g = BRepGProp_Face(f)
+        u0, u1, v0, v1 = g.Bounds()
+        p, n = gp_Pnt(), gp_Vec()
+        g.Normal((u0 + u1) / 2, (v0 + v1) / 2, p, n)
+        if n.Z() < 0:
+            f, flipped = cast(f.Reversed()), True
+        out.append(f)
+    if not flipped:
+        return shape
+    return out[0] if len(out) == 1 else _compound(out)
+
+
+def _tangent_from(edge, v) -> Vec:
+    """Unit tangent of ``edge`` at its vertex ``v``, pointing along the edge away from ``v``."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    c = BRepAdaptor_Curve(edge)
+    u = static(BRep_Tool, "Parameter")(v, edge)
+    p, t = gp_Pnt(), gp_Vec()
+    c.D1(u, p, t)
+    t = Vec(t.X(), t.Y(), t.Z()).normalized()
+    at_end = abs(u - c.LastParameter()) < abs(u - c.FirstParameter())
+    return -t if at_end else t
 
 
 def _polygon_face(points: Sequence[Point2]):
@@ -129,7 +161,7 @@ class Profile:
 
     # ------------------------------------------------------------ 2D Booleans
     def _boolean(self, cls, other: "Profile", name: str) -> "Profile":
-        op = cls(self._s, other._s)
+        op = cls(_up(self._s), _up(other._s))
         op.Build()
         if not op.IsDone():
             raise TuleError("2D Boolean failed", op=name)
@@ -199,20 +231,16 @@ class Profile:
             edges = [e for e, vs in ends if any(v.IsSame(x) for x in vs)]
             if len(edges) != 2:
                 continue
-            if all(edge_type(e) == "line" for e in edges):
-                d = []
-                for e in edges:
-                    a, b = [from_pnt(static(BRep_Tool, "Pnt")(x)) for x in subshapes(e, "vertex")]
-                    p = from_pnt(static(BRep_Tool, "Pnt")(v))
-                    other = b if (a - p).length < 1e-9 else a
-                    d.append((other - p).normalized())
-                cosang = d[0].dot(d[1])
-                if cosang < -0.9999:  # straight through: not a corner
-                    continue
+            d = [_tangent_from(e, v) for e in edges]
+            if d[0].dot(d[1]) < -0.9999:  # smooth or straight through (a spline's joins, an arc into a line)
+                continue
             out.append(v)
         return out
 
     def _corner_op(self, size, op: str, points: Sequence[Point2] | None = None) -> "Profile":
+        from OCP.BRepAdaptor import BRepAdaptor_Curve
+        from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Line
+
         faces = []
         for face in self.faces:
             wires = subshapes(face, "wire")
@@ -242,6 +270,16 @@ class Profile:
                             break
                 if r <= 0:
                     continue
+                for e in subshapes(face, "edge"):
+                    if any(v.IsSame(x) for x in subshapes(e, "vertex")) and \
+                            BRepAdaptor_Curve(e).GetType() not in (GeomAbs_Line, GeomAbs_Circle):
+                        # OpenCascade's 2D fillet only joins lines and arcs (ChFi2d: NotAuthorized)
+                        raise TuleError(f"cannot {op} the corner at ({p.x:.4g}, {p.y:.4g}): a spline or ellipse "
+                                        "edge meets there, and the 2D fillet only joins lines and arcs", op=op,
+                                        hint="extrude first and round that corner's edge on the solid: s = "
+                                             f"prof.extrude(h); s = s.fillet(s.edges.parallel(Z).nearest(({p.x:.4g}, "
+                                             f"{p.y:.4g}, 0)), r) (a spline's smooth joins are vertical edges too)",
+                                        corner=(round(p.x, 6), round(p.y, 6)))
                 added += 1
                 try:
                     if op == "round":
@@ -277,8 +315,9 @@ class Profile:
         """``op`` on every corner; when ``size`` does not fit, the error says the largest that does."""
         try:
             return self._corner_op(size, op)
-        except TuleError:
-            pass
+        except TuleError as e:
+            if "corner" in e.data:  # a corner no size can do
+                raise
         lo, hi = 0.0, float(size)
         for _ in range(10):
             mid = (lo + hi) / 2
@@ -311,13 +350,30 @@ class Profile:
 
         def grown(wire, by):
             # the region inside one outline, offset; None when it vanishes
-            try:
-                mk = BRepOffsetAPI_MakeOffset(_region(wire), kind)
-                mk.Perform(float(by))
-                ok = mk.IsDone()
-            except OCC_ERRORS:
-                ok = False
-            regions = [Profile(_region(w)) for w in subshapes(mk.Shape(), "wire")] if ok else []
+            for approx in (False, True):  # retried with the outline as lines and arcs: splines often fail
+                try:
+                    mk = BRepOffsetAPI_MakeOffset(_region(wire), kind)
+                    mk.SetApprox(approx)
+                    mk.Perform(float(by))
+                    if mk.IsDone():
+                        break
+                except OCC_ERRORS:
+                    pass
+            else:
+                if by < 0 and -by >= math.sqrt(Profile(_region(wire)).area / math.pi) * (1 - 1e-6):
+                    return None  # no disc of that radius fits: it does vanish (a circle shrunk to nothing)
+                raise TuleError(f"OpenCascade's offset algorithm failed to offset an outline by {by:g}", op="offset",
+                                hint="try a smaller or larger distance, or build the outline from fewer, "
+                                     "simpler curves (spline with a larger tol=)")
+            regions = [_region(w) for w in subshapes(mk.Shape(), "wire")]
+            if approx:  # its edges come out of order: fixed into a valid face
+                from OCP.ShapeFix import ShapeFix_Shape
+
+                regions = [ShapeFix_Shape(r) for r in regions]
+                for fx in regions:
+                    fx.Perform()
+                regions = [fx.Shape() for fx in regions]
+            regions = [Profile(r) for r in regions]
             regions = [r for r in regions if r.area > 1e-9]
             return reduce(lambda a, b: a ^ b, regions) if regions else None  # nested ones cancel
 

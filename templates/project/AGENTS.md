@@ -212,7 +212,7 @@ Geometry: STEP (faces, names, colors, tags travel inside; prefer it) or STL.
 
 ## Writing them
 
-`tule.outputs` writes folders atomically (under `tule build` one per script; here several):
+`tule.outputs` writes folders atomically (under `tule build` one per script):
 
 ```python
 from tule import *
@@ -231,13 +231,13 @@ outputs.overlay("plate-loads", part, title="Load case 1",
                 arrows=[{"at": (20, 10, 5), "dir": (0, 0, -1), "label": "200 N"}])
 ```
 
-Other tools write into `outputs.folder()` directly (`output.json` last).
+Other tools write into `outputs.folder()` (`output.json` last).
 
-A long list: group from the start. `src/checks/fit.py` makes `outputs/checks/fit/`, folded under "checks"; a number in front orders, unshown (`src/01-print.py`: "print", first).
+A long list: group early. `src/checks/fit.py` makes `outputs/checks/fit/`, folded under "checks"; a number in front orders: `src/01-print.py` writes `outputs/01-print/` (name it "01-print"), shown first as "print".
 
 ## `output.json`
 
-Optional: without it one file is a part, numbered files a sequence, several files an assembly.
+Optional: without it one file is a part, numbered files a sequence, several an assembly.
 
 ```json
 {"version": 1, "kind": "part", "file": "bracket.step", "title": "Bracket v2"}
@@ -253,13 +253,13 @@ Optional: without it one file is a part, numbered files a sequence, several file
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid`, …) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend; stress: `tule docs fea`.
-- **See-through** parts (glass, covers): a color with opacity, `.named("window", "#8da0aa66")`.
+- **See-through** parts: a color with opacity, `.named("window", "#8da0aa66")`.
 - **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", …}}` (`estimate="bambu-p1s"`, the user's printer: `tule docs outputs.plate`). Overflow: more plates; a part's `{"down": "base"}` lays that tagged face down.
 - **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images
 
-Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")` draws a model); PDF (a drawing: `tule docs drawings`), text, images; anything else: a download.
+Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a table; `*.vl.json`: a Vega-Lite chart; `.md`: a document (`![](mass.vl.json)` draws a chart, table or image in place; `outputs.picture(asm, f"{d}/step-1.png", view="front")`); PDF (a drawing: `tule docs drawings`), text, images; anything else: a download.
 
 ```python
 import json
@@ -273,7 +273,7 @@ with open(f"{d}/mass.vl.json", "w") as f:
                             "y": {"field": "mass_g", "type": "quantitative"}}}, f)
 ```
 
-No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it. In a folder, a `README.md` (or `00-…md`) opens first. Write for the user: rounded numbers, no Python reprs.
+No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it. In a folder, a `README.md` (or `00-…md`) opens first. Write for the user: rounded numbers.
 
 ## Looking at outputs yourself
 
@@ -282,6 +282,6 @@ tule screenshot -o /tmp/v.png --output bracket --labels      # f12 · load on ev
 tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
 ```
 
-The PNG lists faces labeled, too small to label, or hidden. A sequence shows its last frame (`--frame 3`).
+The PNG lists faces labeled, too small to label, or hidden. A sequence shows its last frame (`--frame 3`). Charts too: `tule screenshot outputs/study/mass.vl.json`.
 
 Outputs are not in git (`tule build` remakes them).

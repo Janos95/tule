@@ -73,6 +73,19 @@ def find_root(start: str | None = None) -> str | None:
         d = up
 
 
+def root_without_src(start: str | None = None) -> str | None:
+    """A project folder that has lost its src/ (git rm of the last script removes it), or None."""
+    env = os.environ.get("TULE_WORKSPACE")
+    if env and os.path.isdir(env):  # a machine's /workspace
+        return env
+    d = os.path.realpath(start or os.getcwd())
+    while not os.path.isfile(os.path.join(d, "tule.toml")):
+        if os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+    return d
+
+
 def _scripts(d: str) -> list[str]:
     return [f[:-3] for f in os.listdir(d) if f.endswith(".py") and not f.startswith(("_", ".")) and os.path.isfile(os.path.join(d, f))]
 

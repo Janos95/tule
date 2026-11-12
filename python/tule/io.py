@@ -762,9 +762,13 @@ def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float, or
                             "(part.is_valid), try tolerance=0.01")
         _, inv, count = np.unique(key, return_inverse=True, return_counts=True)
         at = V[np.bincount(e[count[inv.ravel()] > 1].ravel()).argmax()]  # the pinch: on most doubled edges
-        raise TuleError(f"part {name!r} touches itself along {shared} edges (near {_g3(at + origin)}): "
-                        "two faces meet at a line or point, so the mesh is not a clean solid", op="export_3mf",
-                        hint="a hole or slot just touching another face is the usual cause: move or resize it by 0.05 mm")
+        n = len(shape.solids)
+        raise TuleError(f"part {name!r} touches itself along {shared} mesh edges (near {_g3(at + origin)}): "
+                        "its own faces meet edge to edge there, so the mesh is not one clean solid", op="export_3mf",
+                        hint=f"it is {n} solids that touch: unite them so they overlap, or export them as separate parts"
+                        if n > 1 else "usual causes: a Boolean that left a sliver or an inner face (unite 2D profiles "
+                        "before extruding, check len(part.faces)), or a hole or slot exactly touching another face "
+                        "(move or resize it by 0.05 mm)")
     tri = V[F]
     vol = np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])).sum() / 6
     if vol < 0:

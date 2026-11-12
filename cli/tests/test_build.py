@@ -306,6 +306,14 @@ def test_check_names_and_scripts_that_are_gone(project):
     assert "no script    src/bom.py is gone: delete outputs/bom" in check()
 
 
+def test_a_project_without_src_says_so(project):
+    import shutil
+
+    shutil.rmtree(project / "src")
+    code, err = build(project)
+    assert code != 0 and "no src/ folder: put build scripts in src/" in err
+
+
 def test_a_repo_with_src_is_not_a_project_without_tule_toml(project):
     from tule_cli.build import find_root
 

@@ -11,6 +11,8 @@ Find the stiffest shape for given loads and supports within a design space (SIMP
 5. `outputs.part("bracket-optimized", r.mesh)` (the smoothed result, STL); `r.to_shape()` is a solid to keep modeling with (it can fail on a ragged result: catch `TuleError`).
 
 - `voxel=` sets the element size (default: about 20,000 elements), `iterations=60`.
+- A load on part of a face (to match the FEA's): `loads=[fea.force(part.faces["seat"], (0, 0, -500), at=(x, y, z), r=5)]`.
+- Runtime on a CPU: a few seconds per iteration at 20,000–40,000 elements (60 iterations: 2–5 min), growing with the element count: halving `voxel` costs 8×. `verbose=True` prints the grid, multigrid levels and CG iterations. A thin domain (a plate) coarsens in its plane only; give it at least 2 voxels through its thickness, ideally a whole number of them.
 - `device="auto"` uses the GPU on a GPU machine (`tule docs setup`).
 - Long studies: `tule build` goes on if the SSH command ends (`tule docs loop`).
 - Signatures: `tule docs tule.topopt`.

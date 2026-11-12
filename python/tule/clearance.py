@@ -486,16 +486,15 @@ def _pt(p) -> str:
 
 class Clearance:
     """What ``clearance`` found: ``pairs`` worst first (clashes by volume, then gaps, then contacts),
-    ``clashes`` (overlaps not listed as contacts), ``ok`` (none). ``print(r)`` is a table;
-    ``r.show(name)`` puts it in the viewer."""
+    ``clashes`` (overlaps not listed as contacts), ``ok`` (none), ``worst``, ``below`` (mm),
+    ``seconds``. ``print(r)`` is a table; ``r.show(name)`` puts it in the viewer."""
 
-    def __init__(self, pairs, frames, paths, solids, below, seconds):
+    def __init__(self, pairs, below, seconds, _scene=((), (), ())):
         self.pairs: list[Pair] = pairs
         self.below = below
         self.seconds = seconds
-        self._frames = frames  # (label, part ids, solid keys, placements) per frame
-        self._paths = paths
-        self._solids = solids
+        # (label, part ids, solid keys, placements) per frame; part paths; solids
+        self._frames, self._paths, self._solids = _scene
 
     @property
     def clashes(self) -> list[Pair]:
@@ -548,10 +547,12 @@ class Clearance:
 
     LABELS = 5  # gaps labeled in the model (clashes always are)
 
-    def show(self, name: str, frame: int | None = None, title: str | None = None) -> str:
+    def show(self, name: str, frame: int | None = None, title: str | None = None,
+             contacts: bool | None = None) -> str:
         """Write an overlay output: the worst pair's frame (or ``frame``) with the faces of each pair
         at their worst there marked (red: clash, amber: touching, blue: a gap under ``below``, green: contact), arrows at
-        the gaps and overlaps, and ``clearance.json``, the table. Returns the folder."""
+        the gaps and overlaps, and ``clearance.json``, the table (every pair). ``contacts``: mark the
+        listed contacts too (default: only when there are at most 10). Returns the folder."""
         from . import outputs
         from .io import write_atomic
         from .shape import Shape
@@ -570,8 +571,10 @@ class Clearance:
         everything = subshapes(comp, "face")
         sev = {"clash": "error", "touch": "warning", "gap": "info", "contact": "ok"}  # a gap is a finding to read, not a fault
         faces, arrows = {}, []
+        if contacts is None:
+            contacts = sum(p.contact for p in self.pairs) <= 10
         for p in self.pairs:
-            if p.frame != frame:
+            if p.frame != frame or (p.contact and not contacts):
                 continue
             for path, at, other in ((p.a, p.points[0], p.b), (p.b, p.points[1], p.a)):
                 i = ids.index(self._paths.index(path))
@@ -735,4 +738,4 @@ def _check(frames, ignore=(), contacts=(), below=0.5, volumes=True, gaps=True, m
         pairs.append(Pair(paths[ia], paths[ib], g, v, fi, label, (world(p), world(q)), bool(rule[(ia, ib)]),
                           within, size))
     pairs.sort(key=lambda p: (*p._key(), pid[p.a], pid[p.b]))
-    return Clearance(pairs, stored, paths, solids, below, time.monotonic() - start)
+    return Clearance(pairs, below, time.monotonic() - start, (stored, paths, solids))

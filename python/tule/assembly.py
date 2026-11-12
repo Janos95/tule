@@ -14,6 +14,10 @@ from .shape import Shape
 Child = Union[Shape, "Assembly"]
 
 
+def _pair(c) -> bool:
+    return isinstance(c, tuple) and len(c) == 2 and isinstance(c[0], str)
+
+
 class Assembly:
     """A group of parts (Shapes) and sub-assemblies.
 
@@ -26,7 +30,8 @@ class Assembly:
         flat = []
         for c in children:
             if isinstance(c, (list, tuple)):
-                flat.extend(c)
+                # (path, shape) pairs, as parts() lists them, give their shape
+                flat.extend(x[1] if _pair(x) else x for x in ([c] if _pair(c) else c))
             else:
                 flat.append(c)
         for c in flat:

@@ -554,6 +554,8 @@ def cmd_build(args):
     from . import build
 
     root = None if args.project else build.find_root()
+    if root is None and not args.project and build.root_without_src():
+        raise CliError("no src/ folder: put build scripts in src/ (src/<name>.py makes outputs/<name>/)")
     if root is None:
         return _over_ssh(args, ["tule", "build", *args.names] + (["--check"] if args.check else []) + (["--force"] if args.force else []) + (["--stop"] if args.stop else [])
                          + (["--dependents"] if args.dependents else []) + [x for n in args.skip for x in ("--skip", n)])

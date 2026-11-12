@@ -836,6 +836,11 @@ def _as_shape(x) -> Shape:
 
     if isinstance(x, Assembly):
         return x.to_shape()
+    from .profile import Profile
+
+    if isinstance(x, Profile):  # a 2D region: no volume to add or cut
+        raise TypeError("expected a Shape, got a Profile (2D); make it a solid first, e.g. prof.extrude(h), "
+                        "placed with .at(x, y, z)")
     raise TypeError(f"expected a Shape, got {type(x).__name__}")
 
 

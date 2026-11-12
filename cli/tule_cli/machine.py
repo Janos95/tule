@@ -138,10 +138,11 @@ def load_items(path: str) -> list[tuple[str, object]]:
     if ext == ".glb":
         return read_glb(path, base)
     if ext not in (".step", ".stp"):
-        raise CliError(f"{path}: unsupported file type {ext or '(none)'}; use STEP, STL, GLB or a PDF"
+        raise CliError(f"{path}: unsupported file type {ext or '(none)'}; use STEP, STL, GLB, a PDF or a chart (*.vl.json)"
                        + ("; read an image directly" if ext in (".png", ".jpg", ".jpeg", ".svg") else
-                          "; a chart or doc: read its data in the file (charts show in the viewer)"
-                          if ext in (".json", ".md") else ""))
+                          "; a document: read the .md itself, and screenshot each chart (*.vl.json) it shows"
+                          if ext == ".md" else "; a chart is a *.vl.json; read a table's data directly"
+                          if ext == ".json" else ""))
     _need_tule()
     from tule import Assembly, import_step
 
@@ -569,6 +570,66 @@ def remote(args, argv: list[str], out: str | None = None):
         print(f"tule: wrote {out} (from {args.project}'s machine)", file=sys.stderr)
 
 
+def _write_png(args, data: bytes, what: str):
+    if args.o == "-":
+        sys.stdout.buffer.write(data)
+        sys.stdout.flush()
+        out = "the PNG to stdout"
+    else:
+        out = os.path.abspath(args.o)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(data)
+    print(f"tule: wrote {out}: {what}", file=sys.stderr)
+
+
+def _chart(args):
+    """A Vega-Lite chart as the viewer draws it, its data files (csv, tsv, json) beside it read in."""
+    if not os.path.isfile(args.file):
+        raise CliError(f"no such file: {args.file}")
+    try:
+        import vl_convert
+    except ImportError:
+        raise CliError("rendering a chart needs vl-convert-python (pip install vl-convert-python); "
+                       "or read its data file and check the numbers") from None
+    try:
+        with open(args.file) as f:
+            spec = json.load(f)
+    except ValueError as e:
+        raise CliError(f"{args.file}: not JSON: {e}") from None
+    here = os.path.dirname(os.path.abspath(args.file))
+
+    def inline(v):  # vl-convert loads no local files: the data goes in the spec
+        if isinstance(v, list):
+            return [inline(x) for x in v]
+        if not isinstance(v, dict):
+            return v
+        v = {k: inline(x) for k, x in v.items()}
+        url = (v.get("data") or {}).get("url") if isinstance(v.get("data"), dict) else None
+        if isinstance(url, str):
+            path = os.path.normpath(os.path.join(here, url))
+            if os.path.dirname(path) != here or not os.path.isfile(path):
+                raise CliError(f"{args.file}: data {url!r}: a chart reads only files next to it")
+            ext = os.path.splitext(path)[1].lower().lstrip(".")
+            fmt = {"type": ext if ext in ("csv", "tsv") else "json", **(v["data"].get("format") or {})}
+            v["data"] = {"values": open(path).read(), "format": fmt}
+        return v
+
+    spec = inline(spec)
+    vega = "/vega/v" in str(spec.get("$schema", ""))
+    try:
+        if vega:
+            data = vl_convert.vega_to_png(spec, scale=args.size / 600)
+        else:
+            if spec.get("width", "container") == "container":
+                spec["width"] = 600
+            spec.setdefault("height", 320)
+            data = vl_convert.vegalite_to_png(spec, scale=args.size / 600)
+    except ValueError as e:
+        raise CliError(f"{args.file}: {str(e).strip()[-400:]}") from None
+    _write_png(args, data, f"the chart {args.file}")
+
+
 def _pdf_page(args):
     import shutil
     import subprocess
@@ -585,16 +646,7 @@ def _pdf_page(args):
         if r.returncode:
             raise CliError(f"cannot render page {page} of {args.file}: {r.stderr.strip()[-300:]}")
         data = open(os.path.join(d, "p.png"), "rb").read()
-    if args.o == "-":
-        sys.stdout.buffer.write(data)
-        sys.stdout.flush()
-        out = "the PNG to stdout"
-    else:
-        out = os.path.abspath(args.o)
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        with open(out, "wb") as f:
-            f.write(data)
-    print(f"tule: wrote {out}: page {page} of {args.file} (--frame N for another page)", file=sys.stderr)
+    _write_png(args, data, f"page {page} of {args.file} (--frame N for another page)")
 
 
 def cmd_screenshot(args):
@@ -604,10 +656,12 @@ def cmd_screenshot(args):
         argv += ["--frame", str(args.frame)] if args.frame is not None else []
         argv += ["--field", args.field] if args.field else []
         return remote(args, argv, None if args.o == "-" else args.o)
-    if args.output and not args.file and os.path.splitext(args.output)[1].lower() in (".pdf", ".png", ".jpg", ".jpeg", ".svg"):
+    if args.output and not args.file and os.path.splitext(args.output)[1].lower() in (".pdf", ".png", ".jpg", ".jpeg", ".svg", ".json", ".md"):
         args.file, args.output = os.path.join(outputs_root(), args.output), None  # --output drawing/drawing.pdf
     if args.file and args.file.lower().endswith(".pdf"):  # a drawing: its page as the sheet looks
         return _pdf_page(args)
+    if args.file and args.file.lower().endswith(".vl.json"):
+        return _chart(args)
     try:
         from .render import VIEWS, render
     except ImportError as e:
@@ -783,7 +837,8 @@ def _sig(name: str, obj) -> str:
     except (TypeError, ValueError):
         return name
     ann = lambda a: Ann(a) if isinstance(a, str) else a  # noqa: E731
-    params = [p.replace(annotation=ann(p.annotation)) for p in sig.parameters.values() if p.name != "self"]
+    params = [p.replace(annotation=ann(p.annotation)) for p in sig.parameters.values()
+              if p.name != "self" and not p.name.startswith("_")]  # _private: internal
     return name + str(sig.replace(parameters=params, return_annotation=ann(sig.return_annotation)))
 
 
@@ -959,7 +1014,7 @@ def snapshot_here():
 def add_commands(add):
     """Registers the machine commands with the CLI's `add(name, fn, help, project)`."""
     sp = add("screenshot", cmd_screenshot, "render an output or a STEP/STL file to PNG (the agent's eyes)", project=False)
-    sp.add_argument("file", nargs="?", help="a STEP/STL file, an output folder (default: the newest output), or a PDF drawing")
+    sp.add_argument("file", nargs="?", help="a STEP/STL file, an output folder (default: the newest output), a PDF drawing or a chart (*.vl.json)")
     sp.add_argument("-o", default="view.png", help="the PNG to write, or - for stdout (default: view.png)")
     sp.add_argument("--output", help="an output's name in the outputs folder")
     sp.add_argument("--view", default="iso", help="iso (default), front, back, left, right, top, bottom")

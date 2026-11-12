@@ -128,6 +128,21 @@ def test_screenshot_stl_sequence_and_errors(outputs, tmp_path, capsys):
         main(["screenshot", "-o", str(png), "--view", "sideways"])
 
 
+def test_screenshot_a_chart(outputs, tmp_path):
+    pytest.importorskip("vl_convert")
+    d = outputs / "study"
+    d.mkdir()
+    (d / "results.csv").write_text("t_mm,mass_g\n3,25.9\n5,43.2\n")
+    (d / "mass.vl.json").write_text(json.dumps({"data": {"url": "results.csv"}, "mark": "point", "encoding": {
+        "x": {"field": "t_mm", "type": "quantitative"}, "y": {"field": "mass_g", "type": "quantitative"}}}))
+    png = tmp_path / "c.png"
+    main(["screenshot", "--output", "study/mass.vl.json", "-o", str(png)])
+    assert Image.open(png).width > 600
+    with pytest.raises(SystemExit, match="read the .md itself"):
+        (d / "README.md").write_text("# Study\n")
+        main(["screenshot", str(d / "README.md"), "-o", str(png)])
+
+
 def test_inspect(outputs, capsys):
     step = str(outputs / "bracket" / "bracket.step")
     (p,) = inspect_file(step)
