@@ -75,10 +75,10 @@ body:has(.guestbar) main{padding-bottom:64px}
 .start>div{max-width:860px;margin:0 auto;padding:28px 16px 30px}.start h2{font-size:var(--fs-title);margin:0 0 6px}
 .start .ex{margin-top:26px}.start .ex h2{font-size:var(--fs-body);margin:0}
 .start-lede{margin:0 0 20px;color:var(--muted);max-width:620px}
-.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1.6fr 1fr 1fr;gap:12px;counter-reset:step}
+.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1.5fr 1fr 1.2fr;gap:12px;counter-reset:step}
 .steps li{counter-increment:step;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);min-width:0}
 .steps li b::before{content:counter(step);display:inline-grid;place-items:center;width:22px;height:22px;margin-right:8px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:var(--fs-small)}
-.step-note{color:var(--muted);font-size:var(--fs-small)}.steps .agentbtns{align-items:center}
+.step-note{color:var(--muted);font-size:var(--fs-small)}form.inline{display:inline;margin:0}.steps .agentbtns{align-items:center;flex-wrap:wrap;white-space:normal}
 @media (max-width:720px){.steps{grid-template-columns:1fr}}
 .agenthint{order:9;flex-basis:100%;margin:0;font-size:var(--fs-small);color:var(--muted)}.agenthint b{font-weight:500;color:var(--text)}
 .agentbtns{display:inline-flex;gap:6px;white-space:nowrap}.item-action .agenthint{text-align:right;margin-top:6px}
@@ -126,7 +126,7 @@ const GOOGLE = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="tru
 export type Example = { token: string; title: string; text: string };
 
 /** Example projects: the examples' links, each with its preview picture. */
-function examples(list: Example[], heading = "Example projects"): Html | string {
+function examples(list: Example[], heading = "Examples"): Html | string {
   if (!list.length) return "";
   return html`<section class="ex"><h2>${heading}</h2>
     <div class="ex-grid">${list.map((e) => html`<a class="ex-card" href="/s/${e.token}"><img src="/api/share/${e.token}/preview.png" alt="" loading="lazy" /><b>${e.title}</b><span>${e.text}</span></a>`)}</div></section>`;
@@ -237,10 +237,10 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, o: 
             )}</div>`,
         )}
         ${create}
-      </div>${machines ? machinesSection(user, machines, true, names) : ""}`;
+      </div>${machines && (user.agent || machines.hostKey || machines.runpod.error) ? machinesSection(user, machines, true, names) : ""}`;
   // after a form (a new project, a RunPod key) the address is the page's own again, so a reload does not resend it
   const home = new Html(`<script>if(location.pathname!=="/")history.replaceState(null,"","/")</script>`);
-  return page("Projects", html`${message ? html`<p class="notice">${message}</p>` : ""}${body}${home}`, 200, user, user.agent ? "" : agentStart(origin, shown));
+  return page("Projects", html`${message ? html`<p class="notice">${message}</p>` : ""}${body}${home}`, 200, user, user.agent ? "" : agentStart(user, origin, shown));
 }
 
 /** Where projects can run: Tule cloud, the user's computers, their RunPod account. */
@@ -294,16 +294,20 @@ const agentButtons = (origin: string) => html`<span class="agentbtns">${addToCla
 const agentHint = html`<p class="agenthint" hidden>Address copied. In ChatGPT, click <b>+</b> → <b>Add custom MCP server</b> and paste it.</p>`;
 
 /** Shown until the account's agent first uses the connector (without an agent nothing happens here), with the example projects. */
-const agentStart = (origin: string, shown: Example[]) =>
+const agentStart = (user: User, origin: string, shown: Example[]) =>
   html`<div class="start"><div>
     <h2>Give your AI agent an engineering computer</h2>
-    <p class="start-lede">It designs and tests parts there, ready to print or cut. You see them here in 3D.<br>It runs on Tule's cloud, on your own computers, or on cloud GPUs.</p>
+    <p class="start-lede">It designs and tests parts there, ready to print or cut. You see them here in 3D.</p>
     <ol class="steps">
       <li><b>Add Tule to your agent</b><span class="agentbtns">${addToClaude(origin, true)}${addToChatGPT(origin)}</span>
         <span class="step-note">Claude Code, Codex, Cursor or another agent: add this as a remote MCP server</span>${copyField(`${origin}/mcp`)}${agentHint}</li>
-      <li><b>Ask it to make something</b><span class="step-note">“Use Tule to design a 3D-printable wall hook for my bike.”</span></li>
-      <li><b>Watch it here</b><span class="step-note">The project shows up on this page, with its parts and simulations in 3D.</span></li>
-    </ol>${examples(shown, "What agents have built with Tule")}</div></div>`;
+      <li><b>Ask it to make something</b><span class="step-note">“Use Tule to design a 3D-printable wall hook for my bike.” The project shows up here.</span></li>
+      <li><b>Choose where it runs</b><span class="step-note">Tule cloud works right away. Or use your own computer or cloud GPUs.</span>${
+        user.guest
+          ? html`<a class="button small" href="/auth/login">Sign in to add them</a>`
+          : html`<span class="agentbtns"><form method="post" action="/settings/hosts/new" class="inline"><input type="hidden" name="back" value="projects"><button class="small">Connect a computer</button></form><a class="button small" href="/settings">Add cloud GPUs</a></span>`
+      }</li>
+    </ol>${examples(shown)}</div></div>`;
 
 /** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (connect_info).
     Settings also shows the CLI command, for working on a machine by hand. */
