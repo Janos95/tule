@@ -6,6 +6,7 @@
   tule admin browser CODE                (support) sign in the browser showing CODE at /auth/agent, for 12 hours
   tule admin support-key                 (admin) a new key for the support account; old keys stop working
   tule admin log                         (admin) what admins and support did
+  tule admin stats                       (admin) the /admin dashboard's usage numbers (--json: all of them)
 """
 
 import sys
@@ -121,6 +122,40 @@ def cmd_log(args):
         print(f"{e['at'][:19]}  {e['actor']:<28} {e['action']:<15} {what}  {e['detail']}")
 
 
+def cmd_stats(args):
+    import json
+
+    from . import api
+
+    m = api("GET", "/api/admin/stats")
+    if args.json:
+        print(json.dumps(m, indent=2))
+        return
+    p, a, g, pr, run, mo = m["people"], m["active"], m["guests"], m["projects"], m["running"], m["month"]
+    pct = round(100 * p["agents"] / p["total"]) if p["total"] else 0
+    num = lambda v: f"{v:g}"
+    print(f"accounts        {p['total']} (+{p['week']} this week)")
+    print(f"agent connected {p['agents']} ({pct} %, +{p['agentsWeek']} this week)")
+    print(f"active          {a['day']} today, {a['week']} this week, {a['month']} in 30 days")
+    print(f"guests          {g['week']} this week, {g['converted']} signed in, {g['now']} now")
+    print(f"projects        {pr['total']} (+{pr['week']} this week)")
+    print(f"running now     {run['accounts']} accounts, {run['guests']} guests")
+    print(f"compute {mo['month']}  CPU {num(mo['cpuHours'])} h, GPU {num(mo['gpuHours'])} h (${mo['gpuCost']:.2f})")
+    print(f"connected       {m['machines']['computers']} computers, {m['machines']['runpod']} RunPod, {m['machines']['shares']} shares")
+    since = f" (daily counts since {m['since']})" if m.get("since") else ""
+    print(f"\nlast 7 days{since}")
+    print(f"  {'day':<10} {'signups':>7} {'agents':>6} {'active':>6} {'guests':>6} {'cpu h':>6}")
+    for d in m["days"][-7:]:
+        print(f"  {d['day']:<10} {d['signups']:>7} {d['agents']:>6} {d['active']:>6} {d['guests']:>6} {num(d['cpuHours']):>6}")
+    if m["top"]:
+        print("\nmost compute this month")
+        for r in m["top"]:
+            print(f"  {r['email']:<32} CPU {num(r['cpuHours']):>5} h  GPU {num(r['gpuHours']):>5} h  {r['projects']} projects  last {r['last'] or '-'}")
+    print("\nlatest sign-ups")
+    for r in m["recent"]:
+        print(f"  {r['email']:<32} {r['created']}  agent {'yes' if r['agent'] else 'no ':<3}  {r['projects']} projects  last {r['last'] or '-'}")
+
+
 def add_commands(sub):
     ap = sub.add_parser("admin", help="support access: every project, copies to debug (admins and the support account)")
     s = ap.add_subparsers(dest="admin_cmd", required=True)
@@ -143,3 +178,6 @@ def add_commands(sub):
     sp = s.add_parser("log", help="(admin) what admins and the support account did")
     sp.add_argument("--limit", type=int, default=50)
     sp.set_defaults(fn=cmd_log)
+    sp = s.add_parser("stats", help="(admin) usage: accounts, agents, activity, guests, compute (the /admin dashboard)")
+    sp.add_argument("--json", action="store_true", help="every number, as JSON")
+    sp.set_defaults(fn=cmd_stats)

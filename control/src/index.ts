@@ -786,7 +786,7 @@ async function route(req: Request, env: Env): Promise<Response> {
   // copies a project's newest autosave into your own account (repeat with {copy, cursor} until done: true). The
   // original and its machines are never touched; support's copies are deleted after SUPPORT_COPY_DAYS.
   // Admin only: GET /api/admin/users; POST /api/admin/users/delete {"email"} deletes an account with its projects,
-  // snapshots, computers, keys and connector sign-ins; POST /api/admin/support-key; GET /api/admin/log.
+  // snapshots, computers, keys and connector sign-ins; POST /api/admin/support-key; GET /api/admin/log; GET /api/admin/stats.
   if (path.startsWith("/api/admin/")) {
     // keys only (the CLI): a browser session, even an admin's, cannot be led into these by another site
     if (!bearer(req)) return error("use the tule CLI (tule admin …)", 401);
@@ -805,6 +805,8 @@ async function route(req: Request, env: Env): Promise<Response> {
     }
     if (r !== "admin") return error("admins only", 403);
     if (path === "/api/admin/users" && req.method === "GET") return reply({ users: await a.allUsers() });
+    // the /admin dashboard's numbers (tule admin stats), without the dev and support accounts and this admin
+    if (path === "/api/admin/stats" && req.method === "GET") return reply(await a.metrics(["u_dev", SUPPORT_ID, actor.id]));
     if (path === "/api/admin/log" && req.method === "GET") return reply({ log: await a.adminLog(Number(url.searchParams.get("limit")) || 100) });
     if (path === "/api/admin/support-key" && req.method === "POST") {
       const k = await a.supportKey();
