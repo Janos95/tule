@@ -282,14 +282,15 @@ def test_link_pulled_by_two_pins():
 def test_warnings(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path))
     b = beam()
-    r = fea.static(b, STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -100))], voxel=0.8)  # a fine grid: the clamp's corner
-    (w,) = r.warnings
-    assert "× the 99.5th percentile, at the edge of a fixed face" in w and r.max_stress > 2 * r.stress_p995
-    assert capsys.readouterr().out.count("fea: warning:") == 1  # printed once, when solved
-    assert "WARNING: the peak" in str(r)
-    assert json.load(open(os.path.join(r.show("beam-warn"), "output.json")))["fact"].startswith("safety ")
-    hard = fea.static(b, STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1e5), at=(100, 5, 5), r=1)], voxel=2.5, verbose=False)
+    # the clamp's corner peak: how far over 2x it lands depends on how the voxels fall (2.5x on macOS, 1.95x on Linux)
+    (w,) = fea._peak_warning(250.0, (0, 10, 10), 100.0, "fixed", 500.0)
+    assert "2.5× the 99.5th percentile, at the edge of a fixed face" in w and "safety factor 5" in w
+    assert fea._peak_warning(150.0, (0, 0, 0), 100.0, "fixed", 500.0) == []
+    hard = fea.static(b, STEEL, fixed="root", loads=[fea.force("tip", (0, 0, -1e5), at=(100, 5, 5), r=1)], voxel=2.5)
     assert any("past yield" in x for x in hard.warnings) and any("point load" in x for x in hard.warnings)
+    assert capsys.readouterr().out.count("fea: warning:") == len(hard.warnings)  # printed once each, when solved
+    assert "WARNING: the " in str(hard)
+    assert json.load(open(os.path.join(hard.show("beam-warn"), "output.json")))["fact"].startswith("safety ")
     assert "residual of 1.0e-03" in fea._common_warnings(1e-3, 1e-6, 0.0, 0.0)[0]
     assert fea._common_warnings(1e-8, 1e-6, 1e-7, 0.0) == []
     assert "0.5 %" in fea._common_warnings(0.0, 1e-6, 5e-3, 0.0)[0]

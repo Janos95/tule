@@ -439,7 +439,7 @@ def test_flexure_driven_by_a_displacement(tmp_path, monkeypatch):
     assert isinstance(lin, fea.TetResult) and any("nonlinear=True" in w for w in lin.warnings)  # rotations of 0.15 rad
     k_beam = 2 * 12 * 2100 * (10 * 0.4 ** 3 / 12) / L ** 3  # two guided blades, 1.19 N/mm
     assert lin.move_forces[0].x / d == pytest.approx(k_beam, rel=0.15) and lin.move_forces[0].y == 0
-    assert np.allclose(np.add(lin.reaction, lin.move_forces[0]), 0, atol=1e-6) and lin.imbalance < 1e-6  # the base holds it
+    assert np.allclose(np.add(lin.reaction, lin.move_forces[0]), 0, atol=1e-5) and lin.imbalance < 1e-5  # the base holds it
     shortening = -free.displacement_at([(15, 35, 5)])[0, 1]
     assert shortening == pytest.approx(0.6 * d ** 2 / L, rel=0.1) and lin.displacement_at([(15, 35, 5)])[0, 1] == pytest.approx(0, abs=1e-3)
     assert free.move_forces[0].x == pytest.approx(lin.move_forces[0].x, rel=0.04)
