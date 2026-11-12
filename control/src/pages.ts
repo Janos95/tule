@@ -71,9 +71,15 @@ label{display:flex;flex-direction:column;gap:4px;font-size:var(--fs-body)}
 button.small{padding:3px 10px;font-size:var(--fs-small)}
 .guestbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:6px 14px;border-radius:999px;background:var(--warn-bg);border:1px solid var(--warn-fill);color:var(--warn);font-size:var(--fs-small);font-weight:500;white-space:nowrap;box-shadow:0 2px 8px var(--shadow)}
 body:has(.guestbar) main{padding-bottom:64px}
-.agentbar{background:var(--panel);border-bottom:1px solid var(--line)}
-.agentbar>div{max-width:860px;margin:0 auto;padding:8px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
-.agentbar b{font-weight:500;font-size:var(--fs-body);white-space:nowrap}
+.start{background:var(--panel);border-bottom:1px solid var(--line)}
+.start>div{max-width:860px;margin:0 auto;padding:28px 16px 30px}.start h2{font-size:var(--fs-title);margin:0 0 6px}
+.start .ex{margin-top:26px}.start .ex h2{font-size:var(--fs-body);margin:0}
+.start-lede{margin:0 0 20px;color:var(--muted);max-width:620px}
+.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1.6fr 1fr 1fr;gap:12px;counter-reset:step}
+.steps li{counter-increment:step;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);min-width:0}
+.steps li b::before{content:counter(step);display:inline-grid;place-items:center;width:22px;height:22px;margin-right:8px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:var(--fs-small)}
+.step-note{color:var(--muted);font-size:var(--fs-small)}.steps .agentbtns{align-items:center}
+@media (max-width:720px){.steps{grid-template-columns:1fr}}
 .agenthint{order:9;flex-basis:100%;margin:0;font-size:var(--fs-small);color:var(--muted)}.agenthint b{font-weight:500;color:var(--text)}
 .agentbtns{display:inline-flex;gap:6px;white-space:nowrap}.item-action .agenthint{text-align:right;margin-top:6px}
 .copyfield{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:5px 10px;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--text);font:13px var(--mono);cursor:pointer}
@@ -102,7 +108,7 @@ export function layout(title: string, body: Html | string, user?: User | null, s
 }
 
 /** Copy buttons; "+ New …" rows: opening focuses the field, Esc closes it again. */
-const NEWP_JS = `document.addEventListener("click",(e)=>{const g=e.target.closest?.("[data-chatgpt]");if(g){navigator.clipboard.writeText(g.dataset.chatgpt);const h=g.closest(".agentbar,.item")?.querySelector(".agenthint");if(h)h.hidden=false}});
+const NEWP_JS = `document.addEventListener("click",(e)=>{const g=e.target.closest?.("[data-chatgpt]");if(g){navigator.clipboard.writeText(g.dataset.chatgpt);const h=g.closest(".start,.item")?.querySelector(".agenthint");if(h)h.hidden=false}});
 document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)});
 document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
 document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
@@ -119,10 +125,10 @@ const GOOGLE = `<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="tru
 /** A project made with Tule, shown to newcomers: a view-only link, its title and one line. */
 export type Example = { token: string; title: string; text: string };
 
-/** "Made with Tule": the examples' links, each with its preview picture. */
-function examples(list: Example[]): Html | string {
+/** Example projects: the examples' links, each with its preview picture. */
+function examples(list: Example[], heading = "Example projects"): Html | string {
   if (!list.length) return "";
-  return html`<section class="ex"><h2>Made with Tule</h2><p class="hint">Projects built by coding agents on Tule machines. Open one to look around in 3D.</p>
+  return html`<section class="ex"><h2>${heading}</h2>
     <div class="ex-grid">${list.map((e) => html`<a class="ex-card" href="/s/${e.token}"><img src="/api/share/${e.token}/preview.png" alt="" loading="lazy" /><b>${e.title}</b><span>${e.text}</span></a>`)}</div></section>`;
 }
 
@@ -201,7 +207,11 @@ function machineState(m: MachineRow): Html {
   return html`<span class="dot ${m.state}"></span>${m.state}${tail}`;
 }
 
-export function projectsPage(user: User, rows: ProjectRow[], origin: string, error?: string, shown: Example[] = []): Response {
+export type ProjectsOptions = { error?: string; shown?: Example[]; machines?: MachinesData; message?: string };
+
+export function projectsPage(user: User, rows: ProjectRow[], origin: string, o: ProjectsOptions = {}): Response {
+  const { error, shown = [], machines, message } = o;
+  const names = Object.fromEntries(rows.map((p) => [p.id, p.name]));
   const create = addRow(
     "New project",
     "/projects/new",
@@ -227,21 +237,27 @@ export function projectsPage(user: User, rows: ProjectRow[], origin: string, err
             )}</div>`,
         )}
         ${create}
-      </div>${user.guest || !rows.length ? examples(shown) : ""}`;
-  return page("Projects", body, 200, user, user.agent ? "" : agentStrip(origin));
+      </div>${machines ? machinesSection(user, machines, true, names, html`Projects run on Tule cloud unless you pick another machine: tell your agent, or <code>tule up --machine NAME</code>.`) : ""}`;
+  // after a form (a new project, a RunPod key) the address is the page's own again, so a reload does not resend it
+  const home = new Html(`<script>if(location.pathname!=="/")history.replaceState(null,"","/")</script>`);
+  return page("Projects", html`${message ? html`<p class="notice">${message}</p>` : ""}${body}${home}`, 200, user, user.agent ? "" : agentStart(origin, shown));
 }
 
-export type SettingsData = {
+/** Where projects can run: Tule cloud, the user's computers, their RunPod account. */
+export type MachinesData = {
   runpod: { connected: boolean; updated: number | null; balance?: string | null; error?: string };
-  apiKeys: { id: string; name: string; prefix: string; created: number; last_used: number | null }[];
-  sshKeys: { id: string; key: string; name: string; created: number }[];
-  hosts: { id: string; name: string; online: unknown; specs: unknown }[];
+  hosts: { id: string; name: string; online: unknown; specs: unknown; running?: unknown }[];
   usage: { month: string; cpuHours: number; gpuHours: number; gpuCost: number };
   quota: number;
-  newKey?: string;
   hostKey?: string;
-  message?: string;
   origin: string;
+};
+
+export type SettingsData = MachinesData & {
+  apiKeys: { id: string; name: string; prefix: string; created: number; last_used: number | null }[];
+  sshKeys: { id: string; key: string; name: string; created: number }[];
+  newKey?: string;
+  message?: string;
 };
 
 const day = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : "never");
@@ -267,8 +283,8 @@ const copyField = (text: string) =>
 /** Claude's own link that opens "Add custom connector" with Tule's name and address filled in
     (claude.com/docs/connectors/custom/add-unlisted). Connectors live on the Claude account, so this covers
     claude.ai, the desktop and mobile apps, and Claude Code signed in with that account. */
-const addToClaude = (origin: string) =>
-  html`<a class="button small" target="_blank" rel="noopener" href="https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tule&connectorUrl=${encodeURIComponent(`${origin}/mcp`)}">Add to Claude</a>`;
+const addToClaude = (origin: string, primary = false) =>
+  html`<a class="button ${primary ? "primary" : "small"}" target="_blank" rel="noopener" href="https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tule&connectorUrl=${encodeURIComponent(`${origin}/mcp`)}">Add to Claude</a>`;
 
 /** ChatGPT has no such link: the button copies the address, opens ChatGPT's plugins page and says what to click. */
 const addToChatGPT = (origin: string) =>
@@ -277,8 +293,17 @@ const addToChatGPT = (origin: string) =>
 const agentButtons = (origin: string) => html`<span class="agentbtns">${addToClaude(origin)}${addToChatGPT(origin)}</span>`;
 const agentHint = html`<p class="agenthint" hidden>Address copied. In ChatGPT, click <b>+</b> → <b>Add custom MCP server</b> and paste it.</p>`;
 
-const agentStrip = (origin: string) =>
-  html`<div class="agentbar"><div><b>Connect your agent</b>${agentButtons(origin)}${copyField(`${origin}/mcp`)}${agentHint}</div></div>`;
+/** Shown until the account's agent first uses the connector (without an agent nothing happens here), with the example projects. */
+const agentStart = (origin: string, shown: Example[]) =>
+  html`<div class="start"><div>
+    <h2>Give your AI agent an engineering computer</h2>
+    <p class="start-lede">It designs and tests parts there, ready to print or cut. You see them here in 3D.<br>It runs on Tule's cloud, on your own computers, or on cloud GPUs.</p>
+    <ol class="steps">
+      <li><b>Add Tule to your agent</b><span class="agentbtns">${addToClaude(origin, true)}${addToChatGPT(origin)}</span>
+        <span class="step-note">Claude Code, Codex, Cursor or another agent: add this as a remote MCP server</span>${copyField(`${origin}/mcp`)}${agentHint}</li>
+      <li><b>Ask it to make something</b><span class="step-note">“Use Tule to design a 3D-printable wall hook for my bike.”</span></li>
+      <li><b>Watch it here</b><span class="step-note">The project shows up on this page, with its parts and simulations in 3D.</span></li>
+    </ol>${examples(shown, "What agents have built with Tule")}</div></div>`;
 
 /** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (connect_info).
     Settings also shows the CLI command, for working on a machine by hand. */
@@ -286,36 +311,54 @@ const agentStrip = (origin: string) =>
 const copyBlock = (label: string, text: string, note: Html | string = "", id = "") =>
   html`<div class="item item-block newkey"${id ? html` id="${id}"` : ""}><span class="item-label">${label}</span><button type="button" class="copyfield wrap" data-copy="${text}" title="Copy"><span>${text}</span><svg class="cp" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg><svg class="ck" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg></button>${note ? html`<p class="hint">${note}</p>` : ""}</div>`;
 
-export function settingsPage(user: User, d: SettingsData): Response {
-  const agent = section("Connect your agent", "", item("Connector", copyField(`${d.origin}/mcp`), html`${agentButtons(d.origin)}${agentHint}`));
-
-  // Machines: Tule's own, your computers, RunPod; with this month's hours on each
+/** The machines a project can run on: Tule cloud with this month's hours, the user's computers
+    (online, specs, what they run), RunPod with its balance; and adding a computer or a RunPod key.
+    On the projects page (back) its forms come back there. */
+function machinesSection(user: User, d: MachinesData, back = false, names: Record<string, string> = {}, hint: Html | string = ""): Html {
   const u = d.usage;
   const rp = d.runpod;
+  const ret = back ? html`<input type="hidden" name="back" value="projects">` : "";
   const spec = (s: unknown) => {
     const x = (s ?? {}) as { cpus?: number; memoryGb?: number; gpus?: unknown; arch?: string };
     const gpus = Array.isArray(x.gpus) ? gpuNames(x.gpus) : "";
     return [x.cpus ? `${x.cpus} cores` : "", x.memoryGb ? `${x.memoryGb} GB` : "", gpus, x.arch ?? ""].filter(Boolean).join(" · ");
   };
+  const runs = (r: unknown) => {
+    const ps = (Array.isArray(r) ? r : []).map((id) => names[String(id)]).filter(Boolean);
+    return ps.length ? ` · running ${ps.join(", ")}` : "";
+  };
   const install = (key: string) => `curl -fsSL ${d.origin}/install.sh | sh -s -- ${key}`;
   const gpu = u.gpuHours ? ` · ${u.gpuHours} h this month${u.gpuCost ? ` (about $${u.gpuCost.toFixed(2)})` : ""}` : "";
-  const machines = section(
+  return section(
     "Machines",
-    "",
+    hint,
     html`${item("Tule cloud", `${u.cpuHours} h of ${d.quota} h this month`)}
-      ${user.guest ? "" : html`${d.hosts.map((h) => item(h.name, html`<span class="dot ${h.online ? "running" : ""}"></span>${h.online ? "online" : "offline"}${spec(h.specs) ? ` · ${spec(h.specs)}` : ""}`, rowButton("/settings/hosts/remove", "Remove", h.id, true)))}
-      ${rp.connected ? item("RunPod", html`connected${rp.balance ? html` · ${rp.balance} balance` : ""}${gpu}`, rowButton("/settings/runpod/remove", "Disconnect", undefined, true)) : ""}
+      ${user.guest
+        ? item("Your computers and cloud GPUs", "sign in to connect them", html`<a class="button small primary" href="/auth/login">Sign in</a>`)
+        : html`${d.hosts.map((h) => item(h.name, html`<span class="dot ${h.online ? "running" : ""}"></span>${h.online ? "online" : "offline"}${spec(h.specs) ? ` · ${spec(h.specs)}` : ""}${h.online ? runs(h.running) : ""}`, back ? "" : rowButton("/settings/hosts/remove", "Remove", h.id, true)))}
+      ${rp.connected ? item("RunPod", html`connected${rp.balance ? html` · ${rp.balance} balance` : ""}${gpu}`, back ? "" : rowButton("/settings/runpod/remove", "Disconnect", undefined, true)) : ""}
       ${d.hostKey
-        ? copyBlock("Paste this into a terminal on the computer", install(d.hostKey), "Works on Linux, macOS and Windows (WSL). Expires in an hour.", "add-computer")
-        : html`<form method="post" action="/settings/hosts/new" class="newp"><button class="newp-go"><span class="plus">+</span>Add a computer</button></form>`}
+        ? html`${copyBlock("Paste this into a terminal on the computer", install(d.hostKey), "Works on Linux, macOS and Windows (WSL). Expires in an hour. The computer shows up here once it connects.", "add-computer")}<script>${new Html(HOST_WAIT_JS(d.hosts.length, back ? "/" : "/settings"))}</script>`
+        : html`<form method="post" action="/settings/hosts/new" class="newp">${ret}<button class="newp-go"><span class="plus">+</span>Connect a computer</button></form>`}
       ${addRow(
         rp.connected ? "Replace RunPod key" : "Connect RunPod",
         "/settings/runpod",
-        html`<input name="key" type="password" placeholder="RunPod API key, rpa_…" aria-label="RunPod API key" required />`,
+        html`${ret}<input name="key" type="password" placeholder="RunPod API key, rpa_…" aria-label="RunPod API key" required />`,
         !!rp.error,
         rp.error ? html`<span class="warn">${rp.error}</span>` : "A read/write key from runpod.io → Settings → API Keys. Billed to your RunPod balance.",
       )}`}`,
   );
+}
+
+/** While the install command shows: the address is the page's own (a reload does not make another
+    command), and the page reloads once a new computer has connected. */
+const HOST_WAIT_JS = (n: number, to: string) =>
+  `history.replaceState(null,"","${to}");(function w(){setTimeout(async()=>{try{const j=await (await fetch("/api/hosts")).json();if((j.hosts||[]).length>${n}){location.href="${to}";return}}catch{}w()},3000)})()`;
+
+export function settingsPage(user: User, d: SettingsData): Response {
+  const agent = section("Connect your agent", "", item("Connector", copyField(`${d.origin}/mcp`), html`${agentButtons(d.origin)}${agentHint}`));
+
+  const machines = machinesSection(user, d);
 
   // Keys: agents and the CLI add their own; this is mostly for removing them
   const keys = section(

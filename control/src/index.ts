@@ -42,7 +42,7 @@ import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl,
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
-import { landing, page, projectsPage, settingsPage, type Example, type MachineRow, type ProjectRow } from "./pages";
+import { landing, page, projectsPage, settingsPage, type Example, type MachinesData, type MachineRow, type ProjectRow } from "./pages";
 import { Host } from "./host";
 import { gitKey, lfsKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
@@ -636,11 +636,13 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
   let newKey: string | undefined;
   let hostKey: string | undefined;
   let rpError: string | undefined;
+  let back = false; // the form came from the projects page's machines
   if (req.method === "POST") {
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403, user);
     const form = await req.formData();
     const f = (k: string) => String(form.get(k) ?? "").trim();
     const action = url.pathname.slice("/settings/".length);
+    back = f("back") === "projects";
     // the support account keeps one expiring key (tule admin support-key): no other keys, computers or RunPod
     if (user.guest && ["runpod", "hosts/new"].includes(action)) // the page hides these from guests; a direct POST is refused too
       return page("Sign in first", "<p>Sign in with Google to add your own computers or a RunPod key.</p>", 403, user);
@@ -682,25 +684,32 @@ async function settings(req: Request, env: Env, url: URL, user: User): Promise<R
       message = "SSH key removed.";
     }
   }
+  const m = await machinesData(env, user);
+  m.runpod.error = rpError;
+  m.hostKey = hostKey;
+  if (back) return projectsPage(user, await projectRows(env, user), env.PUBLIC_URL, { machines: m, message, shown: showcase(env) });
+  return settingsPage(user, { ...m, apiKeys: await a.apiKeys(user.id), sshKeys: await a.sshKeys(user.id), newKey, message });
+}
+
+/** Where the user's projects can run, for the projects and settings pages. RunPod's balance
+    waits at most 2 s, so a slow RunPod does not hold up the page. */
+async function machinesData(env: Env, user: User): Promise<MachinesData> {
+  const a = accounts(env);
   const rp = await a.hasRunpod(user.id);
   let balance: string | null = null;
   if (rp.connected) {
     const key = await a.runpodKey(user.id);
-    const b = key ? await runpodBalance(key) : null;
+    const late = new Promise<null>((r) => setTimeout(() => r(null), 2000));
+    const b = key ? await Promise.race([runpodBalance(key), late]) : null;
     balance = b && !b.error ? `$${Number(b.balance).toFixed(2)}` : null;
   }
-  return settingsPage(user, {
-    runpod: { ...rp, balance, error: rpError },
-    apiKeys: await a.apiKeys(user.id),
-    sshKeys: await a.sshKeys(user.id),
+  return {
+    runpod: { ...rp, balance },
     hosts: user.guest ? [] : await ops.listHosts(env, user),
     usage: await a.usage(user.id),
     quota: Number(env.CPU_HOURS_MONTH || 100),
-    newKey,
-    hostKey,
-    message,
     origin: env.PUBLIC_URL,
-  });
+  };
 }
 
 // ------------------------------------------------------------ the app
@@ -833,11 +842,11 @@ async function route(req: Request, env: Env): Promise<Response> {
     return userApi(req, env, url, user, origin);
   }
   if (path === "/") {
-    if (user) return projectsPage(user, await projectRows(env, user), origin, undefined, showcase(env));
+    if (user) return projectsPage(user, await projectRows(env, user), origin, { shown: showcase(env), machines: await machinesData(env, user) });
     // a first visit: a guest account, so Tule can be tried without signing in
     const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
     if ("error" in g) return landing(origin, g.error, showcase(env));
-    const res = projectsPage(g.user, [], origin, undefined, showcase(env));
+    const res = projectsPage(g.user, [], origin, { shown: showcase(env), machines: await machinesData(env, g.user) });
     res.headers.append("Set-Cookie", setCookie(req, SESSION_COOKIE, g.session, 30 * 86400));
     return res;
   }
@@ -846,7 +855,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403, user);
     const name = String((await req.formData()).get("name") ?? "").trim();
     const r = await ops.createProject(env, user, name, origin);
-    if (r.error) return projectsPage(user, await projectRows(env, user), origin, `${r.error}${r.hint ? ` (${r.hint})` : ""}`, showcase(env));
+    if (r.error) return projectsPage(user, await projectRows(env, user), origin, { error: `${r.error}${r.hint ? ` (${r.hint})` : ""}`, shown: showcase(env), machines: await machinesData(env, user) });
     return new Response(null, { status: 303, headers: { Location: `/p/${name}` } });
   }
   if (path === "/settings" || path.startsWith("/settings/")) {
