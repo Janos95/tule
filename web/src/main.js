@@ -1037,6 +1037,12 @@ function play(on) {
   playing = { blend: true };
   const tick = (now) => {
     if (state.selected !== o.id || !state.shown?.startsWith(o.id + "|")) return play(false); // another output, or a page
+    // its frame still loading (the output shown before is still drawn): wait for it, so nothing else moves
+    if (!drawnHere()) {
+      last = now;
+      playing.raf = requestAnimationFrame(tick);
+      return;
+    }
     pos += (now - (last ?? now)) / step;
     last = now;
     if (pos >= fr.length - 1) pos = 0; // loop: back to the first frame
@@ -1059,12 +1065,16 @@ function play(on) {
   playing.raf = requestAnimationFrame(tick);
 }
 
-/** Whether a sequence can play smoothly: a motion study (every frame lists its parts, as many each time) whose
- * frame is drawn now. A part may be another file from frame to frame (made anew): it moves at real frames only. */
+/** Whether a sequence can play smoothly: a motion study (every frame lists its parts, as many each time). A part
+ * may be another file from frame to frame (made anew): it moves at real frames only. */
 function smooth(fr) {
-  if (!viewer || fr.length < 2 || !fr[0].parts?.length || !fr.every((f) => f.parts?.length === fr[0].parts.length)) return false;
+  return !!viewer && fr.length >= 2 && !!fr[0].parts?.length && fr.every((f) => f.parts?.length === fr[0].parts.length);
+}
+
+/** Whether the parts on screen are the shown frame's, drawn completely (not still the output shown before). */
+function drawnHere() {
   const drawn = viewer.group.children;
-  return drawn.length > 0 && drawn.every((part) => Number.isInteger(part.userData.mesh?.entry));
+  return state.drawn === state.shown && drawn.length > 0 && drawn.every((part) => Number.isInteger(part.userData.mesh?.entry));
 }
 $("play").addEventListener("click", () => play(!playing));
 $("scrub").addEventListener("input", (e) => {
