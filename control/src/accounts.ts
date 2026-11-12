@@ -75,6 +75,8 @@ export class Accounts extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS admin_log (at INTEGER, actor TEXT, action TEXT, owner TEXT, project TEXT, detail TEXT);
       CREATE TABLE IF NOT EXISTS pairings (hash TEXT PRIMARY KEY, code TEXT UNIQUE, next TEXT, expires INTEGER, user_id TEXT);
       CREATE TABLE IF NOT EXISTS merged (guest_id TEXT PRIMARY KEY, user_id TEXT, at INTEGER);
+      CREATE TABLE IF NOT EXISTS metrics_day (day TEXT, key TEXT, n REAL, PRIMARY KEY (day, key));
+      CREATE TABLE IF NOT EXISTS active_day (day TEXT, user_id TEXT, PRIMARY KEY (day, user_id));
       CREATE TABLE IF NOT EXISTS admin_copies (project_id TEXT PRIMARY KEY, user_id TEXT, name TEXT, source_id TEXT, snapshot TEXT, created INTEGER, expires INTEGER);
     `);
     // columns added after the first deploy
@@ -95,6 +97,23 @@ export class Accounts extends DurableObject<Env> {
     return this.sql.exec(q, ...args).toArray() as T[];
   }
 
+  /** Adds to a daily count for the admin dashboard: guests, signups, agents, projects, cpu_s, gpu_s. */
+  count(key: string, n = 1) {
+    this.sql.exec("INSERT INTO metrics_day VALUES (?, ?, ?) ON CONFLICT (day, key) DO UPDATE SET n = n + excluded.n", day(), key, n);
+  }
+
+  private seenToday = new Set<string>();
+
+  /** A signed-in account used Tule today (a page, the CLI, the connector): once a day per account. */
+  private active(u: User | null): User | null {
+    const k = u && !u.guest ? `${day()} ${u.id}` : "";
+    if (k && !this.seenToday.has(k)) {
+      this.seenToday.add(k);
+      this.sql.exec("INSERT OR IGNORE INTO active_day VALUES (?, ?)", day(), u!.id);
+    }
+    return u;
+  }
+
   // ------------------------------------------------------------ users and sessions
 
   /** A Google account signs in: the user, created on first sign-in. */
@@ -106,6 +125,7 @@ export class Accounts extends DurableObject<Env> {
     }
     const id = `u_${rand(12)}`;
     this.sql.exec("INSERT INTO users (id, google_sub, email, name, created) VALUES (?, ?, ?, ?, ?)", id, sub, email, name, Date.now());
+    this.count("signups");
     return { id, email, name };
   }
 
@@ -120,7 +140,7 @@ export class Accounts extends DurableObject<Env> {
 
   /** The connector was used (MCP initialize): remember the first time. */
   agentConnected(userId: string) {
-    this.sql.exec("UPDATE users SET agent_seen = ? WHERE id = ? AND agent_seen IS NULL", Date.now(), userId);
+    if (this.sql.exec("UPDATE users SET agent_seen = ? WHERE id = ? AND agent_seen IS NULL", Date.now(), userId).rowsWritten) this.count("agents");
   }
 
   // ------------------------------------------------------------ guests
@@ -145,6 +165,7 @@ export class Accounts extends DurableObject<Env> {
     this.sql.exec("DELETE FROM guest_ips WHERE day < ?", d);
     const id = `u_g${rand(12)}`;
     this.sql.exec("INSERT INTO users (id, google_sub, email, name, created, guest, last_seen) VALUES (?, NULL, NULL, NULL, ?, 1, ?)", id, Date.now(), Date.now());
+    this.count("guests");
     // not a new alarm per guest: with one arriving every hour the sweep would never run
     if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
     return { user: { id, email: "guest", name: "Guest", guest: true }, session: await this.createSession(id) };
@@ -416,7 +437,7 @@ export class Accounts extends DurableObject<Env> {
 
   async sessionUser(token: string): Promise<User | null> {
     const r = this.one<{ user_id: string; expires: number }>("SELECT user_id, expires FROM sessions WHERE hash = ?", await sha256hex(token));
-    return r && r.expires > Date.now() ? this.user(r.user_id) : null;
+    return r && r.expires > Date.now() ? this.active(this.user(r.user_id)) : null;
   }
 
   async endSession(token: string) {
@@ -441,7 +462,7 @@ export class Accounts extends DurableObject<Env> {
     const r = this.one<{ user_id: string; last_used: number | null; expires: number | null }>("SELECT user_id, last_used, expires FROM api_keys WHERE hash = ?", hash);
     if (!r || (r.expires && r.expires < Date.now())) return null;
     if (!r.last_used || Date.now() - r.last_used > 3_600_000) this.sql.exec("UPDATE api_keys SET last_used = ? WHERE hash = ?", Date.now(), hash);
-    return this.user(r.user_id);
+    return this.active(this.user(r.user_id));
   }
 
   apiKeys(userId: string) {
@@ -600,6 +621,7 @@ export class Accounts extends DurableObject<Env> {
       return { error: `guests can have ${this.limits().projects} project${this.limits().projects === 1 ? "" : "s"}`, hint: "sign in to make more" };
     const p = { id: `p_${rand(12).toLowerCase().replace(/[^a-z0-9]/g, "0")}`, name, created: Date.now() };
     this.sql.exec("INSERT INTO projects VALUES (?, ?, ?, ?)", p.id, userId, name, p.created);
+    this.count(this.user(userId)?.guest ? "guest_projects" : "projects");
     return p;
   }
 
@@ -685,6 +707,59 @@ export class Accounts extends DurableObject<Env> {
       userId, month(), kind, seconds, cost,
     );
     this.sql.exec("INSERT INTO usage_day VALUES (?, ?, ?) ON CONFLICT (user_id, day) DO UPDATE SET seconds = seconds + excluded.seconds", userId, day(), seconds);
+    this.count(`${kind}_s`, seconds);
+  }
+
+  /** The admin dashboard's numbers. ``internal``: account ids left out (the dev and support accounts, admins). */
+  metrics(internal: string[]) {
+    const now = Date.now();
+    const ago = (d: number) => now - d * 86_400_000;
+    const skip = internal.length ? `AND id NOT IN (${internal.map(() => "?").join(",")})` : "";
+    const people = (where: string, ...args: unknown[]) =>
+      this.one<{ n: number }>(`SELECT COUNT(*) AS n FROM users WHERE guest = 0 ${skip} AND ${where}`, ...internal, ...args)?.n ?? 0;
+    const n = (q: string, ...args: unknown[]) => this.one<{ n: number }>(q, ...args)?.n ?? 0;
+    const notIn = (col: string) => (internal.length ? `AND ${col} NOT IN (${internal.map(() => "?").join(",")})` : "");
+    const activeSince = (d: number) =>
+      n(`SELECT COUNT(DISTINCT user_id) AS n FROM active_day WHERE day >= ? ${notIn("user_id")}`, day(ago(d - 1)), ...internal);
+    const days: string[] = [];
+    for (let d = 29; d >= 0; d--) days.push(day(ago(d)));
+    const counts = this.all<{ day: string; key: string; n: number }>("SELECT day, key, n FROM metrics_day WHERE day >= ?", days[0]);
+    const act = this.all<{ day: string; n: number }>(
+      `SELECT day, COUNT(*) AS n FROM active_day WHERE day >= ? ${notIn("user_id")} GROUP BY day`, days[0], ...internal);
+    const at = (d: string, k: string) => counts.find((c) => c.day === d && c.key === k)?.n ?? 0;
+    const m = month();
+    const use = this.all<{ kind: string; seconds: number; cost: number }>(
+      `SELECT kind, SUM(seconds) AS seconds, SUM(cost) AS cost FROM usage WHERE month = ? ${notIn("user_id")} GROUP BY kind`, m, ...internal);
+    const kind = (k: string) => use.find((u) => u.kind === k);
+    const hours = (s: number | undefined) => Math.round(((s ?? 0) / 3600) * 10) / 10;
+    const lastActive = `(SELECT MAX(day) FROM active_day a WHERE a.user_id = u.id)`;
+    return {
+      since: this.one<{ d: string | null }>("SELECT MIN(day) AS d FROM metrics_day")?.d ?? null,
+      people: { total: people("1"), week: people("created >= ?", ago(7)), agents: people("agent_seen IS NOT NULL"), agentsWeek: people("agent_seen >= ?", ago(7)) },
+      active: { day: activeSince(1), week: activeSince(7), month: activeSince(30) },
+      guests: {
+        now: n("SELECT COUNT(*) AS n FROM users WHERE guest = 1"),
+        week: counts.filter((c) => c.key === "guests" && c.day >= day(ago(6))).reduce((a, c) => a + c.n, 0),
+        converted: n("SELECT COUNT(*) AS n FROM merged WHERE at >= ?", ago(7)),
+      },
+      projects: { total: n(`SELECT COUNT(*) AS n FROM projects WHERE user_id IN (SELECT id FROM users WHERE guest = 0 ${skip})`, ...internal), week: n(`SELECT COUNT(*) AS n FROM projects WHERE created >= ? AND user_id IN (SELECT id FROM users WHERE guest = 0 ${skip})`, ago(7), ...internal) },
+      running: { accounts: n(`SELECT COUNT(*) AS n FROM running WHERE guest = 0 ${notIn("user_id")}`, ...internal), guests: n("SELECT COUNT(*) AS n FROM running WHERE guest = 1") },
+      machines: { computers: n(`SELECT COUNT(*) AS n FROM hosts WHERE 1 ${notIn("user_id")}`, ...internal), runpod: n(`SELECT COUNT(*) AS n FROM runpod WHERE 1 ${notIn("user_id")}`, ...internal), shares: n("SELECT COUNT(*) AS n FROM shares") },
+      month: { month: m, cpuHours: hours(kind("cpu")?.seconds), gpuHours: hours(kind("gpu")?.seconds), gpuCost: Math.round((kind("gpu")?.cost ?? 0) * 100) / 100 },
+      days: days.map((d) => ({ day: d, signups: at(d, "signups"), guests: at(d, "guests"), agents: at(d, "agents"), active: act.find((a) => a.day === d)?.n ?? 0, cpuHours: hours(at(d, "cpu_s")) })),
+      top: this.all<{ email: string; cpu: number; gpu: number; cost: number; projects: number; agent: number | null; last: string | null }>(
+        `SELECT u.email, COALESCE(c.seconds, 0) AS cpu, COALESCE(g.seconds, 0) AS gpu, COALESCE(g.cost, 0) AS cost,
+           (SELECT COUNT(*) FROM projects p WHERE p.user_id = u.id) AS projects, u.agent_seen AS agent, ${lastActive} AS last
+         FROM users u LEFT JOIN usage c ON c.user_id = u.id AND c.month = ? AND c.kind = 'cpu'
+           LEFT JOIN usage g ON g.user_id = u.id AND g.month = ? AND g.kind = 'gpu'
+         WHERE u.guest = 0 ${skip.replace("id", "u.id")} AND COALESCE(c.seconds, 0) + COALESCE(g.seconds, 0) > 0
+         ORDER BY COALESCE(c.seconds, 0) + COALESCE(g.seconds, 0) DESC LIMIT 10`, m, m, ...internal,
+      ).map((r) => ({ email: r.email, cpuHours: hours(r.cpu), gpuHours: hours(r.gpu), gpuCost: Math.round(r.cost * 100) / 100, projects: r.projects, agent: !!r.agent, last: r.last })),
+      recent: this.all<{ email: string; created: number; agent: number | null; projects: number; last: string | null }>(
+        `SELECT u.email, u.created, u.agent_seen AS agent, (SELECT COUNT(*) FROM projects p WHERE p.user_id = u.id) AS projects, ${lastActive} AS last
+         FROM users u WHERE u.guest = 0 ${skip.replace("id", "u.id")} ORDER BY u.created DESC LIMIT 10`, ...internal,
+      ).map((r) => ({ email: r.email, created: day(r.created), agent: !!r.agent, projects: r.projects, last: r.last })),
+    };
   }
 
   usage(userId: string, m = month()): { month: string; cpuHours: number; gpuHours: number; gpuCost: number } {

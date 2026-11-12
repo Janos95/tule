@@ -42,7 +42,7 @@ import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl,
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
-import { landing, page, projectsPage, settingsPage, type Example, type MachinesData, type MachineRow, type ProjectRow } from "./pages";
+import { adminPage, landing, page, projectsPage, settingsPage, type Example, type MachinesData, type MachineRow, type ProjectRow } from "./pages";
 import { Host } from "./host";
 import { gitKey, lfsKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
@@ -857,6 +857,12 @@ async function route(req: Request, env: Env): Promise<Response> {
     const r = await ops.createProject(env, user, name, origin);
     if (r.error) return projectsPage(user, await projectRows(env, user), origin, { error: `${r.error}${r.hint ? ` (${r.hint})` : ""}`, shown: showcase(env), machines: await machinesData(env, user) });
     return new Response(null, { status: 303, headers: { Location: `/p/${name}` } });
+  }
+  // the admin dashboard: a browser page for ADMIN_EMAILS (read only); others see nothing here
+  if (path === "/admin" && req.method === "GET") {
+    if (!user) return new Response(null, { status: 302, headers: { Location: loginUrl("/admin") } });
+    if (role(user, env) !== "admin") return page("Not found", "<p>No such page.</p>", 404, user);
+    return adminPage(user, await accounts(env).metrics(["u_dev", SUPPORT_ID, user.id]));
   }
   if (path === "/settings" || path.startsWith("/settings/")) {
     if (!user) return new Response(null, { status: 302, headers: { Location: loginUrl("/settings") } });

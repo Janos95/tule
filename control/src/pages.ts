@@ -382,3 +382,80 @@ export function settingsPage(user: User, d: SettingsData): Response {
   const body = html`${d.message ? html`<p class="notice">${d.message}</p>` : ""}${agent}${machines}${keys}${account}`;
   return page("Settings", body, 200, user);
 }
+
+// ------------------------------------------------------------ admin dashboard
+
+export type Metrics = ReturnType<import("./accounts").Accounts["metrics"]>;
+
+const ADMIN_CSS = `.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:4px 0 8px}
+.tile{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--bg)}.tile span{display:block;color:var(--muted);font-size:var(--fs-small)}
+.tile b{display:block;font-size:24px;font-weight:600;margin:2px 0;font-variant-numeric:tabular-nums}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+.chart{border:1px solid var(--line);border-radius:10px;padding:10px 12px 8px;background:var(--bg)}
+.chart-head{display:flex;justify-content:space-between;gap:8px;font-size:var(--fs-small)}.chart-head b{font-weight:600}.chart-head span{color:var(--muted);font-variant-numeric:tabular-nums}
+.chart svg{display:block;width:100%;height:72px;margin-top:6px}.chart .bar{fill:var(--accent)}.chart .hit{fill:transparent}.chart .d:hover .bar{fill:var(--accent-hover)}
+.chart .base{stroke:var(--line-strong);stroke-width:1}.chart-axis{display:flex;justify-content:space-between;color:var(--faint);font-size:11px;margin-top:3px}
+table.t{width:100%;border-collapse:collapse;font-size:var(--fs-body)}table.t th{text-align:left;font-weight:500;color:var(--muted);font-size:var(--fs-small);padding:6px 8px;border-bottom:1px solid var(--line)}
+table.t td{padding:7px 8px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}table.t td.r,table.t th.r{text-align:right}.tablewrap{overflow-x:auto}`;
+
+/** The day's value as the pointer moves over a chart's bars. */
+const ADMIN_JS = `document.querySelectorAll(".chart").forEach((c)=>{const out=c.querySelector(".chart-head span"),idle=out.textContent;
+c.querySelectorAll(".d").forEach((h)=>{h.addEventListener("mouseenter",()=>{out.textContent=h.dataset.v});h.addEventListener("mouseleave",()=>{out.textContent=idle})})})`;
+
+const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+const num = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
+
+/** One daily series as thin bars on a shared baseline; hovering a day shows its value. */
+function dayChart(title: string, unit: string, days: { day: string; v: number }[]): Html {
+  const W = 300, H = 72, gap = 2, bw = (W - gap * (days.length - 1)) / days.length;
+  const max = Math.max(...days.map((d) => d.v), 0);
+  const total = days.reduce((a, d) => a + d.v, 0);
+  const bars = days.map((d, i) => {
+    const x = i * (bw + gap);
+    const h = max ? Math.max((d.v / max) * (H - 4), d.v > 0 ? 2 : 0) : 0;
+    const label = `${fmtDay(d.day)}: ${num(d.v)}${unit}`;
+    return `<g class="d" data-v="${label}"><title>${label}</title>` +
+      (h ? `<rect class="bar" x="${x.toFixed(2)}" y="${(H - h).toFixed(2)}" width="${bw.toFixed(2)}" height="${h.toFixed(2)}" rx="1.5"/>` : "") +
+      `<rect class="hit" x="${(x - gap / 2).toFixed(2)}" y="0" width="${(bw + gap).toFixed(2)}" height="${H}"/></g>`;
+  });
+  const svg = new Html(`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${title}, last 30 days">${bars.join("")}<line class="base" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/></svg>`);
+  return html`<div class="chart"><div class="chart-head"><b>${title}</b><span>${num(total)}${unit} in 30 days</span></div>${svg}
+    <div class="chart-axis"><span>${fmtDay(days[0].day)}</span><span>${fmtDay(days[days.length - 1].day)}</span></div></div>`;
+}
+
+const tile = (label: string, value: string | number, sub: string) => html`<div class="tile"><span>${label}</span><b>${String(value)}</b><span>${sub}</span></div>`;
+
+/** Admins only: who signs up, connects an agent, comes back, and what they run. */
+export function adminPage(user: User, m: Metrics): Response {
+  const pct = m.people.total ? Math.round((m.people.agents / m.people.total) * 100) : 0;
+  const tiles = html`<div class="tiles">
+    ${tile("Accounts", m.people.total, `+${m.people.week} this week`)}
+    ${tile("Agent connected", m.people.agents, `${pct}% of accounts · +${m.people.agentsWeek} this week`)}
+    ${tile("Active this week", m.active.week, `${m.active.day} today · ${m.active.month} in 30 days`)}
+    ${tile("Guests this week", m.guests.week, `${m.guests.converted} signed in · ${m.guests.now} now`)}
+    ${tile("Projects", m.projects.total, `+${m.projects.week} this week`)}
+    ${tile("Running now", m.running.accounts + m.running.guests, `${m.running.accounts} accounts · ${m.running.guests} guests`)}
+    ${tile("Cloud CPU this month", `${num(m.month.cpuHours)} h`, m.month.gpuHours ? `GPU ${num(m.month.gpuHours)} h · $${m.month.gpuCost.toFixed(2)}` : "no GPU hours")}
+    ${tile("Computers", m.machines.computers, `${m.machines.runpod} RunPod accounts · ${m.machines.shares} shares`)}
+  </div>`;
+  const series = (k: "signups" | "guests" | "agents" | "active" | "cpuHours") => m.days.map((d) => ({ day: d.day, v: d[k] }));
+  const charts = html`<div class="charts">
+    ${dayChart("Sign-ups", "", series("signups"))}${dayChart("Agents connected", "", series("agents"))}
+    ${dayChart("Active accounts", "", series("active"))}${dayChart("Guests", "", series("guests"))}
+    ${dayChart("Cloud CPU", " h", series("cpuHours"))}</div>`;
+  const yes = (b: boolean) => (b ? "yes" : "no");
+  const last = (d: string | null) => (d ? fmtDay(d) : "–");
+  const top = m.top.length
+    ? html`<div class="tablewrap"><table class="t"><tr><th>Account</th><th class="r">CPU h</th><th class="r">GPU h</th><th class="r">GPU $</th><th class="r">Projects</th><th>Agent</th><th>Last active</th></tr>
+      ${m.top.map((r) => html`<tr><td>${r.email}</td><td class="r">${num(r.cpuHours)}</td><td class="r">${num(r.gpuHours)}</td><td class="r">${r.gpuCost.toFixed(2)}</td><td class="r">${String(r.projects)}</td><td>${yes(r.agent)}</td><td>${last(r.last)}</td></tr>`)}</table></div>`
+    : html`<p class="hint">No compute this month yet.</p>`;
+  const recent = html`<div class="tablewrap"><table class="t"><tr><th>Account</th><th>Signed up</th><th>Agent</th><th class="r">Projects</th><th>Last active</th></tr>
+      ${m.recent.map((r) => html`<tr><td>${r.email}</td><td>${fmtDay(r.created)}</td><td>${yes(r.agent)}</td><td class="r">${String(r.projects)}</td><td>${last(r.last)}</td></tr>`)}</table></div>`;
+  const since = m.since ? `Daily counts since ${fmtDay(m.since)}. ` : "";
+  const body = html`<p class="hint">${since}Leaves out the dev and support accounts and yours.</p>${tiles}
+    <section class="sect"><h2>Last 30 days</h2>${charts}</section>
+    <section class="sect"><h2>Most compute this month</h2>${top}</section>
+    <section class="sect"><h2>Latest sign-ups</h2>${recent}</section>
+    ${new Html(`<style>${ADMIN_CSS}</style><script>${ADMIN_JS}</script>`)}`;
+  return page("Dashboard", body, 200, user);
+}
