@@ -33,8 +33,14 @@ python -m pytest python cli           # tests
 
 cd web && npm ci && npm run build     # the viewer, into web/dist
 cd ../control && npm ci
-npx wrangler deploy                   # Worker, Durable Objects, the machine image (needs Docker)
+npm run deploy                        # the Worker, with the machine image CI built for origin/main
 ```
+
+CI (`.github/workflows/runtime.yml`) tests every push to main that changes the machine image, builds it and
+pushes it to Cloudflare's registry as `tule-project-cpu:sha-<commit>` (needs the `CLOUDFLARE_API_TOKEN`
+repository secret, with Containers: Edit). `npm run deploy` pins that image by digest, so it builds and
+uploads nothing; push image changes first and wait for CI. `npm run deploy:local-image` builds and pushes
+the image from this computer instead (needs Docker).
 
 Secrets (`npx wrangler secret put …`): `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
 `ENCRYPTION_KEY` (32 random bytes, base64), `DEV_TOKEN` (a token for tests).

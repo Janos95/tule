@@ -8,9 +8,10 @@
   },
   "scripts": {
     "dev": "node ../web/build.mjs --watch & wrangler dev --port 8787 --ip 127.0.0.1 --local-upstream 127.0.0.1:8787; kill %1",
-    "deploy": "npm --prefix ../web run build && wrangler deploy",
+    "deploy": "npm --prefix ../web run build && node deploy.mjs",
     "types": "wrangler types",
-    "check": "wrangler types && tsc --noEmit"
+    "check": "wrangler types && tsc --noEmit",
+    "deploy:local-image": "npm --prefix ../web run build && node deploy.mjs --local-image"
   },
   "devDependencies": {
     "typescript": "5.9.3",

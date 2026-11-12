@@ -1,4 +1,4 @@
-# Type-checks the control plane (control/, the Cloudflare Worker). Deploys stay manual (npm run deploy).
+# Type-checks the control plane (control/, the Cloudflare Worker). Deploys stay manual (npm run deploy, with the image runtime.yml built).
 name: control
 
 on:

@@ -1,5 +1,6 @@
 # Tests the Python packages, then builds the machine images and pushes them to GHCR:
 #   ghcr.io/janos95/tule-runtime:cpu   and :sha-<short>-cpu    (runtime/Dockerfile, Cloudflare Containers)
+#     also to Cloudflare's registry as tule-project-cpu:sha-<short>, which `npm run deploy` in control/ deploys
 #   ghcr.io/janos95/tule-runtime:cuda  and :sha-<short>-cuda   (runtime/Dockerfile.cuda, RunPod pods, your NVIDIA computers)
 #   ghcr.io/janos95/tule-runtime:cpu-arm64                       (runtime/Dockerfile on ARM, for Apple Silicon computers)
 name: runtime
@@ -115,3 +116,18 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.flavor }}
+      - uses: actions/setup-node@v4
+        if: matrix.flavor == 'cpu'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: control/package-lock.json
+      - name: Push to Cloudflare's registry (control/deploy.mjs pins this image by digest)
+        if: matrix.flavor == 'cpu'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: d4ea6567fb9a32c0979ace82a862f4fe
+        run: |
+          docker tag "$IMAGE:cpu" "tule-project-cpu:sha-${{ steps.meta.outputs.short }}"
+          npm ci --prefix control --ignore-scripts
+          npx --prefix control wrangler containers push "tule-project-cpu:sha-${{ steps.meta.outputs.short }}"
