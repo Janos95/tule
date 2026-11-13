@@ -1,6 +1,6 @@
 # Outputs: what the viewer shows
 
-The viewer shows `/workspace/outputs/` (and `work/`, `inputs/`): a folder per output: geometry, an optional `output.json`, other files. `src/<name>.py` writes `outputs/<name>/`; the user sees it at once.
+The viewer shows `/workspace/outputs/` (and `work/`, `inputs/`): a folder per output: geometry, optional `output.json`, other files. `src/<name>.py` writes `outputs/<name>/`; the user sees it at once.
 
 ```
 outputs/
@@ -22,8 +22,8 @@ from tule import *
 
 part = box(40, 20, 5).named("plate", "#4a8")
 part = part.tag("load", part.faces["top"]).tag("fixed", part.faces["left"])
-outputs.part("plate", part)                              # outputs/plate/plate.step
-outputs.assembly("stack", [part, box(10).at(0, 0, 5).named("block", "#d33")])
+outputs.part("plate", part)  # outputs/plate/plate.step
+outputs.assembly("stack", [part, box(10).at(0, 0, 5).named("block", material="steel")])
 with outputs.sequence("tilt") as seq:  # "running" until the block ends; motion: make parts once,
     for a in range(0, 91, 10):         # move them per frame (.at, .rotate): a frame stores placements
         seq.add([part, part.rotate(y=-a).at(40, 0, 5)], label=f"{a} deg", angle=a)
@@ -36,7 +36,7 @@ outputs.overlay("plate-loads", part, title="Load case 1",
 
 Other tools write into `outputs.folder()`, `output.json` last.
 
-A long list: group early (`src/checks/fit.py` makes `outputs/checks/fit/`, folded under "checks"); a number orders: `src/01-print.py` writes `outputs/01-print/`, shown first as "print".
+A long list: group early (`src/checks/fit.py` writes `outputs/checks/fit/`); a number orders: `src/01-print.py` shows first, as "print".
 
 ## `output.json`
 
@@ -56,7 +56,7 @@ Optional: without it one file is a part, numbered files a sequence, several an a
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid`, …) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
 - **Values:** a face with only a number `value` is colored blue (low) to red (high), from `scale.min` to `scale.max` (default: their range), named by `scale.label` and `scale.unit`; stress: `tule docs fea`.
-- **See-through** parts: a color with opacity, `.named("window", "#8da0aa66")`.
+- **Looks:** glass: color with opacity (`"#8da0aa66"`); `material="steel"`, `"polished"`, `"satin"`, `"ceramic-tile"` (`tule docs Shape.with_material`).
 - **Plates**: `"plate": {"parts": {"pin": 4}, "printer": …, "estimate": …}` (`tule docs outputs.plate`); a part's `{"down": "base"}` lays that tagged face down.
 - **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 

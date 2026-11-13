@@ -398,7 +398,10 @@ outputs/
   strip under the view, never over the part. A print plate or an overlay may
   carry `"fact"`, a few words shown in the outputs list ("2 h 10 min · 31 g");
   a sequence `"fps"`. A part's color is `"#rrggbb"`, or `"#rrggbbaa"` when it
-  is see-through. An overlay's `"fields"` color the whole surface
+  is see-through; beside it a `"material": {"metal", "roughness"}` (0..1, from
+  `part.with_material("steel")`, carried on the color through every operation
+  and in a PLY's header) makes the viewer reflect a studio and `tule
+  screenshot` approximate it; without one a part looks as it always did. An overlay's `"fields"` color the whole surface
   (stress, displacement): each is a node grid in a `.npy` file of the output
   (`origin`, `step`; a vector deforms the shape `deform` times), sampled at
   the mesh's vertices by the viewer and `tule screenshot --field` alike;

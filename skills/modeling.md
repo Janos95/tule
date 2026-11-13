@@ -6,7 +6,7 @@
 from tule import *
 
 plate = rect(80, 40, center=True).round(5).extrude(6)
-plate = plate.tag("mount", plate.faces["bottom"])      # tags survive later operations
+plate = plate.tag("mount", plate.faces["bottom"])      # tags survive operations
 boss = circle(9).extrude(12).at(0, 0, 6)
 part = (plate | boss).fillet(boss.edges["bottom"], 2)  # the boss's edge, found after the union
 part -= cylinder(3.2, 50, center=True)                 # through hole
@@ -26,7 +26,7 @@ outputs.part("bracket", part)
 - Solids: `box(x, y, z, center=)`, `cube`, `cylinder(r, h, center=)`, `cone(r, h, r2)`, `sphere(r)`, `torus(R, r)`, `wedge`, `polyhedron(points, faces)`.
 - Profiles (xy): `rect(w, h, center=)`, `circle(r)`, `ellipse`, `regular_polygon(n, r)`, `slot(l, w)`, `polygon([(x, y), (x, y, r), ...])` (r rounds it), `spline(points)`, `text("MK4", size)`. Combine: `| - & ^`; `.round(r)`, `.chamfer(d)`, `.offset(d)` (rim: `p.offset(2) - p`), `.at(x, y)`, `.rotate(deg)`, `.mirror()`.
 - Sweeps: `profile.extrude(h, center=, twist=, scale=)`, `profile.revolve(angle)` (x: radius, y: z), `loft([p1, p2], heights=[0, 30])`, `sweep(profile, [(x, y, z), …])` along a 3D path (faces `start`, `end`), `pipe(points, r, wall=)` for cables, tubes; a point `(x, y, z, r)` rounds that corner (a pulley).
-- Booleans: `a | b` union, `a - b` difference, `a & b` intersection; `union(a, b, c)`.
+- Booleans: `a | b` union, `a - b` cut, `a & b` intersection; `union(a, b, c)`.
 - Transforms: `.at(x, y, z)`, `.rotate(x=, y=, z=)` (degrees), `.mirror(nx, ny, nz)`, `.scale(f)`.
 - Features: `.fillet(edges, r)`, `.chamfer(edges, d)`, `.shell(faces_to_remove, thickness)`.
 - Measure: `.volume`, `.area`, `.bounds`, `.size`, `.center_of_mass`, `.mass(density)`, `.is_valid`, `a.distance(b)` (0: touching), `a.closest(b)`: `(gap, pa, pb)`.
@@ -34,7 +34,7 @@ outputs.part("bracket", part)
 - Contact: `touch(cam.rotate(z=a), lambda y: follower.at(0, y, 0), 40, 0)`: first `t` from 40 to 0 where it touches (`.t`, `.shape`). Drive the input, followers by contact: lift and ratio are measured.
 - Gears: `spur_gear(module, teeth, width, bore=, backlash=)`, `internal_gear(...)`; `pair = gear_pair(module, z1, z2)` checks interference; `pair.place(gear2, turn=)` meshes gear 2. Bevel: `pair = bevel_pair(module, z1, z2, width, shaft_angle=90)` meshes `pair.gear1`, `pair.gear2`; `pair.place(bevel_gear(..., mating_teeth=z1), turn=)`. Cycloidal: `d = cycloidal_drive(pins, pin_circle_d, pin_d, e, width, clearance=0.15)` has `d.disc`, `d.pins`, `d.place(d.disc, crank_deg)`.
 - Sheet metal (flanges, flats): `tule docs sheetmetal`.
-- Parts: `.named("name", "#4a8")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
+- Parts: `.named("name", "#4a8", material="steel")`, `Assembly(a, b, name=)`; files: `export_step`, `export_stl`, `import_step`.
 
 ## Selecting faces and edges
 
@@ -53,7 +53,7 @@ print(top.ids, hole.info())                    # stable ids (f12 in the viewer) 
 part = part.chamfer(rim, 0.5)                  # ids change: select again after each operation
 ```
 
-Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`, `top()`/`bottom()` (along an axis), `within(lo, hi)`, `nearest(point)`, `sort_by(axis)`, `filter(fn)`; edges also `lines()`, `circles(r=)`, `parallel(axis)`, `perpendicular(axis)`, `on(faces)`, `longest()`. Combine with `| & -`. `part.face(12)` is `f12` in `tule screenshot --labels` and `tule inspect`.
+Queries: `planar()`, `cylindrical(r=)`, `curved()`, `normal(dir)`, `largest(n)`, `top()`/`bottom()` (along an axis), `within(lo, hi)`, `nearest(point)`, `sort_by(axis)`, `filter(fn)`; edges also `lines()`, `circles(r=)`, `parallel(axis)`, `perpendicular(axis)`, `on(faces)`, `longest()`. Combine with `| & -`. `part.face(12)` is `f12` in `tule screenshot --labels`, `tule inspect`.
 
 ## Roles and tags
 

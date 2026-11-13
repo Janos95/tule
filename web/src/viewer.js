@@ -67,6 +67,8 @@ export class Viewer {
     const pmrem = new THREE.PMREMGenerator(r);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environmentIntensity = 0.95;
+    // what parts with a material (metal, roughness) reflect: a studio, made on first use
+    this.studio = () => (this._studio ??= pmrem.fromScene(studioScene(), 0.0).texture);
 
     const cam = (this.camera = new THREE.PerspectiveCamera(30, 1, 0.01, 1000));
     cam.up.set(0, 0, 1);
@@ -158,9 +160,19 @@ export class Viewer {
   }
 
   // a part's color: "#rrggbb", or "#rrggbbaa" for a see-through part (glass, a cover): drawn after the solid
-  // ones, not hiding what is behind it, a little denser where the surface turns away
-  material(color) {
-    let m = this.materials.get(color);
+  // ones, not hiding what is behind it, a little denser where the surface turns away. look: the part's
+  // material, {metal, roughness} 0..1 (brushed steel, black tiles), reflecting a studio; none: a matte paint
+  material(color, look = null) {
+    const mat = lookOf(look);
+    const key = mat ? `${color}|${lookKey(mat)}` : color;
+    let m = this.materials.get(key);
+    if (!m && mat) {
+      const [rgb, a] = opacityOf(color);
+      const { metal, roughness } = mat;
+      m = new THREE.MeshStandardMaterial({ color: new THREE.Color(rgb), metalness: metal, roughness, envMap: this.studio(), envMapIntensity: 1.0 - 0.2 * (1 - metal), side: THREE.DoubleSide, ...BEHIND });
+      if (a < 1) Object.assign(m, { transparent: true, opacity: a, depthWrite: false });
+      this.materials.set(key, m);
+    }
     if (!m) {
       const [rgb, a] = opacityOf(color);
       if (a < 1) {
@@ -175,7 +187,7 @@ export class Viewer {
         };
         m.customProgramCacheKey = () => "tule-clear";
       } else m = new THREE.MeshStandardMaterial({ color: new THREE.Color(rgb), roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide, ...BEHIND });
-      this.materials.set(color, m);
+      this.materials.set(key, m);
     }
     return m;
   }
@@ -248,7 +260,7 @@ export class Viewer {
     const kept = new Set();
     const reuse = (m) => {
       const list = spare.get(m.positions) ?? [];
-      const i = list.findIndex((p) => p.userData.color === (m.color || palette("--part")) && p.userData.mesh.indices === m.indices && p.userData.mesh.edges === m.edges && (p.userData.mesh.instances ?? null) === (m.instances ?? null));
+      const i = list.findIndex((p) => p.userData.color === (m.color || palette("--part")) && lookKey(p.userData.mesh.material) === lookKey(m.material) && p.userData.mesh.indices === m.indices && p.userData.mesh.edges === m.edges && (p.userData.mesh.instances ?? null) === (m.instances ?? null));
       return i < 0 ? null : list.splice(i, 1)[0];
     };
     const plan = meshes.map((m) => (m.positions.length ? reuse(m) : null));
@@ -291,7 +303,7 @@ export class Viewer {
       // placed copies (m.instances: N × 16 numbers, row-major): one instanced draw of the mesh, and of its edges
       const placements = m.instances ? instanceMatrices(m.instances) : null;
       part.userData.placements = placements;
-      const solid = this.solid(part, g, this.material(color));
+      const solid = this.solid(part, g, this.material(color, m.material));
       if (placements) part.userData.box = solid.boundingBox;
       if (clear) solid.renderOrder = 1; // after the solid parts
       part.add(solid);
@@ -605,7 +617,7 @@ export class Viewer {
       for (const layer of LAYERS)
         for (const s of this.layers.get(layer) ?? [])
           if (s.part == null || s.part === index) for (const f of s.faces) pick.set(+f, this.faceMaterial(s.color, s.hatch));
-      const base = surface ? this.surfMaterial : part.userData.field ? this.fieldMaterial : this.dim ? this.material(palette(DIM)) : this.material(color);
+      const base = surface ? this.surfMaterial : part.userData.field ? this.fieldMaterial : this.dim ? this.material(palette(DIM)) : this.material(color, mesh.material);
       geometry.clearGroups();
       if (!pick.size) {
         solid.material = base;
@@ -964,6 +976,52 @@ export class Viewer {
     this.setMeshes([]);
     this.setArrows([]);
   }
+}
+
+// A part's material, {metal, roughness} each 0..1, or null for none (or one that cannot be read: drawn as before).
+function lookOf(look) {
+  if (!look || typeof look !== "object") return null;
+  const metal = Number(look.metal ?? look.metalness ?? 0), roughness = Number(look.roughness ?? 0.62);
+  if (!Number.isFinite(metal) || !Number.isFinite(roughness)) return null;
+  const clamp = (x) => Math.min(1, Math.max(0, x));
+  return { metal: clamp(metal), roughness: clamp(roughness) };
+}
+const lookKey = (look) => (lookOf(look) ? `${lookOf(look).metal},${lookOf(look).roughness}` : "");
+
+// The studio a material reflects (z up, as the parts): a bright ceiling fading to a grey horizon, a dark floor,
+// a big soft overhead panel, a key strip and a rim strip, so a steel cylinder shows a horizon line and soft
+// highlights and a polished ball the room, while black tiles stay black. Built once into a PMREM.
+function studioScene() {
+  const scene = new THREE.Scene();
+  const dome = new THREE.SphereGeometry(10, 64, 32);
+  dome.rotateX(Math.PI / 2); // its poles on z
+  const p = dome.getAttribute("position");
+  const c = new Float32Array(p.count * 3);
+  // linear values, by the direction's height z: floor, ground, horizon, sky
+  const stops = [[-1, 0.24], [-0.5, 0.34], [-0.15, 0.58], [0.02, 0.74], [0.4, 0.84], [1, 0.92]];
+  for (let i = 0; i < p.count; i++) {
+    const z = p.getZ(i) / 10;
+    const k = stops.findIndex(([at]) => at >= z);
+    const [z0, v0] = stops[Math.max(0, k - 1)], [z1, v1] = stops[Math.max(0, k)];
+    const v = z1 > z0 ? v0 + ((v1 - v0) * (z - z0)) / (z1 - z0) : v1;
+    c.set([v, v, v * 0.99], 3 * i); // a touch warm, as daylight off concrete
+  }
+  dome.setAttribute("color", new THREE.BufferAttribute(c, 3));
+  scene.add(new THREE.Mesh(dome, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+  const panel = (w, h, intensity, pos, look) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    m.material.color.setScalar(intensity);
+    m.position.set(...pos);
+    m.lookAt(...look);
+    scene.add(m);
+  };
+  panel(8, 5, 2.0, [0, 0, 6], [0, 0, 0]); // overhead softbox
+  // tall strips around (a cylinder shows them as soft vertical bands): azimuth°, width, brightness
+  for (const [az, w, k] of [[135, 2.2, 3.2], [35, 1.2, 1.4], [-55, 1.8, 2.2], [-150, 1.0, 1.0]]) {
+    const a = (az * Math.PI) / 180;
+    panel(w, 7, k, [6.5 * Math.cos(a), 6.5 * Math.sin(a), 1.2], [0, 0, 1.2]);
+  }
+  return scene;
 }
 
 // A color and its opacity: "#rrggbbaa" or "#rgba" -> ["#rrggbb", 0..1]; any other color is solid.

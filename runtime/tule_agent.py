@@ -387,7 +387,7 @@ def _mesh_apart(path: str, packed: bool = False) -> bytes:
 def encode_mesh(path: str) -> bytes:
     """A file's parts as one binary message: [u32 header length][JSON header][arrays].
 
-    Header: {"parts": [{"name", "color", "tags": {tag: [face ids]},
+    Header: {"parts": [{"name", "color", "material" (a PLY's, if any), "tags": {tag: [face ids]},
     "positions": [offset, length], "normals", "indices", "faceIds", "edges"}]}
     where offsets are bytes into the array section; positions/normals are
     float32 xyz, indices/faceIds uint32, edges float32 line segments (pairs of
@@ -421,6 +421,7 @@ def encode_mesh(path: str) -> bytes:
         parts.append({
             "name": m.name or os.path.splitext(os.path.basename(path))[0],
             "color": m.color,
+            **({"material": m.material} if m.material else {}),
             "tags": {t: sorted(int(i) for i in r) for t, r in m._tags.items()},
             "positions": put(V.astype(np.float32)),
             "normals": put(N.astype(np.float32)),
@@ -535,6 +536,7 @@ def pack_mesh(data: bytes) -> bytes:
         it = np.uint32 if wide else np.uint16
         parts.append({
             "name": p.get("name"), "color": p.get("color"), "tags": p.get("tags", {}),
+            **({"material": p["material"]} if p.get("material") else {}),
             "lo": [float(v) for v in lo], "step": [float(v) for v in step], "wide": bool(wide),
             "nv": len(P), "nt": len(F), "ne": len(E),
             "positions": put(grid(P)),

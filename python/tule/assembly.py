@@ -49,11 +49,17 @@ class Assembly:
         self.children: list[Child] = flat
         self.name = name
 
-    def named(self, name: str, color: str | None = None) -> "Assembly":
-        """The same parts under a new name; ``color`` paints every part (a purchased part in one color)."""
-        if color is None:
+    def named(self, name: str, color: str | None = None, material=None) -> "Assembly":
+        """The same parts under a new name; ``color`` paints every part (a purchased part in one color),
+        ``material`` makes every part of it (``"steel"``; see ``Shape.with_material``)."""
+        if color is None and material is None:
             return Assembly(*self.children, name=name)
-        return Assembly(*self._map(lambda s: s.named(s.name, color)).children, name=name)
+        return Assembly(*self._map(lambda s: s.named(s.name, color, material)).children, name=name)
+
+    def with_material(self, material=None, *, metal=None, roughness=None, color=None) -> "Assembly":
+        """Every part in this material (see ``Shape.with_material``)."""
+        return Assembly(*self._map(lambda s: s.with_material(material, metal=metal, roughness=roughness, color=color)).children,
+                        name=self.name)
 
     def parts(self, prefix: str = "") -> list[tuple[str, Shape]]:
         """Every part with its path (``"gripper/finger_l"``); unnamed parts are ``part1``, ``part2``, …

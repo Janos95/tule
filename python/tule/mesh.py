@@ -30,6 +30,7 @@ from typing import Callable, Iterable, Sequence
 import numpy as np
 
 from .errors import TuleError
+from .look import Looks, with_look
 from .geom import Vec, VecLike, vec
 
 CREASE = 35.0  # degrees: sharper edges are features (drawn, and region borders)
@@ -536,7 +537,7 @@ def _f32(a):
     return np.ascontiguousarray(a, dtype=np.float32)
 
 
-class Mesh:
+class Mesh(Looks):
     """A triangle-mesh part: vertices, triangles, a region per triangle, tags, name and color.
 
     ``Mesh(points, triangles)`` (optionally ``face_ids=`` regions and ``tags=``), ``Mesh.load(path)``
@@ -547,7 +548,7 @@ class Mesh:
     kind = "mesh"
 
     def __init__(self, *args, face_ids=None, edges=None, normals=None, tags=None, name: str | None = None,
-                 color: str | None = None, history: Sequence[str] = (), welded: bool | None = None, **kw):
+                 color: str | None = None, material=None, history: Sequence[str] = (), welded: bool | None = None, **kw):
         # Mesh(points, triangles[, face_ids]) or, as tessellate builds it, Mesh(positions, normals, indices, face_ids, edges)
         args = list(args)
         if "positions" in kw or "indices" in kw:
@@ -581,7 +582,7 @@ class Mesh:
         self._edges = edges
         self._tags: dict[str, frozenset] = {k: frozenset(int(i) for i in v) for k, v in (tags or {}).items()}
         self.name = name
-        self.color = color
+        self.color = with_look(None, color, material) if material is not None else color
         self.history: tuple[str, ...] = tuple(history)
         self._welded_flag = welded
         self._cache: dict = {}
@@ -755,18 +756,20 @@ class Mesh:
                     history=self.history if history is None else history,
                     welded=self._welded_flag if welded is None else welded)
 
-    def named(self, name: str, color: str | None = None) -> "Mesh":
-        """The same mesh with a part name and (optionally) a color like ``"#4a8"``."""
-        if color is not None:
-            from .io import parse_rgba
-            parse_rgba(color)
+    def named(self, name: str, color: str | None = None, material=None) -> "Mesh":
+        """The same mesh with a part name and (optionally) a color like ``"#4a8"`` and a material (``"steel"``)."""
         out = Mesh(self._P, self._T, face_ids=self._F, normals=self._N, edges=self._edges, tags=self._tags,
-                   name=name, color=color or self.color, history=self.history, welded=self._welded_flag)
+                   name=name, color=with_look(self.color, color, material), history=self.history, welded=self._welded_flag)
         out._cache = self._cache
         return out
 
     def colored(self, color: str) -> "Mesh":
         return self.named(self.name, color)
+
+    def _looking(self, color) -> "Mesh":
+        out = self.named(self.name)
+        out.color = color
+        return out
 
     @property
     def tags(self) -> list[str]:
@@ -1004,13 +1007,14 @@ class Mesh:
             raise TuleError(f"cannot read {ext or path!r} as a mesh", op="Mesh.load", hint="PLY, OBJ or STL; STEP: import_step")
         base = os.path.splitext(os.path.basename(path))[0]
         return Mesh(P, T, face_ids=F, tags=meta.get("tags"), name=name or meta.get("name") or base, color=meta.get("color"),
-                    edges=[] if meta.get("edges") == "none" else None,
+                    material=meta.get("material"), edges=[] if meta.get("edges") == "none" else None,
                     history=tuple(meta.get("history", ())) or (f"read from {os.path.basename(path)}",), welded=True)
 
     def _meta(self) -> dict:
         from .io import color_hex, parse_rgba
 
         return {k: v for k, v in (("name", self.name), ("color", self.color and color_hex(parse_rgba(self.color))),
+                                  ("material", self.material),
                                   ("tags", {t: sorted(int(i) for i in r) for t, r in self._tags.items()}),
                                   ("history", list(self.history)),
                                   ("edges", "none" if self._no_edges else None)) if v}

@@ -28,6 +28,7 @@ from typing import Callable, Iterable, Sequence
 import numpy as np
 
 from .errors import TuleError
+from .look import Looks, with_look
 from .geom import Vec, VecLike, vec
 
 # ---------------------------------------------------------------- expressions
@@ -508,18 +509,18 @@ def _grow(b, d: float):
     return (lo - Vec(d, d, d), hi + Vec(d, d, d)) if d > 0 else b
 
 
-class Implicit:
+class Implicit(Looks):
     """An implicit body: a signed-distance expression (negative inside), its bounds, name, color,
     tags (as predicates applied when meshed) and history. ``kind == "implicit"``."""
 
     kind = "implicit"
 
     def __init__(self, expr, bounds=None, *, name: str | None = None, color: str | None = None,
-                 tags: dict | None = None, history: Sequence[str] = ()):
+                 tags: dict | None = None, history: Sequence[str] = (), material=None):
         self.expr = _e(expr)
         self.bounds = _bounds(bounds)
         self.name = name
-        self.color = color
+        self.color = with_look(None, color, material) if material is not None else color
         self._tags: dict[str, Callable] = dict(tags or {})
         self.history = tuple(history)
 
@@ -536,12 +537,14 @@ class Implicit:
         return f"<Implicit{n}: {_count(self.expr)} nodes{g}, {b}{hist}>"
 
     # names, tags
-    def named(self, name: str, color: str | None = None) -> "Implicit":
-        if color is not None:
-            from .io import parse_rgba
-            parse_rgba(color)
+    def named(self, name: str, color: str | None = None, material=None) -> "Implicit":
         out = self._with(self.expr, self.bounds)
-        out.name, out.color = name, color or self.color
+        out.name, out.color = name, with_look(self.color, color, material)
+        return out
+
+    def _looking(self, color) -> "Implicit":
+        out = self._with(self.expr, self.bounds)
+        out.color = color
         return out
 
     def colored(self, color: str) -> "Implicit":

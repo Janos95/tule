@@ -192,16 +192,18 @@ def read_glb(path: str, base: str) -> list[tuple[str, object]]:
     return out
 
 
-def to_parts(path: str, color: str | None = None, name: str | None = None):
-    return items_to_parts(load_items(path, full=True), color, name)
+def to_parts(path: str, color: str | None = None, name: str | None = None, material: dict | None = None):
+    return items_to_parts(load_items(path, full=True), color, name, material)
 
 
-def items_to_parts(items, color: str | None = None, name: str | None = None):
-    """Meshes to draw for [(name, Shape or STL triangles)]."""
+def items_to_parts(items, color: str | None = None, name: str | None = None, material: dict | None = None):
+    """Meshes to draw for [(name, Shape or STL triangles)]. ``material``: {"metal", "roughness"}
+    (output.json's), else the one the color or the part carries (``part.material``)."""
     import numpy as np
 
     from .render import Part
 
+    items = list(items)
     out = []
     paths = []  # (first part of an item, its path)
     for nm, item in items:
@@ -259,9 +261,22 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
         out.append(Part(name or nm, m.positions, m.normals, m.indices, m.face_ids,
                         _rgb(color or item.color), tags, len(item.faces)))
     for k, (start, path) in enumerate(paths):
+        item = items[k][1]
+        mat = _material(material or getattr(color, "material", None) or getattr(item, "material", None))
         for p in out[start:paths[k + 1][0] if k + 1 < len(paths) else len(out)]:
             p.path = path
+            p.material = mat
     return out
+
+
+def _material(m) -> tuple | None:
+    """(metal, roughness) from {"metal", "roughness"}, or None (the default look)."""
+    if not isinstance(m, dict):
+        return None
+    try:
+        return (min(1.0, max(0.0, float(m.get("metal", 0)))), min(1.0, max(0.0, float(m.get("roughness", 0.62)))))
+    except (TypeError, ValueError):
+        return None
 
 
 def _rgb(c):
@@ -562,7 +577,7 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
         parts = []
         drawn, placed = [0], 0
         for e in meta.get("parts", []):
-            ps = to_parts(file_in(e["file"]), e.get("color"), (e.get("name") or "").rsplit("/", 1)[-1] or None)
+            ps = to_parts(file_in(e["file"]), e.get("color"), (e.get("name") or "").rsplit("/", 1)[-1] or None, e.get("material"))
             for p in ps:
                 p.path = e.get("name") or p.path
             if e.get("transforms") is not None:  # placed copies: the file once, drawn at each placement
@@ -584,7 +599,7 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
             raise CliError(f"{folder} has frames 1 to {n}, not {frame}")
         fr = frames[i]
         if fr.get("parts"):  # a motion frame: parts placed
-            parts = [q for e in fr["parts"] for q in _placed(to_parts(file_in(e["file"]), e.get("color"), e.get("name")), e.get("transform"))]
+            parts = [q for e in fr["parts"] for q in _placed(to_parts(file_in(e["file"]), e.get("color"), e.get("name"), e.get("material")), e.get("transform"))]
         else:
             parts = to_parts(file_in(fr["file"]))
         vals = ", ".join(f"{k} {v:.4g}" for k, v in (fr.get("values") or {}).items())
@@ -593,7 +608,7 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
         name = meta.get("file") or (files[0] if files else None)
         if not name:
             raise CliError(f"{jpath}: no \"file\" and no geometry in {target}")
-        parts = to_parts(file_in(name), meta.get("color"))
+        parts = to_parts(file_in(name), meta.get("color"), material=meta.get("material"))
         caption = f"{folder}/{name}"
         if kind == "overlay":
             overlay = Overlay()

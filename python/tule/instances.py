@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from .errors import TuleError
+from .look import Looks, with_look
 from .geom import Vec, vec
 
 
@@ -87,7 +88,7 @@ def _move(op: str, args) -> np.ndarray:
     return M
 
 
-class Instances:
+class Instances(Looks):
     """A body (Shape, Mesh, Implicit or Assembly) placed N times; ``kind == "instances"``.
 
     ``part.placed(T)`` with T (N, 4, 4) matrices, or ``part.placed(at=points, rotate=degrees)``:
@@ -104,7 +105,8 @@ class Instances:
 
     kind = "instances"
 
-    def __init__(self, body, transforms=None, *, at=None, rotate=None, name: str | None = None, color: str | None = None):
+    def __init__(self, body, transforms=None, *, at=None, rotate=None, name: str | None = None, color: str | None = None,
+                 material=None):
         from .assembly import Assembly
 
         if isinstance(body, Instances):  # copies of copies: one level, the matrices multiplied
@@ -140,14 +142,11 @@ class Instances:
         if len(M) and np.abs(det).min() < 1e-12:
             i = int(np.abs(det).argmin())
             raise TuleError(f"transform {i} flattens the part (its determinant is 0)", op="placed")
-        if color is not None:
-            from .io import parse_rgba
-            parse_rgba(color)
         self.body = body
         self._T = M
         self._T.setflags(write=False)
         self.name = name if name is not None else getattr(body, "name", None)
-        self.color = color if color is not None else getattr(body, "color", None)
+        self.color = with_look(getattr(body, "color", None), color, material)
 
     # ------------------------------------------------------------ what it is
     @property
@@ -171,12 +170,13 @@ class Instances:
         out.color = self.color if color is None else color
         return out
 
-    def named(self, name: str, color: str | None = None) -> "Instances":
-        """The group's name (the viewer's part, ``"tiles[17]"`` for one copy) and, optionally, a color for all."""
-        if color is not None:
-            from .io import parse_rgba
-            parse_rgba(color)
-        return self._with(name=name, color=color)
+    def named(self, name: str, color: str | None = None, material=None) -> "Instances":
+        """The group's name (the viewer's part, ``"tiles[17]"`` for one copy) and, optionally, a color
+        and a material (``"ceramic-tile"``) for all."""
+        return self._with(name=name, color=with_look(self.color, color, material))
+
+    def _looking(self, color) -> "Instances":
+        return self._with(color=color)
 
     def colored(self, color: str) -> "Instances":
         return self.named(self.name, color)

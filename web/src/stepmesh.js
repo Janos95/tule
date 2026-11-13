@@ -114,7 +114,7 @@ function ply(b, name) {
     }
   }
   const indices = Uint32Array.from(idx), faceIds = Uint32Array.from(fid);
-  return { name: meta.name || name, color: meta.color ?? null, positions, normals: flatNormals(positions, indices), indices, faceIds, edges: meta.edges === "none" ? new Float32Array(0) : featureEdges(positions, indices, faceIds) };
+  return { name: meta.name || name, color: meta.color ?? null, material: meta.material ?? null, positions, normals: flatNormals(positions, indices), indices, faceIds, edges: meta.edges === "none" ? new Float32Array(0) : featureEdges(positions, indices, faceIds) };
 }
 
 const hex = (c) => (Array.isArray(c) ? `#${c.map((x) => Math.round(255 * x).toString(16).padStart(2, "0")).join("")}` : null);

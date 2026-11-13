@@ -57,6 +57,7 @@ class Part:
     colors: np.ndarray | None = None  # (n, 3) rgb per vertex (a field): replaces the part's and the overlay's colors
     path: str = ""  # its full name in the assembly ("ship/heatshield/tiles"); "" is its name
     copies: int = 1  # placed copies merged into it, each len(positions) / copies vertices, in order
+    material: tuple | None = None  # (metal, roughness), 0..1 each; None: the default look (a matte paint)
 
 
 @dataclass
@@ -132,6 +133,66 @@ def compose(color: np.ndarray, diffuse, spec, rim) -> np.ndarray:
     """Lit colors: a dark color is lifted a little so its shading shows; highlights and the rim are white-ish."""
     c = 0.07 + 0.93 * color
     return np.clip(c * diffuse[:, None] + spec[:, None] + rim[:, None] * (0.6 + 0.4 * color), 0, 1)
+
+
+def _lit_colors(parts, part_of, color, n, v, up, diffuse, spec, rim, overlay=None) -> np.ndarray:
+    """compose, or compose_material for the pixels of parts with a material (not over an overlay's colors)."""
+    out = compose(color, diffuse, spec, rim)
+    if overlay is not None or not any(p.material for p in parts):
+        return out
+    mats = np.array([p.material or (np.nan, np.nan) for p in parts], dtype=np.float64)
+    m = mats[part_of]
+    own = ~np.isnan(m[:, 0])
+    if own.any():
+        vv = v if np.ndim(v) == 1 else v[own]
+        out[own] = compose_material(color[own], n[own], vv, up, m[own].astype(n.dtype), diffuse[own], spec[own], rim[own])
+    return out
+
+
+def _view_dirs(pix, Ws, Hs, f) -> np.ndarray:
+    """Toward the viewer through each pixel (camera space), as render_camera lights it."""
+    v = np.empty((len(pix), 3), dtype=np.float32)
+    v[:, 0] = -((pix % Ws) + 0.5 - Ws / 2) / f
+    v[:, 1] = ((pix // Ws) + 0.5 - Hs / 2) / f
+    v[:, 2] = 1
+    return v / np.sqrt(np.einsum("ij,ij->i", v, v))[:, None]
+
+
+def _smooth(a, b, x):
+    t = np.clip((x - a) / (b - a), 0, 1)
+    return t * t * (3 - 2 * t)
+
+
+def studio(r: np.ndarray, up: np.ndarray, rough: np.ndarray) -> np.ndarray:
+    """What a reflection sees in direction r (camera space): a bright ceiling, a grey horizon and a dark
+    floor (world up is ``up``), plus the key light's softbox; blurrier and flatter the rougher the surface."""
+    h = r @ up
+    w = 0.35 * rough  # blurred over this much of the sky
+    sky = lambda x: np.interp(x, (-1, -0.5, -0.15, 0.03, 0.5, 1), (0.3, 0.4, 0.62, 0.86, 0.93, 0.98))
+    e = (sky(h - w) + sky(h) + sky(h + w)) / 3
+    e = e * (1 - 0.25 * r[:, 0] ** 2)  # darker to the sides: a round part looks round
+    e = e + (0.62 - e) * 0.45 * rough  # a rough surface averages its surroundings
+    p = 2.0 / (rough * rough + 0.004)
+    box = np.clip(r @ KEY.astype(r.dtype), 0, 1) ** np.minimum(p, 2000)
+    fill = np.clip(r @ FILL.astype(r.dtype), 0, 1) ** np.minimum(0.5 * p, 1000)
+    return e + (1.3 * box + 0.35 * fill) * (1.15 - 0.7 * rough)
+
+
+def compose_material(color, n, v, up, mat, diffuse, spec, rim) -> np.ndarray:
+    """Lit colors of parts with a material (``mat``: (k, 2) metal, roughness per pixel): a metal is its
+    color times what it reflects (a studio: ceiling, horizon, floor, the key light), whiter at grazing
+    angles; a paint or plastic is the usual light with its highlight as sharp as its roughness says."""
+    metal, rough = mat[:, 0], mat[:, 1]
+    v = np.broadcast_to(np.asarray(v, dtype=n.dtype), n.shape)
+    ndv = np.clip(np.einsum("ij,ij->i", n, v), 0, 1)
+    r = 2 * ndv[:, None] * n - v
+    env = studio(r, np.asarray(up, dtype=n.dtype), rough)
+    fres = (1 - ndv) ** 5
+    k = np.clip((1 - rough) / 0.38, 0.1, 2.5)  # 0.62 (no material) keeps the usual highlight
+    plain = compose(color, diffuse, spec * k, rim) + ((0.04 + 0.96 * fres) * (1 - rough) ** 2 * 0.6 * env)[:, None]
+    F = color + (1 - color) * fres[:, None] * (1 - 0.6 * rough[:, None])
+    shiny = F * (1.2 * env)[:, None] + 0.06 * color * diffuse[:, None]
+    return np.clip((1 - metal)[:, None] * plain + metal[:, None] * shiny, 0, 1)
 
 
 # ---------------------------------------------------------------- rasterizer
@@ -349,7 +410,7 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
         color[own] = (w0[:, None] * C[i0] + w1[:, None] * C[i1] + w2[:, None] * C[i2])[own]
     img = np.empty((Ws * Hs, 3))
     img[:] = (1.0, 1.0, 1.0) if plain else BACKGROUND
-    img[fg] = compose(color, shade, spec, rim)
+    img[fg] = _lit_colors(parts, tri_part[t], color, n, np.array([0.0, 0.0, 1.0]), R[:, 2], shade, spec, rim, overlay)
 
     # lines: face boundaries (CAD edges), silhouettes, depth jumps; creases on meshes without faces
     fkey = np.full(Ws * Hs, -1, dtype=np.int64)
@@ -875,7 +936,7 @@ def render_camera(prep: Prepared, cam, W: int, H: int, hidden=None, edges: bool 
         color[own] = np.einsum("kj,kjc->kc", w, Cx[Tx[t]])[own]
     img = np.empty((Ws * Hs, 3))
     img[:] = background
-    img[fg] = compose(color, shade, spec, rim)
+    img[fg] = _lit_colors(prep.parts, tri_part[t], color, n, _view_dirs(np.nonzero(fg)[0], Ws, Hs, f), R[:, 2], shade, spec, rim, overlay)
 
     fkey = np.full(Ws * Hs, -1, dtype=np.int64)
     fkey[fg] = tri_part[t].astype(np.int64) * (1 << 32) + tri_face[t]

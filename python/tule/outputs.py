@@ -120,6 +120,16 @@ def _color(c) -> str:
     from .io import color_hex, parse_rgba
     return color_hex(parse_rgba(c))
 
+
+def _look(entry: dict, c) -> dict:
+    """``entry`` with the part's "color" and, when it has one, its "material" ({"metal", "roughness"})."""
+    from .look import material_of
+    if c:
+        entry["color"] = _color(c)
+        if material_of(c):
+            entry["material"] = dict(material_of(c))
+    return entry
+
 def root() -> str:
     """The outputs folder: ``$TULE_OUTPUTS``, else ``/workspace/outputs`` if ``/workspace`` exists, else ``./outputs``."""
     env = os.environ.get("TULE_OUTPUTS")
@@ -326,8 +336,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
         meta["title"] = title
     if shape.name:
         meta["name"] = shape.name
-    if shape.color:
-        meta["color"] = _color(shape.color)
+    _look(meta, shape.color)
     _write_json(folder, meta)
     return folder
 
@@ -359,8 +368,7 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
         used.add(fname)
         _write_geometry(os.path.join(folder, fname), shp)
         entry: dict[str, Any] = {"file": fname, "name": path}
-        if color or shp.color:
-            entry["color"] = _color(color or shp.color)
+        _look(entry, color or shp.color)
         if T is not None:
             entry["transforms"] = _placements(folder, fname, T)
         parts.append(entry)
@@ -453,8 +461,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
                 files[n] = (fname, shp.bounds[0])
             fname, first = files[n]
             entry: dict[str, Any] = {"file": fname, "name": f"{name}/{n}" if copies == 1 else f"{name}/{n} ×{copies}/{k}"}
-            if shp.color:
-                entry["color"] = _color(shp.color)
+            _look(entry, shp.color)
             if copies > 1:
                 entry["copies"] = copies
                 if k > 1:
@@ -583,8 +590,7 @@ class Sequence:
             entry: dict[str, Any] = {"file": fname, "name": name, "new": True}
         else:
             entry = {"file": fname, "name": name}
-        if part.color:
-            entry["color"] = _color(part.color)
+        _look(entry, part.color)
         if not loc.IsIdentity():
             t = loc.Transformation()
             entry["transform"] = [round(t.Value(r, c), 7 if c < 4 else 5) for r in (1, 2, 3) for c in (1, 2, 3, 4)] + [0, 0, 0, 1]
@@ -922,8 +928,7 @@ def drawing(name: str, item: Union[Shape, Assembly, list, tuple, dict], views=No
         shape = Assembly(*it) if isinstance(it, (list, tuple)) else it
         _write_geometry(os.path.join(folder, stem + ".step"), shape)
         entry: dict[str, Any] = {"file": stem + ".step", "name": stem}
-        if getattr(shape, "color", None):
-            entry["color"] = _color(shape.color)
+        _look(entry, getattr(shape, "color", None))
         lo, hi = (shape.to_shape() if isinstance(shape, Assembly) else shape).bounds
         if x is not None:
             entry["transform"] = [1, 0, 0, round(x - lo.x, 5), 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]

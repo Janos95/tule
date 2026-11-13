@@ -329,6 +329,7 @@ function decodePacked(buf) {
     return {
       name: p.name || null,
       color: p.color,
+      material: p.material ?? null,
       tags: p.tags ?? {},
       positions: grid(p, p.positions, nv),
       normals,
@@ -350,6 +351,7 @@ function decode(buf, at) {
     sortByFace({
       name: p.name || null,
       color: p.color,
+      material: p.material ?? null,
       tags: p.tags ?? {},
       positions: arr(Float32Array, p.positions),
       normals: arr(Float32Array, p.normals),
@@ -1073,7 +1075,7 @@ async function show() {
     const named = (m, f, i) => {
       const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
       const matrix = (kind === "assembly" || placed) && entry?.transform != null ? placement(entry.transform, f.file) : null;
-      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? (kind === "part" ? o.meta?.color : null) ?? m.color, matrix, instances: copies[i], entry: i };
+      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? (kind === "part" ? o.meta?.color : null) ?? m.color, material: entry?.material ?? (kind === "part" ? o.meta?.material : null) ?? m.material ?? null, matrix, instances: copies[i], entry: i };
     };
     // a big assembly draws its parts as they come in (a few times a second), not after the last one
     const got = new Array(shownFiles.length);

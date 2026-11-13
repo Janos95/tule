@@ -37,6 +37,7 @@ from OCP.TopoDS import TopoDS_Shape
 
 from ._occ import ShapeSet, cast, from_list, kind_of, shape_list, static, subshapes
 from .errors import OCC_ERRORS, TuleError
+from .look import Looks
 from .geom import Vec, VecLike, from_pnt, gdir, pnt, translation, vec, xyz_rotation
 from .selection import SELECTION_TYPES, Edges, Faces, Selection, Vertices
 
@@ -135,7 +136,7 @@ def _move_bounds(lohi, t: gp_Trsf, cache: dict):
     cache["bounds"] = (Vec(*map(min, zip(*pts))), Vec(*map(max, zip(*pts))))
 
 
-class Shape:
+class Shape(Looks):
     """An immutable solid (or compound) with tags, provenance and metadata: Tule's B-rep kind
     (``kind == "brep"``; the others are ``tule.Mesh`` and ``tule.Implicit``)."""
 
@@ -181,12 +182,18 @@ class Shape:
             self._sm,
         )
 
-    def named(self, name: str, color: str | None = None) -> "Shape":
+    def named(self, name: str, color: str | None = None, material=None) -> "Shape":
         """The same shape with a part name and (optionally) a color like ``"#4a8"``; with opacity
-        (``"#rrggbbaa"``, ``"#8da0aa66"``) it is drawn see-through: glass, covers, housings."""
-        return self._renamed(name, color or self.color)
+        (``"#rrggbbaa"``, ``"#8da0aa66"``) it is drawn see-through: glass, covers, housings.
+        ``material``: how it looks, ``"steel"``, ``"polished"``, ``"ceramic-tile"``, … (``with_material``)."""
+        from .look import with_look
+        return self._renamed(name, with_look(self.color, color, material))
 
     def colored(self, color: str) -> "Shape":
+        from .look import with_look
+        return self._renamed(self.name, with_look(self.color, color))
+
+    def _looking(self, color) -> "Shape":
         return self._renamed(self.name, color)
 
     def _renamed(self, name, color) -> "Shape":
