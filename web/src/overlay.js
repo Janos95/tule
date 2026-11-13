@@ -58,19 +58,21 @@ const rampRGB = () => colors(RAMP).map((h) => h.match(/\w\w/g).map((x) => parseI
 const nth = (list, i) => list[i % list.length];
 const fmt = (v) => (typeof v === "number" ? +v.toPrecision(4) : String(v));
 
-/** A .npy file's array (little-endian float32, int32 or uint32, C order): {shape, data}. */
-function parseNpy(buf) {
+/** A .npy file's array (little-endian float32, int32 or uint32, C order; float64 read as float32): {shape, data}. */
+export function parseNpy(buf) {
   const b = new Uint8Array(buf);
   if (b[0] !== 0x93 || String.fromCharCode(...b.subarray(1, 6)) !== "NUMPY") throw new Error("not a .npy file");
   const v2 = b[6] >= 2;
   const len = v2 ? new DataView(buf).getUint32(8, true) : new DataView(buf).getUint16(8, true);
   const start = (v2 ? 12 : 10) + len;
   const head = new TextDecoder().decode(b.subarray(v2 ? 12 : 10, start));
-  const type = { f4: Float32Array, i4: Int32Array, u4: Uint32Array }[head.match(/'descr':\s*'<([fiu]4)'/)?.[1]];
+  const code = head.match(/'descr':\s*'<([fiu]4|f8)'/)?.[1];
+  const type = { f4: Float32Array, i4: Int32Array, u4: Uint32Array, f8: Float64Array }[code];
   if (!type || /'fortran_order':\s*True/.test(head)) throw new Error("a field must be little-endian float32 (int32 for triangles) in C order");
   const shape = (head.match(/'shape':\s*\(([^)]*)\)/)?.[1] ?? "").split(",").filter((s) => s.trim()).map(Number);
   const n = shape.reduce((a, x) => a * x, 1);
-  return { shape, data: new type(buf.slice(start, start + 4 * n)) };
+  const data = new type(buf.slice(start, start + type.BYTES_PER_ELEMENT * n));
+  return { shape, data: code === "f8" ? Float32Array.from(data) : data };
 }
 
 // the slider's motion: these multiples of the field's "deform"

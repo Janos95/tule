@@ -82,3 +82,25 @@ def test_packed_mesh_reads_back(tmp_path):
         assert (np.einsum("ij,ij->i", na[A], nb[B][near]) > 0.999).all()
     assert np.abs(a["E"] - b["E"]).max() <= 0.0051
     assert (np.abs(a["P"].min(0) - b["P"].min(0)) < 0.006).all() and (np.abs(a["P"].max(0) - b["P"].max(0)) < 0.006).all()
+
+
+def test_a_mesh_past_16_bits_packs_wide(tmp_path):
+    """A detailed purchased part (an engine of 100k+ vertices, 200k+ triangles) packs with 32-bit indices and reads back."""
+    from tule import Mesh
+
+    nu, nv = 500, 220
+    u, v = np.meshgrid(np.linspace(0, 2 * np.pi, nu, endpoint=False), np.linspace(0.05, np.pi - 0.05, nv))
+    P = np.stack([600 * np.sin(v) * np.cos(u), 600 * np.sin(v) * np.sin(u), 1500 * np.cos(v)], -1).reshape(-1, 3)
+    i, j = np.meshgrid(np.arange(nu), np.arange(nv - 1))
+    a, b = j * nu + i, j * nu + (i + 1) % nu
+    T = np.concatenate([np.stack([a, b, a + nu], -1), np.stack([b, b + nu, a + nu], -1)]).reshape(-1, 3)
+    path = str(tmp_path / "raptor.ply")
+    Mesh(P, T).named("raptor").export_ply(path)
+    v1 = tule_agent.encode_mesh(path)
+    v2 = tule_agent.pack_mesh(v1)
+    head = json.loads(zlib.decompress(v2[4:])[4:4 + struct.unpack_from("<I", zlib.decompress(v2[4:]))[0]])
+    assert head["parts"][0]["wide"] and head["parts"][0]["nv"] > 65535 and head["parts"][0]["nt"] == len(T)
+    (x,), (y,) = unpack_v1(v1), unpack_v2(v2)
+    assert len(x["I"]) == len(y["I"]) == len(T)
+    assert np.abs(np.sort(x["P"][x["I"]].mean(1), 0) - np.sort(y["P"][y["I"]].mean(1), 0)).max() < 0.05  # on the 0.05 mm grid
+    assert len(v2) < len(v1) / 3

@@ -59,3 +59,20 @@ outputs.plate("print", [part])
 ## FEA on meshes
 
 `fea.static(mesh, ...)` takes a closed mesh with tags as for a shape. `mesh="auto"` uses voxels for meshes over 20,000 triangles (gmsh tetrahedra on a fine Fidget mesh take minutes); `mesh="tet"` asks for them anyway. An implicit is meshed first: `fea.static(body.to_mesh(cell), ...)`.
+
+## Many copies
+
+A part repeated (tiles, engines, fasteners): `part.placed(...)` stores, meshes and draws it once. Any kind; an implicit's copies `.to_mesh(cell)` first.
+
+```python
+import numpy as np
+from tule import *
+
+tile = regular_polygon(6, 10).extrude(3).named("tile", "#333")
+a = np.radians(np.arange(0, 360, 5))
+tiles = tile.placed(at=np.c_[100 * np.cos(a), 100 * np.sin(a), 0 * a], rotate=np.c_[0 * a, 0 * a, np.degrees(a)])
+fins = box(30, 4, 60).placed(rotate=[(0, 0, k) for k in (0, 90, 180, 270)]).named("fins")
+outputs.assembly("ring", Assembly(tiles.named("tiles"), fins))
+```
+
+`placed(T)` takes (N, 4, 4) matrices; `at=` (N, 3), `rotate=` degrees as `part.rotate` (one row for all). `.at/.rotate` move every copy; `bounds`, `volume`, `len`; `asm.parts()` lists each copy (`tiles[3]`). `output.json`: `"transforms"`, a list of 16 numbers each, or a `.npy` for many.

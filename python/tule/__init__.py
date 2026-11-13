@@ -25,6 +25,7 @@ from .errors import TuleError
 from .mesh import Mesh, MeshFaces
 from .gears import CycloidalDrive, GearPair, cycloidal_disc, cycloidal_drive, gear_pair, internal_gear, spur_gear
 from .geom import ORIGIN, Vec, X, Y, Z
+from .instances import Instances
 from .io import export_3mf, export_gltf, export_step, export_stl, import_step, tessellate
 from .primitives import box, cone, cube, cylinder, polyhedron, sphere, torus, wedge
 from .sdf import Implicit
@@ -37,7 +38,7 @@ from .sweeps import extrude, loft, pipe, revolve, sweep
 __version__ = "0.1.0"
 
 __all__ = [
-    "Assembly", "Bend", "BevelPair", "Clearance", "CycloidalDrive", "Edges", "Faces", "GearPair", "Implicit", "Mesh", "MeshFaces", "ORIGIN",
+    "Assembly", "Bend", "BevelPair", "Clearance", "CycloidalDrive", "Edges", "Faces", "GearPair", "Implicit", "Instances", "Mesh", "MeshFaces", "ORIGIN",
     "Profile", "Selection", "Shape", "TuleError", "Vec", "Vertices", "X", "Y", "Z", "bevel_gear", "bevel_pair", "box",
     "circle", "clearance", "cone", "cube", "cylinder", "cycloidal_disc", "cycloidal_drive", "difference", "drawing",
     "ellipse", "export_3mf", "export_dxf", "export_gltf", "export_step", "export_stl", "extrude", "fea", "gear_pair",

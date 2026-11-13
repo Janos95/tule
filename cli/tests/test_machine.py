@@ -291,3 +291,34 @@ def test_the_git_credential_helper_answers_only_for_tule(tmp_path, monkeypatch, 
         monkeypatch.setattr(sys, "stdin", io.StringIO(f"protocol=https\nhost={host}\n\n"))
         gitremote.credential(["get"])
         assert ("join-secret" in capsys.readouterr().out) is wanted, host  # any other server asking gets nothing
+
+
+def test_screenshot_placed_copies(tmp_path, monkeypatch):
+    """An assembly entry's "transforms" (a list, or a .npy): the file drawn at each placement; too many triangles are refused."""
+    from tule import Assembly, box, outputs
+
+    from tule_cli import CliError
+    from tule_cli import machine
+
+    monkeypatch.setenv("TULE_OUTPUTS", str(tmp_path / "outputs"))
+    tile = box(4, 4, 1).named("tile", "#a33")
+    outputs.assembly("deck", Assembly(box(400, 10, 1).named("hull"), tile.placed(at=[(i * 5, 20, 0) for i in range(80)]).named("tiles"),
+                                      box(2, 2, 6).named("fin").placed(rotate=[(0, 0, a) for a in (0, 90, 180, 270)]).named("fins")))
+    folder = tmp_path / "outputs" / "deck"
+    assert (folder / "tiles.transforms.npy").exists()
+    parts, _, caption = scene(str(folder))
+    assert "85 parts" in caption and len(parts) == 3  # hull, 80 tiles, 4 fins: one drawn part per file, its copies merged
+    tiles = next(p for p in parts if p.name == "tiles")
+    assert len(tiles.indices) == 80 * 12 and tiles.positions[:, 0].max() == pytest.approx(80 * 5 - 1, abs=1e-4)
+    fins = next(p for p in parts if p.name == "fins")
+    assert len(fins.indices) == 4 * 12 and fins.positions[:, 0].min() == pytest.approx(-2, abs=1e-5)
+    meta = json.loads((folder / "output.json").read_text())
+    meta["parts"][1]["transforms"] = "missing.npy"
+    (folder / "output.json").write_text(json.dumps(meta))
+    with pytest.raises(CliError, match="missing.npy"):
+        scene(str(folder))
+    monkeypatch.setattr(machine, "MAX_DRAWN", 500)
+    meta["parts"][1]["transforms"] = "tiles.transforms.npy"
+    (folder / "output.json").write_text(json.dumps(meta))
+    with pytest.raises(CliError, match="80 copies of 12 triangles"):
+        scene(str(folder))

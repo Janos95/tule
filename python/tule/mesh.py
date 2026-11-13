@@ -885,6 +885,13 @@ class Mesh:
         n /= max(np.linalg.norm(n), 1e-300)
         return self._about(np.eye(3) - 2 * np.outer(n, n), origin)
 
+    def placed(self, transforms=None, *, at=None, rotate=None):
+        """This part placed many times, stored and drawn once (``tule.Instances``): ``(N, 4, 4)``
+        matrices, or ``at=`` (N, 3) points and ``rotate=`` (N, 3) degrees (x, then y, then z; one row for all)."""
+        from .instances import Instances
+
+        return Instances(self, transforms, at=at, rotate=rotate)
+
     def transform(self, matrix) -> "Mesh":
         """A 4×4 (or 3×4) affine matrix."""
         M = np.eye(4)

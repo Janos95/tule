@@ -105,6 +105,7 @@ import numpy as np
 
 from .assembly import Assembly
 from .errors import TuleError
+from .instances import Instances
 from .mesh import MeshFaces
 from .io import Mesh, export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
 from .selection import Selection
@@ -169,15 +170,20 @@ def picture(item: Union[Shape, Assembly, Mesh], path: str, view: str = "iso", si
         raise TuleError("picture needs the tule CLI (it is on every Tule machine)", op="picture") from None
     import io as _io
 
-    if isinstance(item, Assembly):
-        items = [(n.rsplit("/", 1)[-1], s) for n, s in item.parts()]
+    from tule_cli.machine import copies
+
+    if isinstance(item, (Assembly, Instances)):  # placed copies: tessellated once, drawn at each placement
+        parts = []
+        for path, body, T, color in _flat(item):
+            ps = items_to_parts([(path.rsplit("/", 1)[-1], body)], color)
+            parts += copies(ps, T, path) if T is not None else ps
     elif isinstance(item, Mesh):
         if not item.triangles:
             raise TuleError("the mesh is empty", op="picture")
-        items = [("mesh", item)]
+        parts = items_to_parts([("mesh", item)])
     else:
-        items = [(item.name or "part", item)]
-    img, _ = render(items_to_parts(items), view, size, labels, None, caption, plain=True)
+        parts = items_to_parts([(item.name or "part", item)])
+    img, _ = render(parts, view, size, labels, None, caption, plain=True)
     buf = _io.BytesIO()
     img.save(buf, "PNG")
     return write_atomic(str(path), buf.getvalue())
@@ -236,7 +242,10 @@ def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
 
 def _write_json(folder: str, data: dict) -> str:
     data = {"version": VERSION, **data}
-    return write_atomic(os.path.join(folder, "output.json"), json.dumps(data, indent=2) + "\n")
+    text = json.dumps(data, indent=2)
+    # a placement (16 numbers) on one line, not sixteen
+    text = re.sub(r"\[\s+((?:-?[0-9][0-9.e+-]*,\s+){15}-?[0-9][0-9.e+-]*)\s+\]", lambda m: "[" + " ".join(m.group(1).split()) + "]", text)
+    return write_atomic(os.path.join(folder, "output.json"), text + "\n")
 
 
 def _info(info) -> dict | None:
@@ -263,12 +272,46 @@ def _mesh_arrays(mesh) -> tuple:
     return mesh[0], mesh[1]
 
 
+INLINE_COPIES = 64  # placements written into output.json; more go into a .npy beside the part's file
+
+
+def _flat(item) -> list:
+    """``[(path, Shape or Mesh, (N, 4, 4) placements or None, the group's color)]``: each body once."""
+    if isinstance(item, Instances):
+        item = Assembly(item)
+    if not isinstance(item, Assembly):
+        return [(item.name or "part", item, None, None)]
+    out = []
+    for path, c in item._leaves():
+        if isinstance(c, Instances):
+            if not len(c):
+                raise TuleError(f"{path} has no copies", op="outputs", hint="placed(...) got no transforms or points")
+            for sub, body, T in c.leaves():
+                out.append((f"{path}/{sub}" if sub else path, body, T, c.color))
+        else:
+            out.append((path, c, None, None))
+    return out
+
+
+def _placements(folder: str, fname: str, T: np.ndarray):
+    """An assembly entry's "transforms": a list of 16 numbers each (row-major), or for many copies the
+    name of a float32 (N, 4, 4) .npy written beside the part's file."""
+    if len(T) <= INLINE_COPIES:
+        return [[round(float(v), 7 if c < 3 else 5) + 0.0 for r in range(3) for c, v in enumerate(M[r])] + [0, 0, 0, 1] for M in T]
+    npy = os.path.splitext(fname)[0] + ".transforms.npy"
+    write_atomic(os.path.join(folder, npy), _npy(np.ascontiguousarray(T, dtype=np.float32)))
+    return npy
+
+
 def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: str | None = None) -> str:
     """Write one part: ``outputs/<name>/<name>.<fmt>``. Returns the folder.
 
     ``shape`` is a Shape (STEP unless ``fmt`` says otherwise) or a ``Mesh`` (STL, keeping its
     regions, name, color and tags). An implicit is meshed first: ``body.to_mesh(cell=0.4)``.
+    Placed copies (``part.placed(...)``) are written as an assembly: the part once, its placements.
     """
+    if isinstance(shape, Instances):
+        return assembly(name, Assembly(shape), fmt=fmt or "step", title=title)
     if isinstance(shape, Assembly):
         raise TuleError(f"{name}: this is an assembly", op="outputs", hint=f'use outputs.assembly("{name}", …)')
     _not_empty(shape, name)  # before the folder: an empty part leaves no empty output behind
@@ -290,9 +333,13 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
 
 
 def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", title: str | None = None) -> str:
-    """Write an assembly: one file per part plus ``output.json`` listing names and colors."""
+    """Write an assembly: one file per part plus ``output.json`` listing names and colors.
+
+    Placed copies (``part.placed(...)``, ``tule.Instances``) are one file and their placements
+    (``"transforms"``): 18,000 tiles are one tile's file, meshed and drawn once."""
     asm = item if isinstance(item, Assembly) else Assembly(*item, name=name)
-    for path, shp in asm.parts():
+    flat = _flat(asm)
+    for path, shp, _, _ in flat:
         if isinstance(shp, Mesh):
             _not_empty(shp, path)
         elif not shp.faces:
@@ -302,7 +349,7 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
     folder = _folder(name)
     parts = []
     used = set()
-    for path, shp in asm.parts():
+    for path, shp, T, color in flat:
         base = _slug(path.split("/", 1)[-1].replace("/", "_"))
         fname = f"{base}.{'ply' if isinstance(shp, Mesh) else fmt}"
         i = 2
@@ -311,9 +358,11 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
             i += 1
         used.add(fname)
         _write_geometry(os.path.join(folder, fname), shp)
-        entry = {"file": fname, "name": path}
-        if shp.color:
-            entry["color"] = _color(shp.color)
+        entry: dict[str, Any] = {"file": fname, "name": path}
+        if color or shp.color:
+            entry["color"] = _color(color or shp.color)
+        if T is not None:
+            entry["transforms"] = _placements(folder, fname, T)
         parts.append(entry)
     meta: dict[str, Any] = {"kind": "assembly", "parts": parts}
     if title or asm.name:

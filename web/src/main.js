@@ -32,10 +32,17 @@
 // (4 rows of 4 numbers, numpy's M.tolist(); a flat list of 16 numbers in the
 // same order is read the same way). Without it a part stays where its file
 // puts it.
+//
+// Placed copies (tule's part.placed(...)): "transforms" places one file many
+// times, as N such matrices (a list), or as the name of a .npy in the folder,
+// float32 or float64 (N, 4, 4) or (N, 3, 4), for many. The file is meshed once
+// and drawn with one instanced draw (a THREE.InstancedMesh); the copies are
+// one part in the Parts panel, and hovering names the copy (tiles · #17 · f3).
+// A "transform" beside it moves all copies.
 import { initAnnotate } from "./annotate.js";
 import { auth } from "./auth.js";
 import { render as renderFile, size, typeOf, TYPE_ICONS } from "./files.js";
-import { initOverlay } from "./overlay.js";
+import { initOverlay, parseNpy } from "./overlay.js";
 import { initParts } from "./parts.js";
 import { initPlot } from "./plot.js";
 import { Viewer, sortByFace } from "./viewer.js";
@@ -485,6 +492,8 @@ function prepare(list) {
     }));
     // an overlay's field grids and surface meshes: drawn on the part, not a view
     const field = new Set((Array.isArray(o.meta?.fields) ? o.meta.fields : []).flatMap((x) => [x?.file, ...Object.values(x?.mesh && typeof x.mesh === "object" ? x.mesh : {})]));
+    // and an assembly's placements of copies (a .npy): read with the part, not a view
+    for (const p of Array.isArray(o.meta?.parts) ? o.meta.parts : []) if (typeof p?.transforms === "string") field.add(p.transforms);
     return { ...o, root, id: root === "outputs" ? o.name : `${root}/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry" && !field.has(f.file)), fields: all.filter((f) => field.has(f.file)) };
   });
 }
@@ -759,6 +768,45 @@ function placement(t, file) {
   return flat;
 }
 
+const placedCopies = new Map(); // a .npy's hash -> Promise<Float32Array>
+const listedCopies = new WeakMap(); // an output.json list of placements -> Float32Array (the same array while it is unchanged)
+/** An assembly entry's "transforms" (placed copies) as N × 16 numbers, row-major, in a Float32Array; null without. */
+function copiesOf(o, entry) {
+  const t = entry?.transforms;
+  if (t == null) return Promise.resolve(null);
+  if (typeof t === "string") {
+    const f = o.fields.find((x) => x.file === t);
+    if (!f) return Promise.reject(new Error(`output.json: the transforms of ${entry.file}, ${t}, are not in the output`));
+    if (!placedCopies.has(f.hash)) {
+      const p = readFile(f).then((buf) => {
+        const { shape, data } = parseNpy(buf);
+        const n = shape[0] ?? 0;
+        const per = n ? data.length / n : 0; // 16 or 12 numbers a copy
+        if (!(per === 16 || per === 12) || !data.every(Number.isFinite)) throw new Error(`${t} must hold (N, 4, 4) or (N, 3, 4) numbers, not shape (${shape.join(", ")})`);
+        if (per === 16) return data;
+        const out = new Float32Array(16 * n);
+        for (let i = 0; i < n; i++) out.set(data.subarray(12 * i, 12 * i + 12), 16 * i), (out[16 * i + 15] = 1);
+        return out;
+      });
+      p.catch(() => placedCopies.delete(f.hash));
+      if (placedCopies.size > 32) placedCopies.delete(placedCopies.keys().next().value);
+      placedCopies.set(f.hash, p);
+    }
+    return placedCopies.get(f.hash);
+  }
+  try {
+    if (!Array.isArray(t)) throw new Error(`output.json: the transforms of ${entry.file} must be a list of 4x4 matrices or a .npy file's name`);
+    if (!listedCopies.has(t)) {
+      const out = new Float32Array(16 * t.length);
+      t.forEach((m, i) => out.set(placement(m, entry.file), 16 * i));
+      listedCopies.set(t, out);
+    }
+    return Promise.resolve(listedCopies.get(t));
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
+
 /** A motion study's box around every frame ({min, max}), from the boxes of the
  * shown files (loaded: their meshes) moved by each frame's placements. */
 function studyBox(o, files, loaded) {
@@ -1012,10 +1060,15 @@ async function show() {
     const progress = () => state.shown === key && todo.length > 3 && setStatus(`Loading ${done} / ${todo.length} files${mb >= 10 ? ` (${Math.round(mb)} MB)` : ""}…`);
     progress();
     for (const f of todo) request(f).then(() => (done++, progress()), () => {});
+    // an assembly shows the parts it could read and names the rest; a part or frame fails as a whole
+    const failed = [];
+    // placed copies: each entry's placements (N × 16 numbers), read while the files mesh; one that cannot be read is not drawn
+    const copies = await Promise.all(shownFiles.map((f, i) => (kind === "assembly" && entries?.length ? copiesOf(o, entries[i]).catch((e) => (failed.push(`${f.file}: ${e.message}`), new Float32Array(0))) : null)));
+    if (state.shown !== key) return;
     const named = (m, f, i) => {
       const entry = entries?.length ? entries[i] : o.meta?.parts?.find((p) => p.file === f.file);
       const matrix = (kind === "assembly" || placed) && entry?.transform != null ? placement(entry.transform, f.file) : null;
-      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? (kind === "part" ? o.meta?.color : null) ?? m.color, matrix, entry: i };
+      return { ...m, name: entry?.name ?? (kind === "assembly" ? m.name ?? f.file.replace(/\.[^.]+$/, "") : m.name), color: entry?.color ?? (kind === "part" ? o.meta?.color : null) ?? m.color, matrix, instances: copies[i], entry: i };
     };
     // a big assembly draws its parts as they come in (a few times a second), not after the last one
     const got = new Array(shownFiles.length);
@@ -1027,8 +1080,6 @@ async function show() {
       viewer?.setMeshes(got.flatMap((ps, i) => (ps ? ps.map((m) => named(m, shownFiles[i], i)) : [])), first && !drawn ? "fresh" : "auto", {});
       drawn = true;
     };
-    // an assembly shows the parts it could read and names the rest; a part or frame fails as a whole
-    const failed = [];
     const loaded = await Promise.all(shownFiles.map((f, i) => request(f).then((ps) => {
       got[i] = ps;
       if (kind === "assembly" && todo.length > 8 && !timer) timer = setTimeout(drawSoFar, drawn ? 500 : 150);
@@ -1054,7 +1105,8 @@ async function show() {
     state.record = { name: o.name, kind, title: o.meta?.title ?? null, files: shownFiles.map((f) => f.path), frame };
     offerFiles();
     const grid = viewer?.gridStep ? ` · grid ${+viewer.gridStep.toPrecision(3)} mm` : "";
-    $("counts").textContent = `${all.length} part${all.length === 1 ? "" : "s"}${grid}`;
+    const n = all.reduce((s, m) => s + (m.instances ? m.instances.length / 16 : 1), 0); // a placed copy counts as a part
+    $("counts").textContent = `${n.toLocaleString("en-US")} part${n === 1 ? "" : "s"}${grid}`;
     setStatus(failed.length ? `Could not show ${failed.length} of ${shownFiles.length} files: ${failed[0]}` : "");
   } catch (e) {
     if (state.shown === key) {
@@ -1177,7 +1229,8 @@ $("viewer").addEventListener("pointermove", (e) => {
     if (hit.arrow !== undefined) label.textContent = notes.join(" · ");
     else {
       const tags = Object.entries(hit.mesh.tags).filter(([, ids]) => ids.includes(hit.face)).map(([t]) => t);
-      label.textContent = [hit.mesh.name, `f${hit.face}`, ...tags, ...notes].filter(Boolean).join(" · ");
+      const copy = hit.instance != null ? `#${hit.instance} of ${(hit.mesh.instances.length / 16).toLocaleString("en-US")}` : null; // a placed copy: which one
+      label.textContent = [hit.mesh.name, copy, `f${hit.face}`, ...tags, ...notes].filter(Boolean).join(" · ");
     }
     const r = $("stage").getBoundingClientRect();
     label.style.left = `${e.clientX - r.left + 14}px`;

@@ -321,6 +321,62 @@ def _placed(parts, transform):
                                 normals=(p.normals @ R.T).astype(np.float32)) for p in parts]
 
 
+MAX_DRAWN = 8_000_000  # triangles tule screenshot draws: placed copies past this are refused, not drawn for minutes
+
+
+def read_transforms(spec, folder: str, jpath: str = "output.json"):
+    """An assembly entry's "transforms" as (N, 4, 4): a list of 4x4 (or 16 numbers, row-major) each, or
+    the name of a .npy in the folder ((N, 4, 4), (N, 3, 4), (N, 16) or (N, 12))."""
+    import numpy as np
+
+    if isinstance(spec, str):
+        path = os.path.join(folder, spec)
+        if os.path.basename(spec) != spec or not os.path.exists(path):
+            raise CliError(f"{jpath}: transforms file {spec!r} is not in {folder}")
+        a = np.load(path, allow_pickle=False)
+    else:
+        a = np.asarray(spec, dtype=np.float64)
+    a = np.asarray(a, dtype=np.float64)
+    if a.ndim == 2 and a.shape[1] in (12, 16):
+        a = a.reshape(len(a), a.shape[1] // 4, 4)
+    if a.ndim != 3 or a.shape[1:] not in ((4, 4), (3, 4)) or not np.isfinite(a).all():
+        raise CliError(f"{jpath}: \"transforms\" must be N matrices, 4x4 row-major (or a .npy of shape (N, 4, 4)), got shape {a.shape}")
+    out = np.zeros((len(a), 4, 4))
+    out[:, :3] = a[:, :3]
+    out[:, 3, 3] = 1
+    return out
+
+
+def copies(parts, transforms, name: str = "", drawn: list | None = None):
+    """Parts placed at each of ``transforms`` (N, 4, 4): one part per part, its copies merged. ``drawn``: a
+    running count of triangles (one item) checked against MAX_DRAWN."""
+    import dataclasses
+
+    import numpy as np
+
+    T = np.asarray(transforms, dtype=np.float64).reshape(-1, 4, 4)
+    n = len(T)
+    total = n * sum(len(p.indices) for p in parts)
+    if drawn is not None:
+        drawn[0] += total
+    if (drawn[0] if drawn is not None else total) > MAX_DRAWN:
+        raise CliError(f"{name}: {n:,} copies of {sum(len(p.indices) for p in parts):,} triangles is more than tule screenshot "
+                       f"draws ({MAX_DRAWN:,} triangles in all); screenshot the part's own file, or a smaller output")
+    R, t = T[:, :3, :3], T[:, :3, 3]
+    flip = np.linalg.det(R) < 0  # a mirrored copy: its triangles turned around
+    out = []
+    for p in parts:
+        P = (np.einsum("nij,vj->nvi", R, p.positions.astype(np.float64)) + t[:, None]).reshape(-1, 3)
+        N = np.einsum("nij,vj->nvi", R, p.normals.astype(np.float64)).reshape(-1, 3)
+        N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-20)
+        I = np.asarray(p.indices, dtype=np.int64).reshape(-1, 3)
+        I = np.where(flip[:, None, None], I[None, :, ::-1], I[None]) + (np.arange(n) * len(p.positions))[:, None, None]
+        out.append(dataclasses.replace(p, positions=P.astype(np.float32), normals=N.astype(np.float32),
+                                       indices=I.reshape(-1, 3), face_ids=np.tile(p.face_ids, n),
+                                       colors=np.tile(p.colors, (n, 1)) if p.colors is not None else None))
+    return out
+
+
 RAMP_RGB = [tuple(c / 255 for c in rgb) for rgb in RAMP]
 
 
@@ -494,10 +550,17 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
 
     if kind == "assembly":
         parts = []
+        drawn, placed = [0], 0
         for e in meta.get("parts", []):
-            parts += _placed(to_parts(file_in(e["file"]), e.get("color"), (e.get("name") or "").rsplit("/", 1)[-1] or None),
-                             e.get("transform"))
-        caption = f"{folder} (assembly, {len(parts)} parts)"
+            ps = to_parts(file_in(e["file"]), e.get("color"), (e.get("name") or "").rsplit("/", 1)[-1] or None)
+            if e.get("transforms") is not None:  # placed copies: the file once, drawn at each placement
+                T = read_transforms(e["transforms"], target, jpath)
+                ps = copies(ps, T, e.get("name") or e["file"], drawn)
+                placed += len(T) - 1
+            else:
+                drawn[0] += sum(len(p.indices) for p in ps)
+            parts += _placed(ps, e.get("transform"))
+        caption = f"{folder} (assembly, {len(parts) + placed:,} parts)"
     elif kind == "sequence":
         frames = meta.get("frames") or []
         if not frames:

@@ -405,6 +405,18 @@ outputs/
   buttons in the strip switch fields. Later: `variants` (side by side).
 - **The JSON is optional.** Without it the viewer infers the kind: one file is
   a part, several an assembly, numbered files a sequence.
+- **Placed copies** (built 2026-11-13, for models like a rocket with 39
+  engines and 18,000 heat-shield tiles): `part.placed(T)` / `tule.Instances`
+  (any kind; an assembly too) is one assembly child. Its entry names the
+  file once with `"transforms"`: N row-major 4×4s inline (up to 64), else a
+  float32 `(N, 4, 4)` `.npy` beside it. The agent meshes the file once (by
+  hash, as always; links pre-mesh it once); the viewer draws a
+  `THREE.InstancedMesh` and instanced edges, one Parts row per group, hover
+  says which copy. `parts()`, B-rep operations, plates, clearance, `tule
+  screenshot` and `outputs.picture` expand the copies (screenshot refuses
+  past 8M triangles). Checked: 19 parts, 18,459 copies, 10.2M triangles, 41
+  draw calls at 60 fps. Not done: picking is brute force per copy (a
+  250k-triangle copy takes ~50 ms to hover), sequences store expanded copies.
 - **Formats:** STEP (B-rep) and STL are drawn in 3D; 3MF, OBJ and glTF are
   downloads.
 - **Names, colors, tags travel in the file.** `export_step` writes part names,

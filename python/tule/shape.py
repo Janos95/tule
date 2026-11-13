@@ -465,6 +465,13 @@ class Shape:
         t.SetMirror(gp_Ax2(pnt(origin), gdir(n)))
         return self._apply_trsf(t, copy=True)
 
+    def placed(self, transforms=None, *, at=None, rotate=None):
+        """This part placed many times, stored and drawn once (``tule.Instances``): ``(N, 4, 4)``
+        matrices, or ``at=`` (N, 3) points and ``rotate=`` (N, 3) degrees (x, then y, then z; one row for all)."""
+        from .instances import Instances
+
+        return Instances(self, transforms, at=at, rotate=rotate)
+
     def transform(self, matrix: Sequence[Sequence[float]]) -> "Shape":
         """Apply a 3x3, 3x4 or 4x4 (affine) matrix."""
         m = [list(map(float, r)) for r in matrix]

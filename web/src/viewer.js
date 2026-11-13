@@ -16,7 +16,9 @@
 // setSurfaceField draws a field's own surface mesh in place of a part (values per vertex: a
 // finite-element mesh's boundary, so slots thinner than any grid stay open). setDeform scales either's motion.
 // Arrows (setArrows) are 3D glyphs whose tip touches the point they act on.
-// A part may carry a placement (mesh.matrix, 16 numbers, row-major).
+// A part may carry a placement (mesh.matrix, 16 numbers, row-major), and placed copies
+// (mesh.instances, N of them): drawn as one THREE.InstancedMesh, edges by an instanced
+// line shader, picked per copy (pick's `instance`); face styles apply to every copy.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -220,7 +222,8 @@ export class Viewer {
   /** Replaces the shown parts: [{name, color, positions: Float32Array (xyz),
    * normals, indices: Uint32Array, faceIds: Uint32Array (per triangle),
    * edges: Float32Array (segment endpoints) | null, tags: {tag: [face ids]},
-   * matrix: 16 numbers, row-major | null}].
+   * matrix: 16 numbers, row-major | null, instances: N × 16 numbers (placed
+   * copies, row-major, inside `matrix`) | null}].
    * fit: true, false or "auto" (fit when the bounds are new or far from the
    * last fit). extent: {min, max} the camera frames as well (every frame of a
    * motion study, so it holds still while the study plays), or null. */
@@ -244,13 +247,14 @@ export class Viewer {
     const kept = new Set();
     const reuse = (m) => {
       const list = spare.get(m.positions) ?? [];
-      const i = list.findIndex((p) => p.userData.color === (m.color || palette("--part")) && p.userData.mesh.indices === m.indices && p.userData.mesh.edges === m.edges);
+      const i = list.findIndex((p) => p.userData.color === (m.color || palette("--part")) && p.userData.mesh.indices === m.indices && p.userData.mesh.edges === m.edges && (p.userData.mesh.instances ?? null) === (m.instances ?? null));
       return i < 0 ? null : list.splice(i, 1)[0];
     };
     const plan = meshes.map((m) => (m.positions.length ? reuse(m) : null));
     for (const p of plan) if (p) kept.add(p);
     for (const part of this.group.children) {
       if (kept.has(part)) continue;
+      for (const c of part.children) if (c.isInstancedMesh) c.dispose(); // its placements' GPU buffer
       part.userData.geometry.dispose();
       part.userData.lines?.dispose();
       part.userData.surface?.geometry.dispose();
@@ -258,7 +262,7 @@ export class Viewer {
     }
     this.group.clear();
     meshes.forEach((m, index) => {
-      if (!m.positions.length) return;
+      if (!m.positions.length || m.instances?.length === 0) return;
       const old = plan[index];
       if (old) {
         Object.assign(old.userData, { index, mesh: m });
@@ -283,14 +287,24 @@ export class Viewer {
       const color = m.color || palette("--part");
       part.userData = { index, color, geometry: g, mesh: m };
       const clear = opacityOf(color)[1] < 1;
-      const solid = new THREE.Mesh(g, this.material(color));
+      // placed copies (m.instances: N × 16 numbers, row-major): one instanced draw of the mesh, and of its edges
+      const placements = m.instances ? instanceMatrices(m.instances) : null;
+      part.userData.placements = placements;
+      const solid = this.solid(part, g, this.material(color));
+      if (placements) part.userData.box = solid.boundingBox;
       if (clear) solid.renderOrder = 1; // after the solid parts
       part.add(solid);
       if (m.edges?.length) {
-        const lg = new THREE.BufferGeometry();
+        const lg = placements ? new THREE.InstancedBufferGeometry() : new THREE.BufferGeometry();
         lg.setAttribute("position", new THREE.BufferAttribute(m.edges, 3));
+        if (placements) {
+          lg.setAttribute("instMatrix", placements);
+          lg.instanceCount = placements.count;
+        }
         part.userData.lines = lg;
-        const lines = new THREE.LineSegments(lg, clear ? this.edgeClear : this.edgeMaterial);
+        const edge = clear ? this.edgeClear : this.edgeMaterial;
+        const lines = new THREE.LineSegments(lg, placements ? this.instancedLines(edge) : edge);
+        if (placements) lines.frustumCulled = false; // its bounds are one copy's
         lines.userData.edges = true;
         part.add(lines);
       }
@@ -301,6 +315,33 @@ export class Viewer {
     this.paintFaces();
     this.setStyle(style);
     if (this.bounds && (fit === true || (fit === "auto" && this.farFromFit(this.bounds)))) this.fit();
+  }
+
+  /** A part's surface drawn with `material`: a mesh, or for placed copies an InstancedMesh sharing the part's placements. */
+  solid(part, geometry, material) {
+    const placements = part.userData.placements;
+    if (!placements) return new THREE.Mesh(geometry, material);
+    const m = new THREE.InstancedMesh(geometry, material, placements.count);
+    m.instanceMatrix = placements;
+    m.computeBoundingBox();
+    m.computeBoundingSphere();
+    return m;
+  }
+
+  /** An edge material that draws each line at every placement (an InstancedBufferGeometry's instMatrix). */
+  instancedLines(base) {
+    const key = base === this.edgeClear ? "instancedClear" : "instancedEdges";
+    if (!this[key]) {
+      const m = base.clone();
+      m.onBeforeCompile = (shader) => {
+        shader.vertexShader = shader.vertexShader
+          .replace("#include <common>", "#include <common>\nattribute mat4 instMatrix;")
+          .replace("#include <begin_vertex>", "#include <begin_vertex>\ntransformed = (instMatrix * vec4(transformed, 1.0)).xyz;");
+      };
+      m.customProgramCacheKey = () => "tule-instanced-lines";
+      this[key] = m;
+    }
+    return this[key];
   }
 
   /** Moves the drawn parts in place, without rebuilding them (a motion study while it plays):
@@ -344,16 +385,16 @@ export class Viewer {
     for (const part of this.group.children) {
       const { index, color, geometry } = part.userData;
       part.visible = !hidden?.has(index);
-      if (part.visible) box.union(geometry.boundingBox.clone().applyMatrix4(part.matrix));
+      if (part.visible) box.union((part.userData.box ?? geometry.boundingBox).clone().applyMatrix4(part.matrix));
       const ghost = lit && !lit.has(index);
       const [solid] = part.children;
       solid.visible = !ghost;
       let glass = part.children.find((c) => c.userData.glass);
       if (ghost && !glass) {
-        const depth = new THREE.Mesh(geometry, this.depthOnly);
+        const depth = this.solid(part, geometry, this.depthOnly);
         depth.renderOrder = 1;
         depth.userData.glass = "depth";
-        glass = new THREE.Mesh(geometry, this.glass(color, GHOST_OPACITY));
+        glass = this.solid(part, geometry, this.glass(color, GHOST_OPACITY));
         glass.renderOrder = 2;
         glass.userData.glass = "color";
         part.add(depth, glass);
@@ -783,7 +824,9 @@ export class Viewer {
     // on a surface field: the triangle's vertices (the field's own numbering) and the point's weights
     const surf = surface && hit.barycoord ? { tri: [hit.face.a, hit.face.b, hit.face.c].map((v) => surface.vertexOf[v]), bary: [hit.barycoord.x, hit.barycoord.y, hit.barycoord.z] } : null;
     const face = surface ? surface.faceIds?.[hit.faceIndex] ?? -1 : mesh.faceIds[hit.faceIndex];
-    return { index, mesh, face, rest: at, surf, point: [hit.point.x, hit.point.y, hit.point.z] };
+    // a placed copy: which one (its face ids are the part's, the same on every copy)
+    const instance = hit.object.isInstancedMesh ? hit.instanceId : null;
+    return { index, mesh, face, instance, rest: at, surf, point: [hit.point.x, hit.point.y, hit.point.z] };
   }
 
   /** A picture for a link's preview: w×h pixels, from the camera's direction, the model filling it
@@ -868,6 +911,16 @@ export function opacityOf(color) {
   if (!m) return [color, 1];
   const h = m[1].length === 4 ? [...m[1]].map((c) => c + c).join("") : m[1];
   return [`#${h.slice(0, 6)}`, parseInt(h.slice(6), 16) / 255];
+}
+
+// Placed copies' matrices (N × 16 numbers, row-major) as an instanced attribute (three's matrices are column-major),
+// shared by the part's surface, edges and ghost.
+function instanceMatrices(rowMajor) {
+  const n = Math.floor(rowMajor.length / 16);
+  const a = new Float32Array(16 * n);
+  for (let i = 0, o = 0; i < n; i++, o += 16)
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) a[o + 4 * c + r] = rowMajor[o + 4 * r + c];
+  return new THREE.InstancedBufferAttribute(a, 16);
 }
 
 // A placement (16 numbers, row-major, or null) as position, rotation and scale; kept per array.

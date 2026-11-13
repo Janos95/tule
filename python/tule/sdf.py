@@ -668,6 +668,13 @@ class Implicit:
         c = np.array(vec(about), dtype=float)
         return self._affine(np.eye(3) * s, c - s * c, scale=float(s))
 
+    def placed(self, transforms=None, *, at=None, rotate=None):
+        """This part placed many times, stored and drawn once (``tule.Instances``): ``(N, 4, 4)``
+        matrices, or ``at=`` (N, 3) points and ``rotate=`` (N, 3) degrees (x, then y, then z; one row for all)."""
+        from .instances import Instances
+
+        return Instances(self, transforms, at=at, rotate=rotate)
+
     def mirror(self, nx: float | VecLike = 1, ny: float = 0, nz: float = 0, origin: VecLike = (0, 0, 0)) -> "Implicit":
         n = np.array(vec(nx) if not isinstance(nx, (int, float)) else (nx, ny, nz), dtype=float)
         n /= np.linalg.norm(n)
