@@ -5,7 +5,7 @@ needed). One JSON object per line in each direction:
 
     {"op": "snapshot", "reason": "manual"}  -> {"snapshot": id, "changed": bool}
     {"op": "save", "message": "..."}        -> {"saved": sha, "merged": bool} or {"error", "conflicts", "hint"}
-    {"op": "status"}                        -> {"workspace", "ready", "connected", "snapshot"}
+    {"op": "status"}                        -> {"workspace", "ready", "connected", "snapshot", "refused"}
 
 Errors come back as {"error": "..."}. The socket is root-only
 (TULE_AGENT_SOCKET, default /run/tule/agent.sock).
@@ -74,7 +74,8 @@ async def _save(agent, msg: dict) -> dict:
 
 async def _status(agent, msg: dict) -> dict:
     return {"workspace": agent.workspace.root, "ready": agent.booted is not None,
-            "connected": agent.ws is not None, "snapshot": agent.workspace.last_id}
+            "connected": agent.ws is not None, "snapshot": agent.workspace.last_id,
+            "refused": getattr(agent, "refused", None)}  # Tule turned the machine away: nothing saves
 
 
 OPS = {"snapshot": _snapshot, "save": _save, "status": _status}

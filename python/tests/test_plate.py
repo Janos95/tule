@@ -314,7 +314,7 @@ def test_outputs_plate_printer(outdir, tmp_path, monkeypatch):
     assert "bambu-p1s" in e.value.hint and "ender-3" in e.value.hint and not (outdir / "other").exists()
 
 
-def test_outputs_plate_printer_bed(outdir, tmp_path, monkeypatch):
+def test_outputs_plate_printer_bed(outdir, tmp_path, monkeypatch, capsys):
     fake_slicer(tmp_path, monkeypatch, f"open(out, 'w').write({GCODE_TAIL!r})")
     long = box(240, 20, 5).named("rail")
     folder = outputs.plate("print", [long], estimate="bambu-p1s")  # 256 mm bed: fits
@@ -330,6 +330,8 @@ def test_outputs_plate_printer_bed(outdir, tmp_path, monkeypatch):
     one = meta["plate"]["plates"][0]["estimate"]["print_time_s"]
     assert meta["plate"]["estimate"]["print_time_s"] == 2 * one and "on 2 plates" in meta["fact"]
     assert len(meta["parts"]) == 6 and (outdir / "tiles" / "tiles-2.3mf").exists()
+    assert ("do not fit on one 250 × 210 mm bed, so they go onto 2 plates, a 3MF each "
+            "(tiles.3mf: tile ×4, cube; tiles-2.3mf: tile)") in capsys.readouterr().err
     with pytest.raises(TuleError, match=r"5 parts do not fit on the bed \(250 × 210 mm\).*need about"):
         export_3mf([("tile", box(100, 100, 5), {"copies": 5})], str(outdir / "x.3mf"), bed=(250, 210))
     outputs.plate("print", [long], bed=(250, 250), estimate="ender-3")  # the user's own bed= wins

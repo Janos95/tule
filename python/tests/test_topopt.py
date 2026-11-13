@@ -118,6 +118,13 @@ def test_cg_iterations_stay_flat_as_the_grid_gets_finer():
     assert its[1] <= its[0] + 3, its
 
 
+def test_cg_converges_at_high_poissons_ratio():
+    # damped Jacobi at a fixed 0.6 stopped smoothing past ν ≈ 0.33: 50 CG iterations at 0.38, the cap of 500 at 0.45
+    for nu in (0.38, 0.45):
+        r = topopt.optimize(problem(nu=nu), voxel=1.25, iterations=2, continuation=False, output=None)
+        assert max(h["cg_iterations"] for h in r.history) < 25, (nu, r.history)
+
+
 def test_voxelize_matches_volume():
     c = cylinder(10, 20)
     h = 1.0

@@ -225,10 +225,21 @@ def test_free_modes_of_a_beam(tmp_path, monkeypatch):
     lines = str(md).splitlines()
     assert "bends in the x-z plane" in lines[1] and "bends in the x-y plane" in lines[2]
     assert "twists about x" in lines[4]  # after the second x-z bending mode
+    assert md.motion[0]["bend x-z"] > 0.9 and md.motion[3]["twist x"] > 0.5  # the shares, as printed
+    assert set(md.motion[0]) == {"bend x-y", "bend x-z", "twist x", "stretch x", "other"}
     meta = json.load(open(os.path.join(md.show("free-beam", labels=["a", "b", "c", "d"]), "output.json")))
     assert [f["label"] for f in meta["fields"]] == ["a", "b", "c", "d"]
     with pytest.raises(TuleError, match="labels"):
         md.show("x", labels=["a"])
+
+
+@needs_gmsh
+def test_under_resolved_walls_warn_even_quietly(capsys):
+    # a 2 mm plate on a small budget: under one element through its thickness
+    md = fea.modes(box(300, 300, 2), "aluminium 6061-T6", fixed=None, n=1, dofs=3_000, verbose=False)
+    assert md.warnings and "through their thickness" in md.warnings[0] and "too stiff" in md.warnings[0]
+    assert "fea: warning: walls down to" in capsys.readouterr().out
+    assert "  warning: walls down to" in str(md) and not any("through their" in n for n in md.notes)
 
 
 @needs_gmsh

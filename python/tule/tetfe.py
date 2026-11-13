@@ -1235,9 +1235,11 @@ def plan(part, thick: Thickness | None, dofs: int, size: float | None = None, la
             break
         H = H_new
     faces = {f: x for f, x in faces.items() if x < H}
-    if faces:
-        worst = min(faces, key=lambda f: wall[f] / faces[f])
-        through = wall[worst] / faces[worst]
+    # every wall thinner than its elements (also those left at H when the budget ran out)
+    under = {int(f): faces.get(int(f), H) for f in np.flatnonzero(np.isfinite(wall) & (wall < H))}
+    if under:
+        worst = min(under, key=lambda f: wall[f] / under[f])
+        through = wall[worst] / under[worst]
         if through < 0.99:  # one layer of quadratic elements still bends right; less does not
             notes.append(f"walls down to {wall[worst]:.3g} mm have {through:.2g} elements through their thickness "
                          f"(budget); more dofs= resolve them better")

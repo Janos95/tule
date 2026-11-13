@@ -333,7 +333,7 @@ def write_ssh_config(p: str):
 
 def cmd_proxy(args):
     """stdin/stdout <-> the project's SSH WebSocket."""
-    from websockets.exceptions import ConnectionClosed
+    from websockets.exceptions import ConnectionClosed, ConnectionClosedError
     from websockets.sync.client import connect
 
     host = args.host
@@ -361,14 +361,19 @@ def cmd_proxy(args):
 
     threading.Thread(target=upstream, daemon=True).start()
     out = sys.stdout.fileno()
+    dropped = None
     try:
         for msg in ws:
             os.write(out, msg if isinstance(msg, bytes) else msg.encode())
+    except ConnectionClosedError as e:  # not closed by either end: the network, or a keepalive ping unanswered
+        dropped = e
     except ConnectionClosed:
         pass
     reason = ws.close_reason
     if ws.close_code and ws.close_code >= 4000 and reason:
         print(f"tule proxy: {reason}", file=sys.stderr)
+    elif dropped is not None:  # ssh itself only says "closed by remote host"
+        print(f"tule proxy: the tunnel to {p} dropped ({dropped})", file=sys.stderr)
 
 
 # ---------------------------------------------------------------- the rest
@@ -700,7 +705,20 @@ def cmd_status(args):
         _check(root)
         r = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True)
         n = len([x for x in r.stdout.splitlines() if x.strip()]) if r.returncode == 0 else 0
-        print(f"{n} changed file{'s' if n != 1 else ''} not saved (tule save)" if n else "everything is saved")
+        try:  # whether Tule still takes this machine's saves
+            agent = machine.local_request({"op": "status"}, timeout=5)
+        except CliError:
+            agent = {}
+        if agent.get("refused"):
+            print(f"{n} changed file{'s' if n != 1 else ''}; " if n else "", end="")
+            print(f"nothing can be saved from this machine: Tule refused it ({agent['refused']}), so tule save and "
+                  f"autosave fail. Its join token is no longer valid: start the machine again with a new one "
+                  f"(tule join -p PROJECT prints it), or copy the work to a machine that is connected")
+            sys.exit(1)
+        print(f"{n} changed file{'s' if n != 1 else ''} not saved (tule save)" if n else "everything is saved",
+              end="" if agent and not agent.get("connected") else "\n")
+        if agent and not agent.get("connected"):
+            print("; the machine is reconnecting to Tule (saves wait for it)")
         return
     p = project_of(args, cfg)
     print(json.dumps(status(p), indent=2))

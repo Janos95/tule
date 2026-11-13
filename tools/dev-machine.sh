@@ -9,6 +9,15 @@ set -eu
 p=${1:?usage: tools/dev-machine.sh PROJECT}
 repo=$(cd "$(dirname "$0")/.." && pwd)
 image=${TULE_DEV_IMAGE:-tule-runtime:dev}  # docker build -f runtime/Dockerfile -t tule-runtime:dev . (new dependencies only)
+# the image is not mounted: one built before runtime/Dockerfile last changed lacks its new packages (vl-convert's charts)
+built=$(docker image inspect -f '{{.Created}}' "$image" 2>/dev/null || true)
+changed=$(git -C "$repo" log -1 --format=%cI -- runtime/Dockerfile 2>/dev/null || true)
+if [ -n "$built" ] && [ -n "$changed" ] && python3 -c 'import sys, datetime as d
+t = lambda s: d.datetime.fromisoformat(s[:19] + ("+00:00" if s.endswith("Z") else s[-6:]))
+sys.exit(t(sys.argv[1]) >= t(sys.argv[2]))' "$built" "$changed"; then
+  echo "warning: $image was built before runtime/Dockerfile last changed ($changed); rebuild it:" >&2
+  echo "  docker build -f runtime/Dockerfile -t $image ." >&2
+fi
 token=$(grep '^DEV_TOKEN=' "$repo/control/.dev.vars" | cut -d= -f2-)
 home=$(mktemp -d)
 env=$(cd "$repo/cli" && HOME=$home TULE_URL=http://127.0.0.1:8787 TULE_TOKEN=$token PYTHONPATH=. python3 -m tule_cli join -p "$p" | grep TULE_JOIN_TOKEN)

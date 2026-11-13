@@ -226,6 +226,10 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
             continue
         from tule import tessellate
 
+        if hasattr(item, "indices") and hasattr(item, "positions"):  # a tule Mesh (a topopt result's .mesh, tessellate())
+            out.append(Part(name or nm, np.asarray(item.positions), np.asarray(item.normals), np.asarray(item.indices),
+                            np.zeros(len(item.indices), np.int64), _rgb(color), {}, 0))
+            continue
         if not item.faces:
             print(f"tule: {name or nm} is empty (no faces); not drawn", file=sys.stderr)
             continue
@@ -240,6 +244,12 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
                 continue
             for i in ids:
                 tags.setdefault(i, []).append(t)
+        from tule.io import faceted
+
+        if faceted(m.triangles, len(item.faces)):  # a mesh made a solid: drawn as a mesh (creases), not a face per triangle
+            out.append(Part(name or nm, m.positions, m.normals, m.indices, np.zeros(m.triangles, np.int64),
+                            _rgb(color or item.color), {}, 0))
+            continue
         out.append(Part(name or nm, m.positions, m.normals, m.indices, m.face_ids,
                         _rgb(color or item.color), tags, len(item.faces)))
     return out

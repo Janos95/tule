@@ -1056,7 +1056,8 @@ export class Project extends DurableObject<Env> {
         break;
       case "ssh-close": {
         const s = this.ssh(Number(m.sid));
-        if (s) s.close(1000, "session ended");
+        // the machine says why when it was not the session's own end (out of memory); the proxy prints 4xxx reasons
+        if (s) typeof m.why === "string" ? s.close(4004, m.why.slice(0, 120)) : s.close(1000, "session ended");
         break;
       }
       case "res": {

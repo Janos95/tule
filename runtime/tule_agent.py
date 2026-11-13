@@ -20,7 +20,7 @@ Wire protocol on the one WebSocket (text frames are JSON, binary frames are
   agent -> DO   {"t": "hello", "version": 1, "started": ms}
                 {"t": "hostkey", "private": "...", "public": "..."}
                 {"t": "outputs", "outputs": [...]}
-                {"t": "ssh-close", "sid": n}
+                {"t": "ssh-close", "sid": n, "why"?: "..."}  (why: not the session's own end, e.g. out of memory)
                 {"t": "mesh-error", "rid": n, "error": "..."}
                 {"t": "beat"} every 30 s
                 {"t": "ready", "snapshot": id, "files": n, "restoreMs": ms, "from": "copy"|"save"|"template"}
@@ -645,6 +645,7 @@ class Agent:
         self.reported: dict | None = None  # the last unsaved counts sent
         self.lock = asyncio.Lock()  # one snapshot or restore at a time
         self.booted: dict | None = None  # the ready message, once /workspace is restored
+        self.refused: str | None = None  # why Tule turned this machine away (its join token is no longer valid)
 
     async def run(self):
         delay = 1.0
@@ -655,6 +656,7 @@ class Agent:
                     max_size=64 * 2**20, ping_interval=20, ping_timeout=20, open_timeout=20,
                 ) as ws:
                     self.ws = ws
+                    self.refused = None
                     delay = 1.0
                     log("connected", self.url)
                     await ws.send(json.dumps({"t": "hello", "version": VERSION, "started": STARTED}))
@@ -667,6 +669,9 @@ class Agent:
                             t.cancel()
             except Exception as e:  # also a boot that failed (storage, git): reconnect and try again, not exit
                 log("connection lost:", repr(e))
+                r = getattr(e, "response", None)
+                if isinstance(e, websockets.InvalidStatus) and r is not None and r.status_code in (401, 403):
+                    self.refused = f"{r.status_code} {bytes(r.body or b'').decode(errors='replace').strip() or r.reason_phrase}"
             self.ws = None
             for w in self.streams.values():
                 w.close()
@@ -735,6 +740,7 @@ class Agent:
             writer.close()
             return
         stream.attach(writer)
+        kills = oom_kills()
         try:
             while data := await reader.read(65536):
                 await self.send(frame(SSH, sid, data))
@@ -743,7 +749,9 @@ class Agent:
         finally:
             if self.streams.pop(sid, None) is not None:
                 writer.close()
-                await self.send({"t": "ssh-close", "sid": sid})
+                # ssh itself says only "closed by remote host": the client shows this (a close reason, ≤ 123 bytes)
+                why = {"why": "the machine ran out of memory and killed processes of this session"} if oom_kills() > kills else {}
+                await self.send({"t": "ssh-close", "sid": sid, **why})
 
     async def mesh(self, rid: int, path: str, digest: str, packed: bool = False):
         try:

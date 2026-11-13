@@ -63,7 +63,7 @@ nl = fea.static(stage, "PETG", fixed=["base", fea.move("top", (3, 0, 0), "x")],
 for s in nl.steps: print(s.fraction, s.move_forces[0].x)   # force vs stroke
 ```
 
-`md.frequencies` (Hz), `md.shapes`; `md.show(name, labels=[...])` swings them. `fixed=None`: a free part (on cords); rigid-body modes dropped, each mode named (bends in x-y, twists…). Keep the first mode above 2× any excitation. Buckling is linear (Euler) for the perfect part: want a factor over 3, and check yield at that load (printed).
+`md.frequencies` (Hz), `md.shapes`; `md.show(name, labels=[...])` swings them. `fixed=None`: a free part (on cords); rigid modes dropped, each named (bends, twists…; shares: `md.motion[i]`). Keep the first mode above 2× any excitation. Buckling is linear (Euler) for the perfect part: want a factor over 3, and check yield at that load (printed).
 
 `nonlinear=True` when a part moves over ~10 % of its span, turns over ~0.15 rad (a warning says so), or a strip held at both ends bends about its thickness (it stretches and stiffens). Loads and moves go on in steps (`steps=10`, else adaptive), Newton in each; the loads keep their direction. Drive a flexure by `fea.move`, not a force. Buckling or snap-through under a load is a `TuleError` naming the last converged fraction (`err.result`).
 
