@@ -312,6 +312,23 @@ def _p_child(axes=ALL) -> np.ndarray:
     return _P_AXES[axes]
 
 
+OMEGA_LMAX = 1.8  # the smoother's damping times λmax(D⁻¹A): under 2, with a margin
+
+
+def _lmax(lv: "_Level", xp, iterations: int = 12) -> float:
+    """λmax of D⁻¹A on a level (power iteration, padded 5 % for its underestimate)."""
+    x = xp.asarray(np.random.default_rng(0).standard_normal(lv.free.shape)) * lv.free
+    lam = 0.0
+    for _ in range(iterations):
+        n = float(xp.sqrt(xp.sum(x * x)))
+        if n == 0:
+            return 1.0
+        x = x / n
+        x = lv.free * lv.A(x) / lv.diag
+        lam = float(xp.sqrt(xp.sum(x * x)))
+    return 1.05 * max(lam, 1e-12)
+
+
 class _Multigrid:
     """A geometric multigrid V-cycle preconditioner: damped Jacobi smoothing, a sparse direct coarsest solve.
 
@@ -332,6 +349,9 @@ class _Multigrid:
             self.levels.append(lv.coarsen(P) if axes == ALL else lv.coarsen(P, axes))
         for lv in self.levels:
             lv.make_diag()
+        # damped Jacobi smooths only while omega · λmax(D⁻¹A) < 2; λmax grows with Poisson's ratio (3.1 at 0.3,
+        # 3.9 at 0.38, 5.1 at 0.45), so each level's damping comes from its own estimate
+        self.w = [min(omega, OMEGA_LMAX / _lmax(lv, xp)) for lv in self.levels[:-1]]
         A = _sparse_stiffness(self.levels[-1])
         try:
             self.coarse = splu(A)
@@ -348,7 +368,7 @@ class _Multigrid:
         xp, lv = self.xp, self.levels[l]
         if l == len(self.levels) - 1:
             return xp.asarray(self.coarse.solve(_host(r).reshape(-1))).reshape(r.shape)
-        w = self.omega / lv.diag
+        w = self.w[l] / lv.diag
         z = w * r
         for _ in range(self.sweeps - 1):
             z = z + w * (r - lv.A(z))

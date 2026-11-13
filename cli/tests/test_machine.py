@@ -1,6 +1,7 @@
 """tule screenshot / inspect / docs / snapshot (on the machine)."""
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -159,34 +160,19 @@ def test_inspect(outputs, capsys):
     assert json.loads(capsys.readouterr().out)[step][0]["tags"]["load"] == ["f12"]
 
 
-def test_snapshot_on_the_machine(tmp_path, monkeypatch, capsys):
-    """`tule snapshot` without a login, on a machine, asks the local tule-agent (runtime/local.py)."""
+@contextlib.contextmanager
+def local_agent(agent, tmp_path, monkeypatch):
+    """``agent`` behind a tule-agent socket (runtime/local.py), with the CLI on a machine (no login)."""
     sys.path.insert(0, os.path.join(ROOT, "runtime"))
     import local
 
     sock = os.path.join(tempfile.mkdtemp(prefix="tule", dir="/tmp"), "agent.sock")  # short: Unix socket paths are limited
-
-    class FakeWorkspace:
-        root = str(tmp_path)
-        last_id = "s1"
-        calls = []
-
-        def snapshot(self, reason):
-            self.calls.append(reason)
-            return "s2" if len(self.calls) == 1 else None
-
-    class FakeAgent:
-        booted = {"t": "ready"}
-        ws = None
-        lock = None
-        workspace = FakeWorkspace()
-
     loop = asyncio.new_event_loop()
     task = {}
 
     async def start():
-        FakeAgent.lock = asyncio.Lock()
-        task["serve"] = asyncio.ensure_future(local.serve(FakeAgent(), sock))
+        agent.lock = asyncio.Lock()
+        task["serve"] = asyncio.ensure_future(local.serve(agent, sock))
 
     async def stop():
         task["serve"].cancel()
@@ -204,13 +190,63 @@ def test_snapshot_on_the_machine(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("TULE_URL", raising=False)
     monkeypatch.delenv("TULE_TOKEN", raising=False)
     monkeypatch.setenv("TULE_WORKSPACE", str(tmp_path))
-    main(["snapshot"])
-    assert capsys.readouterr().out.strip() == "tule: snapshot s2"
-    main(["snapshot"])
-    assert "s1 (nothing changed since)" in capsys.readouterr().out
-    assert FakeWorkspace.calls == ["manual", "manual"]
-    asyncio.run_coroutine_threadsafe(stop(), loop).result()
-    loop.call_soon_threadsafe(loop.stop)
+    try:
+        yield
+    finally:
+        asyncio.run_coroutine_threadsafe(stop(), loop).result()
+        loop.call_soon_threadsafe(loop.stop)
+
+
+def test_snapshot_on_the_machine(tmp_path, monkeypatch, capsys):
+    """`tule snapshot` without a login, on a machine, asks the local tule-agent (runtime/local.py)."""
+
+    class FakeWorkspace:
+        root = str(tmp_path)
+        last_id = "s1"
+        calls = []
+
+        def snapshot(self, reason):
+            self.calls.append(reason)
+            return "s2" if len(self.calls) == 1 else None
+
+    class FakeAgent:
+        booted = {"t": "ready"}
+        ws = None
+        lock = None
+        workspace = FakeWorkspace()
+
+    with local_agent(FakeAgent(), tmp_path, monkeypatch):
+        main(["snapshot"])
+        assert capsys.readouterr().out.strip() == "tule: snapshot s2"
+        main(["snapshot"])
+        assert "s1 (nothing changed since)" in capsys.readouterr().out
+        assert FakeWorkspace.calls == ["manual", "manual"]
+
+
+def test_status_on_the_machine_says_when_tule_refuses_it(tmp_path, monkeypatch, capsys):
+    """A machine whose join token went invalid cannot save: status says so, not "everything is saved"."""
+    shutil.copytree(os.path.join(ROOT, "templates", "project"), tmp_path / "p")
+    root = tmp_path / "p"
+
+    class FakeAgent:
+        booted = {"t": "ready"}
+        ws = object()
+        refused = None
+
+        class workspace:
+            last_id = "s1"
+
+    FakeAgent.workspace.root = str(root)
+    with local_agent(FakeAgent(), tmp_path, monkeypatch):
+        monkeypatch.setenv("TULE_WORKSPACE", str(root))
+        main(["status"])
+        assert capsys.readouterr().out.strip().endswith("everything is saved")
+        FakeAgent.ws, FakeAgent.refused = None, "401 invalid join token"
+        with pytest.raises(SystemExit) as e:
+            main(["status"])
+        out = capsys.readouterr().out
+        assert e.value.code == 1 and "everything is saved" not in out
+        assert "nothing can be saved from this machine: Tule refused it (401 invalid join token)" in out
 
 
 def test_motion_frames_and_assembly_placements(tmp_path, monkeypatch):

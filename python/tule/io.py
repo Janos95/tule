@@ -7,6 +7,7 @@ written by tule and read back, or rendered by the viewer, keeps them.
 from __future__ import annotations
 
 import json
+import math
 import os
 import struct
 import sys
@@ -422,6 +423,15 @@ class Mesh:
         return int(len(self.indices))
 
 
+CREASE_COS = math.cos(math.radians(35))  # faceted shapes and meshes: an edge where the surface turns more than this
+
+
+def faceted(triangles: int, faces: int) -> bool:
+    """Whether a shape is a triangle mesh made a solid (one planar face per triangle): its face
+    boundaries are the mesh's edges, not features worth drawing."""
+    return faces >= 64 and triangles == faces
+
+
 def _mesh(shape, tolerance: float, angular: float):
     BRepMesh_IncrementalMesh(shape, float(tolerance), False, float(angular), True)
 
@@ -469,8 +479,17 @@ def tessellate(item: Union["Shape", "Assembly"], tolerance: float = 0.05, angula
         if fi in face_tri:
             for e in subshapes(f, "edge"):
                 faces_of.setdefault(edge_set.index(e), []).append(fi)
+    P = np.asarray(pos, dtype=np.float64).reshape(-1, 3)
+    T = np.asarray(idx, dtype=np.int64).reshape(-1, 3)
+    smooth = set()  # a faceted shape (a mesh made a solid, e.g. topopt's to_shape()): only its creases are edges
+    if faceted(len(T), len(faces)):
+        fn = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+        fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-30)
+        fn_of = dict(zip(fid, fn))
+        smooth = {ei for ei, fs in faces_of.items()
+                  if len(fs) == 2 and fs[0] in fn_of and fs[1] in fn_of and fn_of[fs[0]] @ fn_of[fs[1]] > CREASE_COS}
     for ei, e in enumerate(edge_set):
-        if e in seams or static(BRep_Tool, "Degenerated")(e):
+        if ei in smooth or e in seams or static(BRep_Tool, "Degenerated")(e):
             continue
         for fi in faces_of.get(ei, ()):
             f = faces[fi]

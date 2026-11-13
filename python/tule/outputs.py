@@ -156,11 +156,11 @@ def _folder(name: str) -> str:
     return d
 
 
-def picture(item: Union[Shape, Assembly], path: str, view: str = "iso", size: int = 1200,
+def picture(item: Union[Shape, Assembly, Mesh], path: str, view: str = "iso", size: int = 1200,
             caption: str = "", labels: bool = False) -> str:
-    """A PNG of a shape or assembly for documents (an assembly guide's steps, ``![](step-1.png)``
-    in a ``.md`` beside it; a drawing): shaded like ``tule screenshot``, on white, without axes.
-    ``view``: iso, front, back, left, right, top, bottom."""
+    """A PNG of a shape, assembly or triangle ``Mesh`` (a topopt result's ``.mesh``) for documents
+    (an assembly guide's steps, ``![](step-1.png)`` in a ``.md`` beside it; a drawing): shaded like
+    ``tule screenshot``, on white, without axes. ``view``: iso, front, back, left, right, top, bottom."""
     try:
         from tule_cli.machine import items_to_parts
         from tule_cli.render import render
@@ -168,7 +168,14 @@ def picture(item: Union[Shape, Assembly], path: str, view: str = "iso", size: in
         raise TuleError("picture needs the tule CLI (it is on every Tule machine)", op="picture") from None
     import io as _io
 
-    items = [(n.rsplit("/", 1)[-1], s) for n, s in item.parts()] if isinstance(item, Assembly) else [(item.name or "part", item)]
+    if isinstance(item, Assembly):
+        items = [(n.rsplit("/", 1)[-1], s) for n, s in item.parts()]
+    elif isinstance(item, Mesh):
+        if not item.triangles:
+            raise TuleError("the mesh is empty", op="picture")
+        items = [("mesh", item)]
+    else:
+        items = [(item.name or "part", item)]
     img, _ = render(items_to_parts(items), view, size, labels, None, caption, plain=True)
     buf = _io.BytesIO()
     img.save(buf, "PNG")
@@ -319,7 +326,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     ``bed``, ``gap``, ``arrange`` and ``settings`` (``layer_height``, ``walls``, ``infill`` %,
     ``supports``, ``brim`` mm, ``material``: PLA, PETG, …) as for ``export_3mf``. ``bed``: the
     printer's (256 × 256 × 256 mm without one); parts that don't fit on one go onto more plates
-    (``<name>-2.3mf``, …, shown side by side).
+    (``<name>-2.3mf``, …, shown side by side; it says so on stderr, ``output.json``'s ``"plates"`` lists them).
 
     ``estimate=True`` slices the plate with PrusaSlicer's command line (``prusa-slicer``; raises
     with the install command when it is missing) and shows the print time and filament (g)
@@ -353,6 +360,11 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
     if len(plates) > 1:
         summary["plates"] = [{"file": os.path.basename(x), "parts": {n: c for n, _, _, _, c, _ in pl}}
                              for x, pl in zip(paths, plates)]
+        b = tuple(bed)
+        each = "; ".join(f"{d['file']}: " + ", ".join(f"{n} ×{c}" if c > 1 else n for n, c in d["parts"].items())
+                         for d in summary["plates"])
+        print(f"tule: outputs.plate {name!r}: the parts do not fit on one {b[0]:g} × {b[1]:g} mm bed, so they go onto "
+              f"{len(plates)} plates, a 3MF each ({each})", file=sys.stderr, flush=True)
     if printer:
         ests = [_slice_estimate(x, base, bed, printer=printer[1]) for x in paths]
         est = {k: (sum(e[k] for e in ests) if all(isinstance(e.get(k), (int, float)) for e in ests) else v)

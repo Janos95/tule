@@ -297,6 +297,24 @@ def test_picture(tmp_path):
     assert Image.open(p).width == 400
 
 
+def test_picture_and_edges_of_a_mesh(tmp_path):
+    pytest.importorskip("tule_cli")
+    from PIL import Image
+    from tule import topopt
+
+    g = np.indices((16, 16, 16)) - 7.5
+    mesh = topopt.isosurface((np.sqrt((g ** 2).sum(0)) < 6).astype(float), (0, 0, 0), 1.0)  # a ball
+    assert Image.open(outputs.picture(mesh, tmp_path / "m.png", size=300)).width == 300
+    ball = topopt.mesh_to_shape(mesh)
+    m = ball.tessellate()
+    assert len(ball.faces) == m.triangles > 100 and len(m.edges) < 0.05 * len(ball.faces)  # creases only, not every triangle
+    assert len(box(10).tessellate().edges) == 12  # a B-rep part keeps all its edges
+    # drawn as a mesh: the picture of the solid has about as many line pixels as the mesh's
+    lines = lambda f: int((np.asarray(Image.open(f).convert("L")) < 80).sum())
+    outputs.picture(ball, tmp_path / "b.png", size=300)
+    assert lines(tmp_path / "b.png") < 2 * lines(tmp_path / "m.png") + 50
+
+
 def test_step_keeps_tags_on_left_handed_faces(tmp_path):
     # an extruded circle has a left-handed surface; the writer rebuilds it and used to drop nearby tags
     plate = rect(80, 40, center=True).round(5).extrude(6)

@@ -2403,7 +2403,11 @@ def _normalized(m, v: np.ndarray, free: np.ndarray) -> np.ndarray:
 @dataclass(frozen=True, repr=False)
 class Modes:
     """Natural frequencies (Hz) and mode shapes ((k, n, 3) at the mesh's nodes, largest motion 1).
-    ``effective_mass`` (k, 3): each mode's share of the part's mass moving with it along x, y, z."""
+    ``effective_mass`` (k, 3): each mode's share of the part's mass moving with it along x, y, z.
+    ``motion`` (a free part, ``fixed=None``): per mode, the shares of its kinetic energy in bending,
+    twisting, stretching and the rest, e.g. ``{"bend x-y": 0.97, "bend x-z": 0.0, "twist x": 0.01,
+    "stretch x": 0.0, "other": 0.02}`` (x: the part's longest extent). ``warnings``: what makes the
+    frequencies doubtful (printed even with ``verbose=False``)."""
 
     part: Shape
     material: Material
@@ -2417,6 +2421,8 @@ class Modes:
     dofs: int
     seconds: float
     notes: tuple = ()
+    warnings: tuple = ()
+    motion: tuple = ()
 
     def show(self, name: str, title: str | None = None, deform: float | None = None, labels=None) -> str:
         """An overlay output: a field per mode (the buttons under the view), each drawn swinging
@@ -2441,7 +2447,8 @@ class Modes:
                  f"{self.elements:,} quadratic tetrahedra, {self.dofs:,} DOFs, {self.seconds:.1f} s"]
         for i, f in enumerate(self.frequencies):
             lines.append(f"  mode {i + 1}: {f:10.4g} Hz   "
-                         + (_moves(self.effective_mass[i]) if self.supports else _free_motion(self.mesh, self.shapes[i])))
+                         + (_moves(self.effective_mass[i]) if self.supports else _describe_motion(self.motion[i])))
+        lines += [f"  warning: {w}" for w in self.warnings]
         lines += [f"  note: {n}" for n in self.notes]
         return "\n".join(lines)
 
@@ -2456,7 +2463,7 @@ def _moves(frac) -> str:
     return f"{lead} (effective mass {', '.join(parts)})"
 
 
-def _free_motion(m, s) -> str:
+def _free_motion(m, s) -> dict:
     """How a free part's mode moves: the part cut into 20 slices across its longest extent (a),
     each slice's motion fitted by a rigid one; the shares of the kinetic energy in bending (slices
     moving and turning across a), twisting (turning about a), stretching (moving along a) and the
@@ -2486,12 +2493,30 @@ def _free_motion(m, s) -> str:
     total = float(w @ (u * u).sum(1))
     share = np.maximum(np.append(e, total - e.sum()) / max(total, 1e-300), 0.0)
     A, B, C = "xyz"[a], "xyz"[b], "xyz"[c]
-    names = [f"bends in the {A}-{B} plane", f"bends in the {A}-{C} plane", f"twists about {A}", f"stretches along {A}",
-             "changes its cross-sections (plate or ring-like)"]
-    k = int(np.argmax(share))
-    lead = names[k] if share[k] >= 0.5 else "mixed motion"
-    return (f"{lead} (bending {A}-{B} {100 * share[0]:.0f} %, {A}-{C} {100 * share[1]:.0f} %, twist {100 * share[2]:.0f} %, "
-            f"stretch {100 * share[3]:.0f} %, other {100 * share[4]:.0f} %)")
+    return dict(zip([f"bend {A}-{B}", f"bend {A}-{C}", f"twist {A}", f"stretch {A}", "other"], map(float, share)))
+
+
+def _describe_motion(share: dict) -> str:
+    """'bends in the x-y plane (bending x-y 97 %, …)' from _free_motion's shares."""
+    def name(k):
+        what, _, ax = k.partition(" ")
+        return {"bend": f"bends in the {ax} plane", "twist": f"twists about {ax}", "stretch": f"stretches along {ax}",
+                "other": "changes its cross-sections (plate or ring-like)"}[what]
+    k = max(share, key=share.get)
+    lead = name(k) if share[k] >= 0.5 else "mixed motion"
+    (b0, s0), (b1, s1), (_, s2), (_, s3), (_, s4) = share.items()
+    return (f"{lead} (bending {b0[5:]} {100 * s0:.0f} %, {b1[5:]} {100 * s1:.0f} %, twist {100 * s2:.0f} %, "
+            f"stretch {100 * s3:.0f} %, other {100 * s4:.0f} %)")
+
+
+def _thin_wall_warnings(notes: list) -> list:
+    """Takes the mesh's 'walls … have under one element through their thickness' notes out of
+    ``notes``: such walls read too stiff (a tuned bar's pitch sharp), so for modes they are warnings."""
+    out = [x for x in notes if "elements through their thickness" in x]
+    notes[:] = [x for x in notes if x not in out]
+    return [x.replace("(budget); more dofs= resolve them better",
+                      "(the budget): they read too stiff, so the frequencies read high; more dofs= or a smaller size= "
+                      "resolve them") for x in out]
 
 
 def modes(
@@ -2561,9 +2586,13 @@ def modes(
             eff[k, c] = float(r[idx] @ Mphi) ** 2 / total[c]
     shapes = np.stack([_normalized(m, v[:, k], solver.free) for k in range(len(w))])
     say(f"fea: modes in {solver.solves} solves, {solver.iterations} CG iterations")
+    warnings = _thin_wall_warnings(notes)
+    _say_warnings(warnings)
+    motion = tuple(_free_motion(m, s) for s in shapes) if not supports else ()
     return Modes(part=part, material=mat, supports=tuple(supports), mesh=m, frequencies=freqs, shapes=shapes,
                  effective_mass=eff, mass=float(part.volume * mat.density / 1000), elements=len(m.tets),
-                 dofs=len(idx), seconds=time.time() - t_start, notes=tuple(notes))
+                 dofs=len(idx), seconds=time.time() - t_start, notes=tuple(notes), warnings=tuple(warnings),
+                 motion=motion)
 
 
 def _eigsh(eigsh, A, k, **kw):
