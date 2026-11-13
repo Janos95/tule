@@ -15,6 +15,7 @@
 On the machine (and on a laptop, for local files; see machine.py):
 
     tule screenshot -o /tmp/view.png [--output NAME | FILE] [--view iso] [--labels]
+        [--azimuth DEG --elevation DEG --distance MM --target-part NAME --hide NAME] [--cameras cams.json -o DIR]
     tule inspect FILE | tule docs [topic]
     tule snapshot                            on the machine: the local tule-agent saves /workspace now
 

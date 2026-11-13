@@ -831,7 +831,7 @@ tule save [-m "what changed"]  # commit, merge the latest save, push it
 tule ssh [cmd]                 # shell or command on the machine (also: plain ssh via ProxyCommand)
 tule build [names] [--check]   # run the scripts in src/ whose inputs changed; --check: what needs it
 tule based-on work/x.json outputs/bracket   # record what hand-made work was made from
-tule screenshot -o /tmp/view.png [--output bracket] [--labels] [--view iso]
+tule screenshot -o /tmp/view.png [--output bracket] [--labels] [--view iso | --azimuth 30 --elevation 15 --target-part fins]
 tule open                      # open the viewer for this project
 tule status | snapshot | snapshots | restore <id> | down | forget   # --machine picks one when several run
 tule ls | delete | gpus | hosts | join | keys | host up|status|down   # projects, GPU prices, your computers, keys
@@ -849,6 +849,15 @@ work inside them (the same limit as RunPod).
 
 - `tule build` (or any script, any tool); results go to `outputs/`.
 - `tule screenshot`, `tule docs [topic]`, `tule inspect <file>`.
+
+`tule screenshot` draws in software (numpy, no GPU): the fixed views (`--view`) are orthographic and
+framed on everything; a camera (`--azimuth --elevation --distance --target | --target-part --fov`,
+cli/tule_cli/camera.py) is the viewer's perspective camera, an orbit about a target with z up, so
+`?cam=az,el,distance,tx,ty,tz,fov` opens the browser at the same picture, and the viewer's Copy view
+link (and `window.tule.getCamera()`) gives the numbers back. `window.tule.capture({width, height,
+...camera})` draws exactly that picture in a browser (no panel offset, no grid). `--cameras cams.json`
+draws many cameras from one load of the model (on Linux, in forked workers that share it), for
+reviews that compare hundreds of views with reference photos.
 - The libraries: `tule` (modeling), `tule.topopt`, `tule.fea`, `tule.outputs`.
 
 ### Skills and the Claude plugin

@@ -31,6 +31,14 @@ DEFAULT_COLOR = (0.62, 0.68, 0.75)
 DIM_COLOR = (0.80, 0.81, 0.83)  # faces an overlay does not mention
 BACKGROUND = (0.965, 0.97, 0.975)
 LINE = (0.10, 0.12, 0.14)
+LINE_ON_DARK = (0.62, 0.66, 0.72)  # an edge across a dark part: light, so it shows
+
+
+def _ink(img: np.ndarray, line: np.ndarray):
+    """Draws the line pixels: dark, but light where the surface under them is dark."""
+    under = img[line]
+    dark = (under @ np.array([0.3, 0.59, 0.11])) < 0.22
+    img[line] = np.where(dark[:, None], LINE_ON_DARK, LINE)
 SS = 2  # supersampling
 
 
@@ -47,6 +55,8 @@ class Part:
     tags: dict = field(default_factory=dict)  # face id -> [tag, ...]
     faces: int = 0  # B-rep faces in the part (0: a mesh without faces, e.g. STL)
     colors: np.ndarray | None = None  # (n, 3) rgb per vertex (a field): replaces the part's and the overlay's colors
+    path: str = ""  # its full name in the assembly ("ship/heatshield/tiles"); "" is its name
+    copies: int = 1  # placed copies merged into it, each len(positions) / copies vertices, in order
 
 
 @dataclass
@@ -95,11 +105,42 @@ def camera(view, direction=None) -> np.ndarray:
     return np.stack([right, up, d])
 
 
+# ---------------------------------------------------------------- light
+
+# in camera space (x right, y up, z toward the viewer): a key light from the upper left, a fill from the
+# right, white highlights and a rim where the surface turns away, so a black part still shows its shape
+KEY = _unit((-0.45, 0.65, 0.62))
+FILL = _unit((0.7, -0.25, 0.45))
+
+
+def light(n: np.ndarray, v: np.ndarray):
+    """(diffuse, specular, rim) per unit normal n toward the viewer v (one direction, or one per normal)."""
+    v = np.broadcast_to(np.asarray(v, dtype=n.dtype), n.shape)
+    key, fill = KEY.astype(n.dtype), FILL.astype(n.dtype)
+    dot = lambda a, b: np.einsum("ij,ij->i", a, b)
+    diffuse = 0.27 + 0.58 * np.clip(n @ key, 0, 1) + 0.22 * np.clip(n @ fill, 0, 1)
+    hk = key + v
+    hk /= np.sqrt(dot(hk, hk))[:, None] + 1e-12
+    hf = fill + v
+    hf /= np.sqrt(dot(hf, hf))[:, None] + 1e-12
+    spec = 0.20 * np.clip(dot(n, hk), 0, 1) ** 36 + 0.07 * np.clip(dot(n, hf), 0, 1) ** 12
+    rim = 0.16 * (1 - np.clip(np.abs(dot(n, v)), 0, 1)) ** 3
+    return diffuse, spec, rim
+
+
+def compose(color: np.ndarray, diffuse, spec, rim) -> np.ndarray:
+    """Lit colors: a dark color is lifted a little so its shading shows; highlights and the rim are white-ish."""
+    c = 0.07 + 0.93 * color
+    return np.clip(c * diffuse[:, None] + spec[:, None] + rim[:, None] * (0.6 + 0.4 * color), 0, 1)
+
+
 # ---------------------------------------------------------------- rasterizer
 
 
-def rasterize(X, Y, Z, tris, W, H, limit=1_000_000):
-    """Z-buffer: per pixel the nearest triangle (-1: none) and barycentrics of its first two corners."""
+def rasterize(X, Y, Z, tris, W, H, limit=2_000_000):
+    """Z-buffer: per pixel the nearest triangle (-1: none) and barycentrics of its first two corners.
+    Z grows toward the viewer. A triangle covers the pixels whose centres are inside it, found row by
+    row (a long thin triangle across the picture costs its own pixels, not its bounding box's)."""
     zbuf = np.full(W * H, -np.inf)
     tbuf = np.full(W * H, -1, dtype=np.int64)
     b0buf = np.zeros(W * H)
@@ -123,40 +164,59 @@ def rasterize(X, Y, Z, tris, W, H, limit=1_000_000):
     e0 = -(a0 * x[ids, 2] + c0 * y[ids, 2])
     e1 = -(a1 * x[ids, 2] + c1 * y[ids, 2])
     zz = z[ids]
-    w = x1[ids] - x0[ids] + 1
-    counts = w * (y1[ids] - y0[ids] + 1)
-    ends = np.cumsum(counts)
+    xs, ys = x[ids], y[ids]
+    rows = y1[ids] - y0[ids] + 1
+    rends = np.cumsum(rows)
     start = 0
-    while start < len(ids):
-        base = ends[start - 1] if start else 0
-        stop = max(start + 1, int(np.searchsorted(ends, base + limit, side="right")))
-        sl = slice(start, stop)
-        n = counts[sl]
-        local = np.repeat(np.arange(stop - start), n)
-        offs = np.arange(int(n.sum())) - np.repeat(np.cumsum(n) - n, n)
-        t = local + start
-        wl = w[t]
-        px = x0[ids[t]] + offs % wl
-        py = y0[ids[t]] + offs // wl
-        fx, fy = px + 0.5, py + 0.5
-        w0 = a0[t] * fx + c0[t] * fy + e0[t]
-        w1 = a1[t] * fx + c1[t] * fy + e1[t]
-        w2 = 1.0 - w0 - w1
-        inside = (w0 >= -1e-7) & (w1 >= -1e-7) & (w2 >= -1e-7)
-        t, w0, w1, w2 = t[inside], w0[inside], w1[inside], w2[inside]
-        pix = (py * W + px)[inside]
-        depth = w0 * zz[t, 0] + w1 * zz[t, 1] + w2 * zz[t, 2]
-        order = np.lexsort((-depth, pix))
-        pix, depth, t, w0, w1 = pix[order], depth[order], t[order], w0[order], w1[order]
-        first = np.ones(len(pix), dtype=bool)
-        first[1:] = pix[1:] != pix[:-1]
-        pix, depth, t, w0, w1 = pix[first], depth[first], t[first], w0[first], w1[first]
-        nearer = depth > zbuf[pix]
-        p = pix[nearer]
-        zbuf[p] = depth[nearer]
-        tbuf[p] = ids[t[nearer]]
-        b0buf[p] = w0[nearer]
-        b1buf[p] = w1[nearer]
+    while start < len(ids):  # in chunks of triangles with about `limit` rows
+        base = rends[start - 1] if start else 0
+        stop = max(start + 1, int(np.searchsorted(rends, base + limit // 4, side="right")))
+        n = rows[start:stop]
+        local = np.repeat(np.arange(start, stop), n)  # a (triangle, row) per item
+        ry = y0[ids[local]] + np.arange(int(n.sum())) - np.repeat(np.cumsum(n) - n, n)
+        fy = ry + 0.5
+        # the row's span: where the row's centre line crosses the triangle's edges
+        lo = np.full(len(local), np.inf)
+        hi = np.full(len(local), -np.inf)
+        for i, j in ((0, 1), (1, 2), (2, 0)):
+            xi, yi, xj, yj = xs[local, i], ys[local, i], xs[local, j], ys[local, j]
+            cross = (np.minimum(yi, yj) <= fy) & (fy <= np.maximum(yi, yj)) & (yi != yj)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                xc = xi + (fy - yi) * (xj - xi) / (yj - yi)
+            lo = np.where(cross, np.minimum(lo, xc), lo)
+            hi = np.where(cross, np.maximum(hi, xc), hi)
+        sx0 = np.clip(np.ceil(lo - 0.5 - 1e-6), 0, W - 1)
+        sx1 = np.clip(np.floor(hi - 0.5 + 1e-6), 0, W - 1)
+        has = np.isfinite(lo) & (hi >= lo) & (sx1 >= sx0) & (hi >= 0.5) & (lo <= W - 0.5)
+        local, ry, sx0, sx1 = local[has], ry[has], sx0[has].astype(np.int64), sx1[has].astype(np.int64)
+        w = sx1 - sx0 + 1
+        ends = np.cumsum(w)
+        s2 = 0
+        while s2 < len(local):  # fragments in chunks of about `limit`
+            base2 = ends[s2 - 1] if s2 else 0
+            e2 = max(s2 + 1, int(np.searchsorted(ends, base2 + limit, side="right")))
+            ww = w[s2:e2]
+            item = np.repeat(np.arange(s2, e2), ww)
+            px = sx0[item] + np.arange(int(ww.sum())) - np.repeat(np.cumsum(ww) - ww, ww)
+            py = ry[item]
+            t = local[item]
+            fx, fyy = px + 0.5, py + 0.5
+            w0 = a0[t] * fx + c0[t] * fyy + e0[t]
+            w1 = a1[t] * fx + c1[t] * fyy + e1[t]
+            w2 = 1.0 - w0 - w1
+            inside = (w0 >= -1e-6) & (w1 >= -1e-6) & (w2 >= -1e-6)
+            t, w0, w1, w2 = t[inside], w0[inside], w1[inside], w2[inside]
+            pix = (py * W + px)[inside]
+            depth = w0 * zz[t, 0] + w1 * zz[t, 1] + w2 * zz[t, 2]
+            # the nearest fragment per pixel: the z-buffer takes the largest depth (old and new), and a
+            # fragment at that depth wins (of several at the same depth, one of them)
+            np.maximum.at(zbuf, pix, depth)
+            win = depth >= zbuf[pix]
+            p = pix[win]
+            tbuf[p] = ids[t[win]]
+            b0buf[p] = w0[win]
+            b1buf[p] = w1[win]
+            s2 = e2
         start = stop
     return zbuf, tbuf, b0buf, b1buf
 
@@ -204,9 +264,10 @@ def _font(size: int):
 
 
 def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool = False,
-           overlay: Overlay | None = None, caption: str = "", plain: bool = False) -> tuple[Image.Image, dict]:
+           overlay: Overlay | None = None, caption: str = "", plain: bool = False, edges: bool = True) -> tuple[Image.Image, dict]:
     """Returns the image and a report: {"labeled": [...], "small": [...], "hidden": [...]} (face names).
-    plain: for documents (white, no axes, no footer but the caption)."""
+    plain: for documents (white, no axes, no footer but the caption). edges: the CAD edges and outlines.
+    An orthographic view framed on everything; render_camera draws through a Camera instead."""
     if view not in VIEWS:
         raise ValueError(f"unknown view {view!r}; use one of {', '.join(VIEWS)}")
     parts = [p for p in parts if len(p.indices)]
@@ -268,22 +329,18 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
         for (pi, fid), spec in overlay.faces.items():
             tri_color[(tri_part == pi) & (tri_face == fid)] = spec["color"]
 
-    # smooth shading from interpolated surface normals, lit in camera space
-    key = _unit((-0.45, 0.65, 0.62))
-    fill = _unit((0.7, -0.25, 0.45))
-    half = _unit(key + np.array([0, 0, 1.0]))
-
+    # smooth shading from interpolated surface normals, lit in camera space (an orthographic view: toward the viewer is +z)
     def lit(t, w0, w1):
         i0, i1, i2 = T[t, 0], T[t, 1], T[t, 2]
         n = w0[:, None] * Nw[i0] + w1[:, None] * Nw[i1] + (1 - w0 - w1)[:, None] * Nw[i2]
         n = n @ R.T
         n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
         n[n[:, 2] < 0] *= -1  # two-sided
-        return n, 0.30 + 0.62 * np.clip(n @ key, 0, 1) + 0.20 * np.clip(n @ fill, 0, 1), 0.10 * np.clip(n @ half, 0, 1) ** 40
+        return (n, *light(n, np.array([0.0, 0.0, 1.0])))
 
     w0, w1 = b0[fg], b1[fg]
     i0, i1, i2 = T[t, 0], T[t, 1], T[t, 2]
-    n, shade, spec = lit(t, w0, w1)
+    n, shade, spec, rim = lit(t, w0, w1)
     color = tri_color[t]
     if any(p.colors is not None for p in parts):  # a field: colors per vertex, interpolated in each triangle
         C = np.concatenate([p.colors if p.colors is not None else np.full((len(p.positions), 3), np.nan) for p in parts])
@@ -292,7 +349,7 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
         color[own] = (w0[:, None] * C[i0] + w1[:, None] * C[i1] + w2[:, None] * C[i2])[own]
     img = np.empty((Ws * Hs, 3))
     img[:] = (1.0, 1.0, 1.0) if plain else BACKGROUND
-    img[fg] = np.clip(color * shade[:, None] + spec[:, None], 0, 1)
+    img[fg] = compose(color, shade, spec, rim)
 
     # lines: face boundaries (CAD edges), silhouettes, depth jumps; creases on meshes without faces
     fkey = np.full(Ws * Hs, -1, dtype=np.int64)
@@ -324,12 +381,13 @@ def render(parts: list[Part], view: str = "iso", size: int = 1200, labels: bool 
     if SS > 1:
         line = _dilate(line)
     img = img.reshape(Hs, Ws, 3)
-    img[line] = LINE
+    if edges:
+        _ink(img, line)
     if see.any():  # the glass over it: its color by its opacity, brighter where it turns away (a rim), its outline faint
         gf = tg >= 0
         if gf.any():
             gt = tg[gf]
-            gn, gshade, gspec = lit(gt, g0[gf], g1[gf])
+            gn, gshade, gspec, _ = lit(gt, g0[gf], g1[gf])
             a = alpha[tri_part[gt]]
             a = np.clip(a * (0.8 + 1.6 * (1 - np.abs(gn[:, 2])) ** 2), 0, 0.92)[:, None]
             flat = img.reshape(-1, 3)
@@ -591,3 +649,335 @@ def _triad(draw, R, font, H):
         draw.line([tuple(o), tuple(o + v)], fill=col, width=2)
         u = v / np.linalg.norm(v)
         draw.text(tuple(o + v + u * 8 - (4, 8)), name, fill=col, font=font)
+
+
+# ---------------------------------------------------------------- a camera (perspective, as the viewer)
+
+
+@dataclass
+class Prepared:
+    """Parts gathered once into flat arrays, to draw through many cameras (tule screenshot --cameras)."""
+
+    parts: list
+    P: np.ndarray  # (n, 3) world positions
+    N: np.ndarray  # (n, 3) world normals
+    T: np.ndarray  # (m, 3) vertex indices
+    tri_part: np.ndarray  # (m,) part index
+    tri_face: np.ndarray  # (m,) B-rep face id
+    tri_copy: np.ndarray  # (m,) placed copy within its part
+    base: np.ndarray  # (parts, 3) colors
+    alpha: np.ndarray  # (parts,) opacity
+    C: np.ndarray | None  # (n, 3) per-vertex colors (a field), NaN where none
+    voffs: np.ndarray  # first vertex of each part
+    toffs: np.ndarray  # first triangle of each part
+
+
+def prepare(parts: list[Part]) -> Prepared:
+    parts = [p for p in parts if len(p.indices)]
+    if not parts:
+        raise ValueError("nothing to draw: the file has no triangles")
+    voffs = np.cumsum([0] + [len(p.positions) for p in parts])
+    toffs = np.cumsum([0] + [len(p.indices) for p in parts])
+    P = np.concatenate([p.positions for p in parts]).astype(np.float64)
+    N = np.concatenate([p.normals for p in parts]).astype(np.float64)
+    T = np.concatenate([np.asarray(p.indices, dtype=np.int64).reshape(-1, 3) + o for p, o in zip(parts, voffs)])
+    tri_part = np.concatenate([np.full(len(p.indices), i, dtype=np.int32) for i, p in enumerate(parts)])
+    tri_face = np.concatenate([np.asarray(p.face_ids, dtype=np.int64) for p in parts])
+    tri_copy = np.concatenate([np.arange(len(p.indices), dtype=np.int64) // max(1, len(p.indices) // max(1, p.copies))
+                               for p in parts])
+    base = np.array([p.color[:3] if p.color else DEFAULT_COLOR for p in parts], dtype=np.float64)
+    alpha = np.array([p.color[3] if p.color is not None and len(p.color) > 3 else 1.0 for p in parts])
+    C = None
+    if any(p.colors is not None for p in parts):
+        C = np.concatenate([p.colors if p.colors is not None else np.full((len(p.positions), 3), np.nan) for p in parts])
+    return Prepared(parts, P, N, T, tri_part, tri_face, tri_copy, base, alpha, C, voffs, toffs)
+
+
+def part_path(p: Part) -> str:
+    return p.path or p.name
+
+
+def select(prep: Prepared, name: str) -> list[tuple[int, int | None]]:
+    """[(part index, copy or None)] that ``name`` names: a part, a group ("ship/heatshield"), or one placed
+    copy ("tiles[17]", from 0). Raises ValueError naming what there is."""
+    from .camera import matches, split_copy
+
+    stem, copy = split_copy(name)
+    found = [i for i, p in enumerate(prep.parts) if matches(part_path(p), stem) or matches(part_path(p), name)]
+    if not found:
+        have = sorted({part_path(p) for p in prep.parts})
+        more = f" (and {len(have) - 30} more)" if len(have) > 30 else ""
+        raise ValueError(f"no part or group {name!r}; parts: {', '.join(have[:30])}{more}")
+    if copy is not None and not matches(part_path(prep.parts[found[0]]), name):
+        out = []
+        for i in found:
+            if copy >= prep.parts[i].copies:
+                raise ValueError(f"{stem} has {prep.parts[i].copies} placed copies (0 to {prep.parts[i].copies - 1}), not [{copy}]")
+            out.append((i, copy))
+        return out
+    return [(i, None) for i in found]
+
+
+def bounds(prep: Prepared, sel=None, hidden=None) -> tuple[np.ndarray, np.ndarray]:
+    """The box around the selected parts or copies (default: every part not hidden)."""
+    if sel is None:
+        hid = hidden_parts(prep, hidden)
+        sel = [(i, None) for i in range(len(prep.parts)) if i not in hid]
+    lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
+    for i, c in sel:
+        a, b = prep.voffs[i], prep.voffs[i + 1]
+        if c is not None:
+            nv = (b - a) // prep.parts[i].copies
+            a, b = a + c * nv, a + (c + 1) * nv
+        if b > a:
+            lo = np.minimum(lo, prep.P[a:b].min(0))
+            hi = np.maximum(hi, prep.P[a:b].max(0))
+    if not np.isfinite(lo).all():
+        raise ValueError("nothing to frame: every part is hidden")
+    return lo, hi
+
+
+def hidden_parts(prep: Prepared, hidden) -> set:
+    return {i for i, c in (hidden or []) if c is None}
+
+
+def _hidden_tris(prep: Prepared, hidden) -> np.ndarray:
+    mask = np.zeros(len(prep.T), dtype=bool)
+    for i, c in hidden or []:
+        a, b = prep.toffs[i], prep.toffs[i + 1]
+        if c is None:
+            mask[a:b] = True
+        else:
+            mask[a:b] |= prep.tri_copy[a:b] == c
+    return mask
+
+
+def _clip_near(Q, N, C, T, near):
+    """Triangles cut at the near plane (depth -Q[:, 2] >= near): those partly behind the eye become one or
+    two triangles in front, their new corners interpolated. Returns the extended Q, N, C, the kept
+    triangles and, for each, the index of the triangle it came from."""
+    z = -Q[T, 2]
+    behind = z < near
+    nb = behind.sum(1)
+    keep = np.nonzero(nb == 0)[0]
+    one, two = np.nonzero(nb == 1)[0], np.nonzero(nb == 2)[0]
+    if not len(one) and not len(two):
+        return Q, N, C, T[keep], keep
+    newQ, newN, newC = [], [], []
+    n0 = len(Q)
+
+    def cut(i, j):  # a point on each edge i -> j (vertex index arrays) at the near plane
+        zi, zj = -Q[i, 2], -Q[j, 2]
+        t = ((near - zi) / (zj - zi))[:, None]
+        newQ.append(Q[i] + t * (Q[j] - Q[i]))
+        nn = N[i] + t * (N[j] - N[i])
+        newN.append(nn / (np.linalg.norm(nn, axis=1, keepdims=True) + 1e-12))
+        if C is not None:
+            newC.append(C[i] + t * (C[j] - C[i]))
+        start = n0 + sum(len(q) for q in newQ[:-1])
+        return np.arange(start, start + len(i))
+
+    tris, src = [T[keep]], [keep]
+    if len(one):
+        r = np.argmax(behind[one], 1)
+        tt = T[one]
+        a, b, c = tt[np.arange(len(one)), r], tt[np.arange(len(one)), (r + 1) % 3], tt[np.arange(len(one)), (r + 2) % 3]
+        ab, ac = cut(a, b), cut(a, c)
+        tris += [np.stack([ab, b, c], 1), np.stack([ab, c, ac], 1)]
+        src += [one, one]
+    if len(two):
+        r = np.argmin(behind[two], 1)
+        tt = T[two]
+        c, a, b = tt[np.arange(len(two)), r], tt[np.arange(len(two)), (r + 1) % 3], tt[np.arange(len(two)), (r + 2) % 3]
+        ca, cb = cut(c, a), cut(c, b)
+        tris.append(np.stack([c, ca, cb], 1))
+        src.append(two)
+    Q = np.concatenate([Q, *newQ])
+    N = np.concatenate([N, *newN])
+    if C is not None:
+        C = np.concatenate([C, *newC])
+    return Q, N, C, np.concatenate(tris), np.concatenate(src)
+
+
+def render_camera(prep: Prepared, cam, W: int, H: int, hidden=None, edges: bool = True, labels: bool = False,
+                  overlay: Overlay | None = None, background=BACKGROUND) -> tuple[Image.Image, dict]:
+    """The parts as the camera (camera.Camera) sees them, W×H pixels, nothing drawn around them (no
+    footer, no axes): what the viewer shows through the same camera. hidden: [(part, copy or None)]
+    not drawn. The report: as render's, and "parts": the share of the picture each visible part covers."""
+    from .camera import project
+
+    R = cam.basis()
+    eye = cam.eye
+    Ws, Hs = W * SS, H * SS
+    tv = math.tan(math.radians(cam.fov) / 2)
+    th = tv * W / H
+    f = (Hs / 2) / tv
+    # what can be seen: in front of the eye, inside the view, not hidden
+    Q = (prep.P - eye) @ R.T  # right, up, toward the viewer (the scene is at -z)
+    z = -Q[:, 2]
+    lo_w, hi_w = prep.P.min(0), prep.P.max(0)
+    extent = float(np.linalg.norm(hi_w - lo_w)) or 1.0
+    near = max(1e-3 * cam.distance, 1e-6 * extent)
+    slack = 1.02
+    code = ((Q[:, 0] < -slack * th * z).astype(np.uint8) | ((Q[:, 0] > slack * th * z) << 1)
+            | ((Q[:, 1] < -slack * tv * z) << 2) | ((Q[:, 1] > slack * tv * z) << 3) | ((z < near) << 4)).astype(np.uint8)
+    T = prep.T
+    outside = (code[T[:, 0]] & code[T[:, 1]] & code[T[:, 2]]) != 0
+    live = np.nonzero(~outside & ~_hidden_tris(prep, hidden))[0]
+    Qx, Nx, Cx, Tx, src = _clip_near(Q, prep.N, prep.C, T[live], near)
+    tid = live[src]  # the original triangle of each drawn one
+    zx = np.maximum(-Qx[:, 2], near * 0.5)
+    X = Ws / 2 + f * Qx[:, 0] / zx
+    Y = Hs / 2 - f * Qx[:, 1] / zx
+    Zr = 1.0 / zx  # nearer is larger; linear in screen space
+    tri_part = prep.tri_part[tid]
+    tri_face = prep.tri_face[tid]
+    see = prep.alpha[tri_part] < 1
+    solid = np.nonzero(~see)[0]
+    zbuf, tbuf, b0, b1 = rasterize(X, Y, Zr, Tx[solid], Ws, Hs)
+    tbuf = np.where(tbuf >= 0, solid[np.maximum(tbuf, 0)], -1)
+    if see.any():
+        clear = np.nonzero(see)[0]
+        zg, tg, g0, g1 = rasterize(X, Y, Zr, Tx[clear], Ws, Hs)
+        tg = np.where((tg >= 0) & (zg > zbuf), clear[np.maximum(tg, 0)], -1)
+    fg = tbuf >= 0
+    t = tbuf[fg]
+
+    tri_color = prep.base[tri_part]
+    if overlay is not None:
+        tri_color[:] = DIM_COLOR
+        for (pi, fid), spec in overlay.faces.items():
+            tri_color[(tri_part == pi) & (tri_face == fid)] = spec["color"]
+
+    Nc = (Nx @ R.T).astype(np.float32)  # normals in camera space
+    iz = (1.0 / zx).astype(np.float32)
+
+    def lit(t, w0, w1, pix):
+        """Normals (camera space, toward the viewer), the perspective-correct weights, and the light."""
+        i = Tx[t]
+        w = np.stack([w0, w1, 1 - w0 - w1], 1).astype(np.float32) * iz[i]  # perspective-correct
+        w /= w.sum(1, keepdims=True)
+        n = w[:, :1] * Nc[i[:, 0]] + w[:, 1:2] * Nc[i[:, 1]] + w[:, 2:] * Nc[i[:, 2]]
+        n /= np.sqrt(np.einsum("ij,ij->i", n, n))[:, None] + 1e-12
+        # toward the viewer, through the pixel
+        v = np.empty((len(pix), 3), dtype=np.float32)
+        v[:, 0] = -((pix % Ws) + 0.5 - Ws / 2) / f
+        v[:, 1] = ((pix // Ws) + 0.5 - Hs / 2) / f
+        v[:, 2] = 1
+        v /= np.sqrt(np.einsum("ij,ij->i", v, v))[:, None]
+        n[np.einsum("ij,ij->i", n, v) < 0] *= -1  # two-sided
+        return (n, w, *light(n, v))
+
+    n, w, shade, spec, rim = lit(t, b0[fg], b1[fg], np.nonzero(fg)[0])
+    color = tri_color[t]
+    if Cx is not None:
+        own = ~np.isnan(Cx[Tx[t], 0]).any(1)
+        color[own] = np.einsum("kj,kjc->kc", w, Cx[Tx[t]])[own]
+    img = np.empty((Ws * Hs, 3))
+    img[:] = background
+    img[fg] = compose(color, shade, spec, rim)
+
+    fkey = np.full(Ws * Hs, -1, dtype=np.int64)
+    fkey[fg] = tri_part[t].astype(np.int64) * (1 << 32) + tri_face[t]
+    K = fkey.reshape(Hs, Ws)
+    img = img.reshape(Hs, Ws, 3)
+    if edges:
+        D = np.where(fg, 1.0 / np.where(fg, zbuf, 1.0), np.nan).reshape(Hs, Ws)  # depth, mm
+        meshy = np.array([p.faces == 0 for p in prep.parts])
+        nimg = np.zeros((Ws * Hs, 3))
+        nimg[fg] = n
+        nimg = nimg.reshape(Hs, Ws, 3)
+        mk = np.zeros(Ws * Hs, dtype=bool)
+        mk[fg] = meshy[tri_part[t]]
+        mk = mk.reshape(Hs, Ws)
+        line = np.zeros((Hs, Ws), dtype=bool)
+        for a, b in (((slice(None), slice(1, None)), (slice(None), slice(None, -1))),
+                     ((slice(1, None), slice(None)), (slice(None, -1), slice(None)))):
+            diff = K[a] != K[b]
+            with np.errstate(invalid="ignore"):
+                diff |= np.abs(D[a] - D[b]) > 0.03 * np.fmin(D[a], D[b])
+            diff |= mk[a] & mk[b] & ((nimg[a] * nimg[b]).sum(-1) < math.cos(math.radians(35)))
+            line[a] |= diff
+            line[b] |= diff
+        if SS > 1:
+            line = _dilate(line)
+        _ink(img, line)
+    if see.any():
+        gf = tg >= 0
+        if gf.any():
+            gt = tg[gf]
+            gn, _, gshade, gspec, _ = lit(gt, g0[gf], g1[gf], np.nonzero(gf)[0])
+            a = prep.alpha[tri_part[gt]]
+            a = np.clip(a * (0.8 + 1.6 * (1 - np.abs(gn[:, 2])) ** 2), 0, 0.92)[:, None]
+            flat = img.reshape(-1, 3)
+            flat[gf] = (1 - a) * flat[gf] + a * np.clip(tri_color[gt] * gshade[:, None] + 3 * gspec[:, None], 0, 1)
+            if edges:
+                gk = np.full(Ws * Hs, -1, dtype=np.int64)
+                gk[gf] = tri_part[gt].astype(np.int64) * (1 << 32) + tri_face[gt]
+                gk = gk.reshape(Hs, Ws)
+                edge = np.zeros((Hs, Ws), dtype=bool)
+                for a2, b2 in (((slice(None), slice(1, None)), (slice(None), slice(None, -1))),
+                               ((slice(1, None), slice(None)), (slice(None, -1), slice(None)))):
+                    diff = gk[a2] != gk[b2]
+                    edge[a2] |= diff
+                    edge[b2] |= diff
+                if SS > 1:
+                    edge = _dilate(edge)
+                img[edge] = 0.55 * img[edge] + 0.45 * np.asarray(LINE)
+
+    big = Image.fromarray((img * 255 + 0.5).astype(np.uint8))
+    arrows = []
+    for a in (overlay.arrows if overlay else []):
+        at = np.asarray(a["at"], dtype=np.float64)
+        tail = at - _unit(a["dir"]) * 0.25 * extent
+        arrows.append((at, tail, a.get("label") or ""))
+    if arrows:
+        dr = ImageDraw.Draw(big)
+        for at, tail, _ in arrows:
+            x, y, d = project([at, tail], cam, Ws, Hs)
+            if (d <= near).any():
+                continue
+            a2, t2 = np.array([x[0], y[0]]), np.array([x[1], y[1]])
+            v = a2 - t2
+            L = np.linalg.norm(v)
+            if L < 1:
+                dr.ellipse([*(a2 - 8 * SS), *(a2 + 8 * SS)], outline=(200, 40, 20), width=3 * SS)
+                continue
+            u = v / L
+            perp = np.array([-u[1], u[0]])
+            head = min(18 * SS, 0.4 * L)
+            neck = a2 - u * head
+            dr.line([tuple(t2), tuple(neck)], fill=(200, 40, 20), width=4 * SS)
+            dr.polygon([tuple(a2), tuple(neck + perp * head * 0.45), tuple(neck - perp * head * 0.45)], fill=(200, 40, 20))
+    im = big.resize((W, H), Image.LANCZOS) if SS > 1 else big
+
+    parts = prep.parts
+    report = {"labeled": [], "small": [], "hidden": [], "hidden_tagged": []}
+    Kf = K[SS // 2::SS, SS // 2::SS][:H, :W]
+    keys, counts = np.unique(Kf[Kf >= 0], return_counts=True)
+    visible = {(int(k >> 32), int(k & 0xFFFFFFFF)): int(cnt) for k, cnt in zip(keys, counts)}
+    share = np.bincount((keys >> 32).astype(np.int64), weights=counts, minlength=len(parts)) / float(W * H)
+    report["parts"] = {part_path(parts[i]): round(float(share[i]), 4) for i in np.argsort(-share) if share[i] > 0}
+    report["covered"] = round(float(share.sum()), 4)
+    if labels or overlay is not None:
+        names = {}
+        multi = len(parts) > 1
+        for i, p in enumerate(parts):
+            for fid in range(max(p.faces, 0)):
+                names[(i, fid)] = (f"{p.name}:" if multi else "") + f"f{fid}"
+        hid = hidden_parts(prep, hidden)
+        marked = set(overlay.faces) if overlay is not None else set()
+        for k in names:
+            if k not in visible and k[0] not in hid:
+                report["hidden"].append(names[k])
+                tags = (parts[k[0]].tags or {}).get(k[1])
+                if tags or k in marked:
+                    report["hidden_tagged"].append(names[k] + (" " + ",".join(tags) if tags else ""))
+        draw = ImageDraw.Draw(im)
+        font = _font(max(11, round(W / 85)))
+        boxes = _labels(draw, font, parts, Kf, visible, names, overlay, labels, report)
+        for at, tail, text in arrows:
+            x, y, d = project([tail], cam, W, H)
+            if text and d[0] > near:
+                _tag_box(draw, font, text, (x[0], y[0]), boxes, W, H, fill=(255, 236, 230), outline=(200, 40, 20))
+    return im, report

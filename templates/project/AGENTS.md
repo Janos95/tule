@@ -202,14 +202,14 @@ The viewer shows `/workspace/outputs/` (and `work/`, `inputs/`): a folder per ou
 
 ```
 outputs/
-  bracket/         bracket.step                       a part: one file, no JSON needed
+  bracket/         bracket.step                       a part: one file, no JSON
   gripper/         output.json base.step finger.step  an assembly: names, colors
-  bracket-topopt/  output.json frame_0000.stl …       a sequence: frames with values, a slider and a plot
+  bracket-topopt/  output.json frame_0000.stl …       a sequence: frames, a slider, a plot
   bracket-loads/   output.json bracket.step           an overlay: colored faces, labels, arrows
-  print/           output.json lid.step print.3mf     a print plate: one 3MF, every part (no STLs)
+  print/           output.json lid.step print.3mf     a print plate: one 3MF (no STLs)
 ```
 
-Geometry: STEP (faces, names, colors, tags travel inside; prefer it) or STL.
+Geometry: STEP (faces, names, colors, tags travel inside; prefer it), STL.
 
 ## Writing them
 
@@ -232,9 +232,9 @@ outputs.overlay("plate-loads", part, title="Load case 1",
                 arrows=[{"at": (20, 10, 5), "dir": (0, 0, -1), "label": "200 N"}])
 ```
 
-Other tools write into `outputs.folder()` (`output.json` last).
+Other tools write into `outputs.folder()`, `output.json` last.
 
-A long list: group early. `src/checks/fit.py` makes `outputs/checks/fit/`, folded under "checks"; a number in front orders: `src/01-print.py` writes `outputs/01-print/` (name it "01-print"), shown first as "print".
+A long list: group early (`src/checks/fit.py` makes `outputs/checks/fit/`, folded under "checks"); a number orders: `src/01-print.py` writes `outputs/01-print/`, shown first as "print".
 
 ## `output.json`
 
@@ -253,9 +253,9 @@ Optional: without it one file is a part, numbered files a sequence, several an a
 ```
 
 - **Overlay faces** are keyed by face id (`"12"` is `f12`). Give a `role` (`load`, `fixed`, `keep`, `avoid`, …) or a `severity` (`error`, `warning`, `info`, `ok`), and a short `label`. An arrow points along `dir` and ends at `at`.
-- **Values:** a face with only a number `value` is colored on a blue (low) to red (high) scale, from `scale.min` to `scale.max` (default: the values' range); `scale.label` and `scale.unit` name it in the legend; stress: `tule docs fea`.
+- **Values:** a face with only a number `value` is colored blue (low) to red (high), from `scale.min` to `scale.max` (default: their range), named by `scale.label` and `scale.unit`; stress: `tule docs fea`.
 - **See-through** parts: a color with opacity, `.named("window", "#8da0aa66")`.
-- **Plates**: `"plate": {"parts": {"pin": 4}, "printer": "bambu-p1s", "estimate": {"print_time_s", …}}` (`estimate="bambu-p1s"`, the user's printer: `tule docs outputs.plate`). Overflow: more plates; a part's `{"down": "base"}` lays that tagged face down.
+- **Plates**: `"plate": {"parts": {"pin": 4}, "printer": …, "estimate": …}` (`tule docs outputs.plate`); a part's `{"down": "base"}` lays that tagged face down.
 - **Sequences**: `"status": "running"` while frames come, then `"done"` (or `"failed"`). A frame is a `file`, or `"parts": [{"file", "name", "color", "transform"}]` (4x4, row-major).
 
 ## Tables, charts, documents, images
@@ -266,12 +266,10 @@ Other files get their own view: `.csv`, `.tsv` or a `.json` list of records: a t
 import json
 from tule import outputs
 d = outputs.folder("study")  # under tule build: outputs.folder()
-with open(f"{d}/results.csv", "w") as f:
-    f.write("t_mm,mass_g\n3,25.9\n5,43.2\n")
-with open(f"{d}/mass.vl.json", "w") as f:
-    json.dump({"data": {"url": "results.csv"}, "mark": "line",
-               "encoding": {"x": {"field": "t_mm", "type": "quantitative"},
-                            "y": {"field": "mass_g", "type": "quantitative"}}}, f)
+open(f"{d}/results.csv", "w").write("t_mm,mass_g\n3,25.9\n5,43.2\n")
+q = {"type": "quantitative"}
+json.dump({"data": {"url": "results.csv"}, "mark": "line",
+           "encoding": {"x": {"field": "t_mm", **q}, "y": {"field": "mass_g", **q}}}, open(f"{d}/mass.vl.json", "w"))
 ```
 
 No HTML or network: chart data is a file beside it or inline `values`. A value naming an output (a BOM's `part` column) links to it. In a folder, a `README.md` (or `00-…md`) opens first. Write for the user: rounded numbers.
@@ -279,10 +277,12 @@ No HTML or network: chart data is a file beside it or inline `values`. A value n
 ## Looking at outputs yourself
 
 ```sh
-tule screenshot -o /tmp/v.png --output bracket --labels      # f12 · load on every visible face
-tule screenshot -o /tmp/top.png --output bracket --view top  # iso front back left right top bottom
+tule screenshot -o /tmp/v.png --output bracket --labels --view top  # iso front back left right top bottom
+tule screenshot -o /tmp/c.png --output ship --target-part flaps --azimuth 30 --elevation 15
 ```
 
-The PNG lists faces labeled, too small to label, or hidden. A sequence shows its last frame (`--frame 3`). Charts too: `tule screenshot outputs/study/mass.vl.json`.
+It lists faces labeled (f12 · load), too small or hidden. Sequences: the last frame (`--frame 3`). Charts: `tule screenshot outputs/study/mass.vl.json`.
+
+Cameras as the viewer's (`-h`): azimuth from +X about +Z, front -90, `--distance` mm or fit `--target-part` (part, group, copy `tiles[17]`), `--target=X,Y,Z`, `--hide P`; it prints a viewer link `?cam=…` (Copy view link: `--cam=…`). Batches: `--cameras cams.json -o dir/`.
 
 Outputs are not in git (`tule build` remakes them).

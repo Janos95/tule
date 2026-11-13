@@ -1,6 +1,8 @@
 """Commands for the machine (they work on a laptop too, for local files).
 
     tule screenshot -o view.png [--output NAME | FILE] [--view iso] [--labels] [--size 1200]
+        [--azimuth DEG --elevation DEG --distance MM | --fit] [--target X,Y,Z | --target-part NAME] [--fov 30]
+        [--size WxH] [--hide PART]... [--no-edges] [--cameras cams.json -o FOLDER]   (camera.py)
     tule inspect FILE [--json]
     tule docs [topic]
     tule snapshot          (on the machine: asks the local tule-agent to save /workspace now)
@@ -129,8 +131,9 @@ def _need_tule():
         raise CliError("this needs the tule modeling package (it is on every Tule machine; locally: pip install -e python)") from None
 
 
-def load_items(path: str) -> list[tuple[str, object]]:
-    """[(name, Shape, Mesh or triangles)] for a STEP, PLY, OBJ, STL or glTF (.glb) file."""
+def load_items(path: str, full: bool = False) -> list[tuple[str, object]]:
+    """[(name, Shape, Mesh or triangles)] for a STEP, PLY, OBJ, STL or glTF (.glb) file; full: a STEP
+    assembly's parts by their paths ("arm/finger"), not their own names."""
     ext = os.path.splitext(path)[1].lower()
     base = os.path.splitext(os.path.basename(path))[0]
     if ext in (".ply", ".obj"):
@@ -163,7 +166,7 @@ def load_items(path: str) -> list[tuple[str, object]]:
 
     item = import_step(path)
     if isinstance(item, Assembly):
-        return [(n.rsplit("/", 1)[-1], s) for n, s in item.parts()]
+        return [(n if full else n.rsplit("/", 1)[-1], s) for n, s in item.parts()]
     return [(item.name or base, item)]
 
 
@@ -190,7 +193,7 @@ def read_glb(path: str, base: str) -> list[tuple[str, object]]:
 
 
 def to_parts(path: str, color: str | None = None, name: str | None = None):
-    return items_to_parts(load_items(path), color, name)
+    return items_to_parts(load_items(path, full=True), color, name)
 
 
 def items_to_parts(items, color: str | None = None, name: str | None = None):
@@ -200,7 +203,10 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
     from .render import Part
 
     out = []
+    paths = []  # (first part of an item, its path)
     for nm, item in items:
+        paths.append((len(out), nm if "/" in nm and not name else ""))
+        nm = nm.rsplit("/", 1)[-1]
         if getattr(item, "kind", None) == "implicit":
             raise CliError(f"{name or nm} is an implicit: mesh it first (body.to_mesh(cell=0.4))")
         if getattr(item, "kind", None) == "mesh":  # a tule.Mesh: smooth within regions, lines at borders and creases
@@ -252,6 +258,9 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
             continue
         out.append(Part(name or nm, m.positions, m.normals, m.indices, m.face_ids,
                         _rgb(color or item.color), tags, len(item.faces)))
+    for k, (start, path) in enumerate(paths):
+        for p in out[start:paths[k + 1][0] if k + 1 < len(paths) else len(out)]:
+            p.path = path
     return out
 
 
@@ -373,7 +382,8 @@ def copies(parts, transforms, name: str = "", drawn: list | None = None):
         I = np.where(flip[:, None, None], I[None, :, ::-1], I[None]) + (np.arange(n) * len(p.positions))[:, None, None]
         out.append(dataclasses.replace(p, positions=P.astype(np.float32), normals=N.astype(np.float32),
                                        indices=I.reshape(-1, 3), face_ids=np.tile(p.face_ids, n),
-                                       colors=np.tile(p.colors, (n, 1)) if p.colors is not None else None))
+                                       colors=np.tile(p.colors, (n, 1)) if p.colors is not None else None,
+                                       copies=n * p.copies))
     return out
 
 
@@ -553,6 +563,8 @@ def scene(target: str, frame: int | None = None, field: str | None = None):
         drawn, placed = [0], 0
         for e in meta.get("parts", []):
             ps = to_parts(file_in(e["file"]), e.get("color"), (e.get("name") or "").rsplit("/", 1)[-1] or None)
+            for p in ps:
+                p.path = e.get("name") or p.path
             if e.get("transforms") is not None:  # placed copies: the file once, drawn at each placement
                 T = read_transforms(e["transforms"], target, jpath)
                 ps = copies(ps, T, e.get("name") or e["file"], drawn)
@@ -755,12 +767,44 @@ def _pdf_page(args):
     _write_png(args, data, f"page {page} of {args.file} (--frame N for another page)")
 
 
+CAMERA_KEYS = ("azimuth", "elevation", "distance", "fov", "fit", "target", "target_part", "cam")
+
+
+def _camera_args(args) -> dict:
+    """The camera options given on the command line, as a batch camera's keys."""
+    out = {k: getattr(args, k) for k in CAMERA_KEYS if getattr(args, k, None) not in (None, False)}
+    if args.height:
+        out["size"] = [args.size, args.height]
+    return out
+
+
+def _forward(args) -> list[str]:
+    """The options to pass on to the machine (tule screenshot -p)."""
+    argv = ["--view", args.view, "--size", f"{args.size}x{args.height}" if args.height else str(args.size)]
+    argv += (["--output", args.output] if args.output else []) + (["--labels"] if args.labels else [])
+    argv += ["--frame", str(args.frame)] if args.frame is not None else []
+    argv += ["--field", args.field] if args.field else []
+    for k in ("azimuth", "elevation", "distance", "fov", "target", "target_part", "cam"):
+        if getattr(args, k) is not None:
+            argv += [f"--{k.replace('_', '-')}={getattr(args, k)}"]
+    argv += ["--fit"] if args.fit else []
+    for h in args.hide or []:
+        argv += [f"--hide={h}"]
+    argv += [] if args.edges else ["--no-edges"]
+    return argv
+
+
 def cmd_screenshot(args):
+    try:
+        from .camera import parse_size
+
+        args.size, args.height = parse_size(args.size)
+    except ValueError as e:
+        raise CliError(str(e)) from None
     if args.project:  # from your own computer: render on the machine, write the PNG here
-        argv = ["tule", "screenshot", *([args.file] if args.file else []), "-o", "-", "--view", args.view, "--size", str(args.size)]
-        argv += (["--output", args.output] if args.output else []) + (["--labels"] if args.labels else [])
-        argv += ["--frame", str(args.frame)] if args.frame is not None else []
-        argv += ["--field", args.field] if args.field else []
+        argv = ["tule", "screenshot", *([args.file] if args.file else []), "-o", "-", *_forward(args)]
+        if args.cameras:
+            return _remote_batch(args, argv)
         return remote(args, argv, None if args.o == "-" else args.o)
     if args.output and not args.file and os.path.splitext(args.output)[1].lower() in (".pdf", ".png", ".jpg", ".jpeg", ".svg", ".json", ".md"):
         args.file, args.output = os.path.join(outputs_root(), args.output), None  # --output drawing/drawing.pdf
@@ -769,21 +813,38 @@ def cmd_screenshot(args):
     if args.file and args.file.lower().endswith(".vl.json"):
         return _chart(args)
     try:
-        from .render import VIEWS, render
+        from .render import VIEWS, prepare, render
     except ImportError as e:
         raise CliError(f"tule screenshot needs numpy and Pillow ({e.name} is missing): pip install numpy pillow") from None
     if args.view not in VIEWS:
         raise CliError(f"unknown view {args.view!r}; use one of {', '.join(VIEWS)}")
+    batch = _read_cameras(args.cameras) if args.cameras else None
     target = find_output(args.output, args.file)
+    t0 = __import__("time").time()
     parts, overlay, caption = scene(target, args.frame, args.field)
     import numpy as np
 
     if not any(len(p.indices) for p in parts):
         raise CliError(f"{args.output or args.file or target}: nothing to draw (no shape with faces)")
-    P = np.concatenate([p.positions for p in parts if len(p.positions)])
-    size = P.max(0) - P.min(0)
-    caption += " · size " + " x ".join(_g(v) for v in size)
-    img, rep = render(parts, args.view, args.size, args.labels, overlay, caption)
+    prep = prepare(parts)
+    if batch is not None:
+        return _batch(args, prep, overlay, target, batch, __import__("time").time() - t0)
+    spec = _camera_args(args)
+    hidden = _hidden(prep, args.hide or [])
+    if spec or any(c is not None for _, c in hidden):
+        img, rep, cam, hidden = _shoot(prep, overlay, {"view": args.view, "hide": args.hide or [], "edges": args.edges,
+                                                       "labels": args.labels, "size": [args.size, args.height], **spec})
+        what = f"{img.width}×{img.height}, camera az {_g(cam.azimuth)} el {_g(cam.elevation)} distance {_g(cam.distance)} mm " \
+               f"target {_vec(cam.target)} fov {_g(cam.fov)}"
+    else:
+        shown = [p for i, p in enumerate(prep.parts) if i not in {i for i, _ in hidden}]
+        if not shown:
+            raise CliError("nothing to draw: every part is hidden")
+        P = np.concatenate([p.positions for p in shown if len(p.positions)])
+        size = P.max(0) - P.min(0)
+        caption += " · size " + " x ".join(_g(v) for v in size)
+        img, rep = render(shown, args.view, args.size, args.labels, overlay, caption, edges=args.edges)
+        what, cam = f"{img.width}×{img.height}, view {args.view}", None
     if args.o == "-":  # to stdout, e.g. to your own computer: tule ssh -p bracket -- tule screenshot -o - > view.png
         out = "the PNG to stdout"
         buf = io.BytesIO()
@@ -796,7 +857,16 @@ def cmd_screenshot(args):
         tmp = out + ".tmp.png"
         img.save(tmp)
         os.replace(tmp, out)
-    lines = [f"tule: wrote {out} ({img.width}×{img.height}, view {args.view}): {target}"]
+    lines = [f"tule: wrote {out} ({what}): {target}"]
+    if cam is not None:
+        lines.append(f"  viewer link: ?{_link(cam, args.hide)}  (the same camera in the browser; here: --cam={cam.param()})")
+        lines.append(f"  in view: {_in_view(rep)}")
+    lines += _face_report(args, parts, overlay, rep, f"this camera" if cam is not None else args.view)
+    print("\n".join(lines), file=sys.stderr if args.o == "-" else sys.stdout)
+
+
+def _face_report(args, parts, overlay, rep, where: str) -> list[str]:
+    lines = []
     if (args.labels or overlay is not None) and not any(p.faces for p in parts):
         lines.append("  no labels: a mesh (STL) has no B-rep faces; write STEP to get face ids")
     elif args.labels or overlay is not None:
@@ -806,11 +876,254 @@ def cmd_screenshot(args):
     hidden = rep["hidden"] if args.labels or overlay is not None else []  # only when face ids are asked for
     if len(hidden) > 12:  # a count, and the faces that matter by name
         tagged = rep.get("hidden_tagged") or []
-        lines.append(f"  {len(hidden)} faces not visible from {args.view}" + (f", tagged: {_ids(tagged)}" if tagged else "")
-                     + " (try another --view)")
+        lines.append(f"  {len(hidden)} faces not visible from {where}" + (f", tagged: {_ids(tagged)}" if tagged else "")
+                     + " (try another view)")
     elif hidden:
-        lines.append(f"  not visible from {args.view}: {_ids(hidden)} (try another --view)")
-    print("\n".join(lines), file=sys.stderr if args.o == "-" else sys.stdout)
+        lines.append(f"  not visible from {where}: {_ids(hidden)} (try another view)")
+    return lines
+
+
+def _in_view(rep) -> str:
+    shares = list(rep.get("parts", {}).items())
+    if not shares:
+        return "nothing (the camera sees no part: check --target and --distance)"
+    top = ", ".join(f"{n} {100 * v:.0f}%" if v >= 0.005 else f"{n} <1%" for n, v in shares[:6])
+    return top + (f" and {len(shares) - 6} more" if len(shares) > 6 else "") + f"; {100 * rep['covered']:.0f}% of the picture"
+
+
+def _link(cam, hide) -> str:
+    return f"cam={cam.param()}" + _link_hide(hide)
+
+
+def _link_hide(hide) -> str:
+    from urllib.parse import quote
+
+    return f"&hide={quote(','.join(hide), safe='/,[]')}" if hide else ""
+
+
+def _hidden(prep, names) -> list:
+    from .render import select
+
+    out = []
+    for n in names:
+        for x in str(n).split(","):
+            if x.strip():
+                try:
+                    out += select(prep, x.strip())
+                except ValueError as e:
+                    raise CliError(f"--hide: {e}") from None
+    return out
+
+
+def _shoot(prep, overlay, spec: dict):
+    """One picture through the camera that spec (a batch camera's keys) describes: (image, report, Camera, hidden)."""
+    from .camera import FOV, Camera, clamp_elevation, direction_angles, fit_distance, parse_cam, parse_size, parse_vec
+    from .render import VIEWS, best_iso, bounds, render_camera, select
+
+    try:
+        W, H = parse_size(spec.get("size") or 1200)
+        if not H:
+            H = round(W * 3 / 4)
+        view = spec.get("view") or "iso"
+        if view not in VIEWS:
+            raise ValueError(f"unknown view {view!r}; use one of {', '.join(VIEWS)}")
+        hidden = _hidden(prep, spec.get("hide") or [])
+        base = parse_cam(spec["cam"]) if spec.get("cam") else None
+        if base is not None:
+            az, el, fov, target, dist = base.azimuth, base.elevation, base.fov, base.target, base.distance
+        else:
+            az, el = direction_angles(best_iso(prep.parts) if view == "iso" else VIEWS[view])
+            fov, target, dist = FOV, None, None
+        az = float(spec["azimuth"]) if spec.get("azimuth") is not None else az
+        el = clamp_elevation(float(spec["elevation"]) if spec.get("elevation") is not None else el)
+        fov = float(spec["fov"]) if spec.get("fov") is not None else fov
+        if not 0.1 <= fov <= 170:
+            raise ValueError(f"fov is the vertical field of view, 0.1 to 170 degrees, not {fov:g}")
+        sel = None
+        if spec.get("target_part"):
+            sel = select(prep, str(spec["target_part"]))
+        lo, hi = bounds(prep, sel, hidden)
+        if spec.get("target") is not None:
+            target = parse_vec(spec["target"])
+        elif target is None or sel is not None:
+            target = tuple(float(v) for v in (lo + hi) / 2)
+        if spec.get("distance") is not None:
+            dist = float(spec["distance"])
+            if not dist > 0:
+                raise ValueError(f"distance is mm from the target to the camera, more than 0, not {dist:g}")
+        cam = Camera(az, el, dist or 1.0, tuple(target), fov)
+        if spec.get("distance") is None and (dist is None or spec.get("fit") or sel is not None):
+            cam = Camera(az, el, fit_distance(lo, hi, cam, W / H), tuple(target), fov)
+        edges = spec.get("edges", True)
+        img, rep = render_camera(prep, cam, W, H, hidden, edges=edges is not False, labels=bool(spec.get("labels")),
+                                 overlay=overlay)
+    except ValueError as e:
+        raise CliError(str(e)) from None
+    return img, rep, cam, hidden
+
+
+def _read_cameras(path: str):
+    """A batch's cameras: [{name?, azimuth, elevation, ...}] or {"defaults": {...}, "cameras": [...]}."""
+    try:
+        text = sys.stdin.read() if path == "-" else open(path).read()
+        data = json.loads(text)
+    except OSError as e:
+        raise CliError(f"--cameras {path}: {e.strerror}") from None
+    except ValueError as e:
+        raise CliError(f"--cameras {path}: not JSON ({e})") from None
+    defaults = {}
+    if isinstance(data, dict):
+        defaults, data = data.get("defaults") or {}, data.get("cameras")
+    if not isinstance(data, list) or not data or not all(isinstance(c, dict) for c in data) or not isinstance(defaults, dict):
+        raise CliError(f"--cameras {path}: a list of cameras ({{\"azimuth\": 30, \"elevation\": 20, ...}}), "
+                       f"or {{\"defaults\": {{...}}, \"cameras\": [...]}}")
+    known = set(CAMERA_KEYS) | {"name", "size", "hide", "edges", "labels", "view"}
+    for i, c in enumerate([defaults, *data]):
+        bad = sorted(set(c) - known)
+        if bad:
+            raise CliError(f"--cameras {path}: unknown key {bad[0]!r} (keys: {', '.join(sorted(known))})")
+    return [{**defaults, **c, "hide": list(_listed(defaults.get("hide"))) + list(_listed(c.get("hide")))} for c in data]
+
+
+def _listed(v):
+    return [] if v is None else [v] if isinstance(v, str) else list(v)
+
+
+def _batch(args, prep, overlay, target, cams, load_s: float):
+    """Many pictures of one scene (loaded once) into the folder -o, named by each camera's "name", with
+    cameras.json: each picture's camera as numbers (and its viewer link) and the parts in view."""
+    import tarfile
+    import time
+
+    names, seen = [], set()
+    for i, c in enumerate(cams):
+        n = re.sub(r"[^A-Za-z0-9._-]+", "-", str(c.get("name") or f"{i + 1:04d}")).strip("-.") or f"{i + 1:04d}"
+        if n in seen:
+            raise CliError(f"--cameras: two cameras are named {n!r}")
+        seen.add(n)
+        names.append(n)
+    to_tar = args.o == "-"
+    if to_tar:
+        tar = tarfile.open(fileobj=sys.stdout.buffer, mode="w|")
+    else:
+        folder = os.path.abspath(args.o if args.o != "view.png" else "views")
+        if os.path.splitext(folder)[1].lower() == ".png":
+            raise CliError("with --cameras, -o is a folder (the pictures are <name>.png in it)")
+        os.makedirs(folder, exist_ok=True)
+    base = {"view": args.view, "edges": args.edges, "labels": args.labels, "size": [args.size, args.height], **_camera_args(args)}
+    manifest = []
+    t0 = time.time()
+
+    def put(name: str, data: bytes):
+        if to_tar:
+            info = tarfile.TarInfo(name)
+            info.size, info.mtime = len(data), int(time.time())
+            tar.addfile(info, io.BytesIO(data))
+        else:
+            out = os.path.join(folder, name)
+            with open(out + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(out + ".tmp", out)
+
+    specs = [{**base, **{k: v for k, v in c.items() if k != "name"}, "hide": [*(args.hide or []), *c["hide"]]} for c in cams]
+    for n, spec in zip(names, specs):  # every camera checked before the first picture
+        try:
+            _check(prep, spec)
+        except CliError as e:
+            raise CliError(f"camera {n!r}: {e}") from None
+    # several at once: forked workers share the loaded scene as it is (nothing is sent to them); by default
+    # on Linux (the machines), where fork is safe for numpy
+    auto = (os.cpu_count() or 1) if sys.platform.startswith("linux") else 1
+    jobs = max(1, min(args.jobs or min(auto, 4), 16, len(specs)))  # each draws in its own memory (~0.5 GB at 7M triangles)
+    global _BATCH
+    _BATCH = (prep, overlay)
+
+    def done(results):
+        for n, spec, (png, size, camd, rep) in zip(names, specs, results):
+            put(f"{n}.png", png)
+            manifest.append({"name": n, "file": f"{n}.png", "size": size, **camd, "hide": spec["hide"],
+                             "link": f"cam={camd['cam']}" + _link_hide(spec["hide"]), "in_view": rep["parts"], "covered": rep["covered"]})
+
+    if jobs > 1:
+        import multiprocessing
+        import warnings
+        from concurrent.futures import ProcessPoolExecutor
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)  # "multi-threaded, fork may deadlock": the workers only draw
+            with ProcessPoolExecutor(jobs, mp_context=multiprocessing.get_context("fork")) as pool:
+                done(pool.map(_one, specs, chunksize=2))
+    else:
+        done(map(_one, specs))
+    took = time.time() - t0
+    put("cameras.json", (json.dumps({"source": target, "cameras": manifest}, indent=1) + "\n").encode())
+    if to_tar:
+        tar.close()
+        sys.stdout.flush()
+    where = "the pictures to stdout (a tar)" if to_tar else folder
+    print(f"tule: wrote {len(manifest)} pictures and cameras.json to {where}: {target}\n"
+          f"  loaded in {load_s:.1f} s, then {took:.1f} s for the pictures ({took / len(manifest):.2f} s each, {jobs} at a time)",
+          file=sys.stderr if to_tar else sys.stdout)
+
+
+_BATCH = None  # (prepared scene, overlay) while a batch runs: forked workers find it here
+
+
+def _one(spec):
+    prep, overlay = _BATCH
+    img, rep, cam, _ = _shoot(prep, overlay, spec)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue(), [img.width, img.height], cam.as_dict(), {"parts": rep["parts"], "covered": rep["covered"]}
+
+
+def _check(prep, spec):
+    """A camera's names and numbers, checked (as _shoot reads them) without drawing."""
+    from .camera import parse_cam, parse_size, parse_vec
+    from .render import VIEWS, select
+
+    try:
+        parse_size(spec.get("size") or 1200)
+        if (spec.get("view") or "iso") not in VIEWS:
+            raise ValueError(f"unknown view {spec['view']!r}; use one of {', '.join(VIEWS)}")
+        _hidden(prep, spec.get("hide") or [])
+        if spec.get("cam"):
+            parse_cam(spec["cam"])
+        if spec.get("target") is not None:
+            parse_vec(spec["target"])
+        if spec.get("target_part"):
+            select(prep, str(spec["target_part"]))
+        for k in ("azimuth", "elevation", "distance", "fov"):
+            if spec.get(k) is not None and not isinstance(spec[k], (int, float)) or isinstance(spec.get(k), bool):
+                float(spec[k])
+    except (ValueError, TypeError) as e:
+        raise CliError(str(e)) from None
+
+
+def _remote_batch(args, argv):
+    """--cameras with -p: the cameras go to the machine on stdin, the pictures come back as a tar."""
+    import shlex
+    import tarfile
+
+    try:
+        data = sys.stdin.buffer.read() if args.cameras == "-" else open(args.cameras, "rb").read()
+    except OSError as e:
+        raise CliError(f"--cameras {args.cameras}: {e.strerror}") from None
+    folder = os.path.abspath(args.o if args.o not in ("-", "view.png") else "views")
+    which = ["--machine", args.machine] if getattr(args, "machine", None) else []
+    cmd = [sys.executable, "-m", "tule_cli", "ssh", "-p", args.project, *which, "--", shlex.join([*argv, "--cameras", "-"])]
+    r = subprocess.run(cmd, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode:
+        sys.stderr.write(r.stderr.decode(errors="replace"))
+        sys.exit(r.returncode)
+    os.makedirs(folder, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(r.stdout), mode="r:") as tar:
+        for m in tar.getmembers():
+            if not m.isfile() or os.path.basename(m.name) != m.name:
+                continue
+            with open(os.path.join(folder, m.name), "wb") as f:
+                f.write(tar.extractfile(m).read())
+    sys.stderr.write(r.stderr.decode(errors="replace").replace("the pictures to stdout (a tar)", f"{folder} (from {args.project}'s machine)"))
 
 
 def _ids(names: list[str]) -> str:
@@ -1125,7 +1438,23 @@ def add_commands(add):
     sp.add_argument("--output", help="an output's name in the outputs folder")
     sp.add_argument("--view", default="iso", help="iso (default), front, back, left, right, top, bottom")
     sp.add_argument("--labels", action="store_true", help="label visible faces with their ids and tags (f12 · load)")
-    sp.add_argument("--size", type=int, default=1200, help="image width in pixels (default 1200)")
+    sp.add_argument("--size", default="1200", help="image width in pixels (default 1200), or WxH (a camera: exactly that)")
+    sp.add_argument("--azimuth", type=float, help="camera: degrees about +Z from +X toward +Y (front is -90)")
+    sp.add_argument("--elevation", type=float, help="camera: degrees above the XY plane")
+    sp.add_argument("--distance", type=float, help="camera: mm from the target (default: --fit)")
+    sp.add_argument("--fov", type=float, help="camera: vertical field of view in degrees (default 30, as the viewer)")
+    sp.add_argument("--fit", action="store_true", help="camera: back off until the target part (or everything shown) fits")
+    sp.add_argument("--target", help="camera: the point looked at, X,Y,Z in mm (default: the middle of what is framed)")
+    sp.add_argument("--target-part", help="camera: frame this part or group by name (heatshield, ship/flaps, tiles[17])")
+    sp.add_argument("--cam", help="camera: az,el,distance,tx,ty,tz[,fov], the viewer link's cam= (Copy view link)")
+    sp.add_argument("--hide", action="append", help="a part or group not drawn (repeat, or comma-separated)")
+    sp.add_argument("--edges", action=__import__("argparse").BooleanOptionalAction, default=True,
+                    help="draw the CAD edges and outlines (default); --no-edges for many small parts or to compare with photos")
+    sp.add_argument("--cameras", help="a JSON file (or - for stdin) of cameras, one picture each into the folder -o, the model "
+                    "loaded once: [{\"name\": \"fins\", \"azimuth\": 45, \"elevation\": 10, \"target_part\": \"fins\"}, ...] "
+                    "or {\"defaults\": {...}, \"cameras\": [...]}; keys as the options (distance, target [x, y, z], fov, fit, "
+                    "cam, size, hide, edges, labels, view); -o/cameras.json lists each camera as numbers and the parts in view")
+    sp.add_argument("--jobs", type=int, help="with --cameras: pictures drawn at once (default on Linux: the cores, up to 4)")
     sp.add_argument("--frame", type=int, help="a sequence's frame, from 1 as in the viewer (default: the last; -2 the one before); a PDF's page")
     sp.add_argument("--page", type=int, dest="frame", help="a PDF's page, from 1 (a datasheet's drawing)")
     sp.add_argument("-p", "--project", help="from your own computer: render on this project's machine, write the PNG here")
