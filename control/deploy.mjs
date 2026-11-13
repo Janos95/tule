@@ -13,7 +13,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 const ACCOUNT = "d4ea6567fb9a32c0979ace82a862f4fe";
 const REPO = "tule-project-cpu";
 // what goes into the image: the same list as runtime.yml's paths, so the commit found here is one CI built
-const IMAGE_PATHS = ["runtime", "python", "cli", "skills", "templates", "examples", "tools/build_agents_md.py", ".dockerignore", ".github/workflows/runtime.yml"];
+const IMAGE_PATHS = ["runtime", "python", "fidget-py", "cli", "skills", "templates", "examples", "tools/build_agents_md.py", ".dockerignore", ".github/workflows/runtime.yml"];
 
 const git = (...a) => execFileSync("git", ["-C", "..", ...a], { encoding: "utf8" }).trim();
 const fail = (msg) => {
@@ -36,7 +36,11 @@ else {
   const dirty = git("status", "--porcelain", "--", ...IMAGE_PATHS);
   if (dirty) console.warn(`deploy: uncommitted changes under ${IMAGE_PATHS.slice(0, 3).join(", ")}… are not in the image:\n${dirty}`);
 
-  const digest = await imageDigest(`sha-${short}`);
+  // CI tags the newest commit of each push, which can come after the last one that changed the image: any of
+  // those later commits carries the same image
+  const later = git("rev-list", "--ancestry-path", `${commit}..HEAD`).split("\n").filter(Boolean).reverse();
+  let digest = null;
+  for (const c of [commit, ...later]) if ((digest = await imageDigest(`sha-${c.slice(0, 7)}`))) break;
   if (!digest) fail(`the machine image for ${short} (${subject}) is not in Cloudflare's registry yet. CI builds it after the tests: ${ciStatus(commit)}`);
   console.log(`deploy: machine image of ${short} (${subject}), ${digest.slice(0, 19)}…`);
 
@@ -52,9 +56,10 @@ else {
   }
 }
 
+var creds; // the registry credentials, fetched once (var: used above, while the top-level code runs)
 /** The digest of REPO:tag in Cloudflare's registry, or null when it is not there. */
 async function imageDigest(tag) {
-  const out = execFileSync("npx", ["wrangler", "containers", "registries", "credentials", "registry.cloudflare.com", "--pull", "--expiration-minutes", "5", "--json"], { encoding: "utf8" });
+  const out = (creds ??= execFileSync("npx", ["wrangler", "containers", "registries", "credentials", "registry.cloudflare.com", "--pull", "--expiration-minutes", "5", "--json"], { encoding: "utf8" }));
   const c = JSON.parse(out.slice(out.indexOf("{")));
   const r = await fetch(`https://registry.cloudflare.com/v2/${ACCOUNT}/${REPO}/manifests/${tag}`, {
     method: "HEAD",
