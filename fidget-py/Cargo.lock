@@ -261,21 +261,18 @@ dependencies = [
 [[package]]
 name = "fidget"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69298d7641ec13971a5359ab20961a92482eab6201c7a89a1372a4ceac1f6987"
+source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
 dependencies = [
  "document-features",
  "fidget-core",
  "fidget-jit",
  "fidget-mesh",
- "workspace-hack",
 ]
 
 [[package]]
 name = "fidget-core"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b72374bb0a76f138aacd08b0611de2154cbb5eea0cf8251b11ed7bf3447e9a58"
+source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
 dependencies = [
  "facet",
  "getrandom 0.2.17",
@@ -288,14 +285,12 @@ dependencies = [
  "serde",
  "strum",
  "thiserror",
- "workspace-hack",
 ]
 
 [[package]]
 name = "fidget-jit"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a26c5c6c91f9b913b265c4c9888ff73ee7dfa93e169b295799e63cbe128b1fed"
+source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
 dependencies = [
  "arrayvec",
  "dynasmrt",
@@ -303,14 +298,12 @@ dependencies = [
  "libc",
  "static_assertions",
  "windows",
- "workspace-hack",
 ]
 
 [[package]]
 name = "fidget-mesh"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d69e5b061d296f0eadec87045a64c208da2209e1f43565684db2c2761bcb1017"
+source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
 dependencies = [
  "arrayvec",
  "fidget-core",
@@ -318,7 +311,6 @@ dependencies = [
  "ordered-float",
  "rayon",
  "static_assertions",
- "workspace-hack",
 ]
 
 [[package]]
@@ -1187,9 +1179,3 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "workspace-hack"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "beffa227304dbaea3ad6a06ac674f9bc83a3dec3b7f63eeb442de37e7cb6bb01"

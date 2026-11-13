@@ -84,6 +84,15 @@ points (values, or values and gradients) or meshes it (`Octree::build` + `walk_d
 released while Fidget works. Built in a Rust stage of `runtime/Dockerfile` (x86_64 and
 arm64) and in CI (`.github/workflows/runtime.yml`).
 
+Fidget comes from our fork (github.com/Janos95/fidget, branch `tule-0.5.1`: 0.5.1 plus two
+fixes, pinned by rev in `fidget-py/Cargo.toml`). Exact distance fields (`sqrt(max(d, 0)²)`
+inside boxes and cylinders) had NaN gradients at `sqrt(0)`; the mesher took those for sharp
+features and snapped vertices onto edge crossings, so meshes were full of coincident vertices,
+zero-area triangles and folds (an exact box at depth 7: 50k triangles, half degenerate; now
+684). The fork keeps zero derivatives zero through `sqrt` and skips zero gradients in the QEF.
+The same fixes are offered upstream from branch `manifold-fixes`; back to crates.io once a
+release has them. `_clean`'s weld and pair removal stay as a safety net.
+
 Sampled fields (`mesh.to_implicit()`) are not closed-form, so Fidget cannot evaluate them. An
 expression containing one is evaluated by NumPy (the same ops) and meshed by marching cubes
 at the cell size; its history says so. Without the `tule_fidget` wheel (a laptop without
