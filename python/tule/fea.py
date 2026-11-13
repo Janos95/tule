@@ -80,6 +80,7 @@ import numpy as np
 
 from .errors import TuleError
 from .geom import Vec, vec
+from .mesh import MeshFaces
 from .selection import Faces, Selection
 from .shape import Shape
 from .topopt import CORNERS, _face_nodes, _host, _Level, _levels_for, _Multigrid, _prolong, _restrict, backend
@@ -271,7 +272,7 @@ def _faces(part: Shape, spec, what: str) -> Faces:
         except Exception:
             raise TuleError(f"no faces tagged {spec!r} for {what}", op="fea",
                             hint=f"tags on this part: {', '.join(part.tags) or 'none'}; part = part.tag({spec!r}, part.faces...)") from None
-    elif isinstance(spec, Selection):
+    elif isinstance(spec, (Selection, MeshFaces)):
         if spec.kind != "face":
             raise TuleError(f"{what} must be faces, got {spec.kind}s", op="fea")
         sel = part._resolve(spec, "face")
@@ -608,16 +609,35 @@ def moments(shape: Shape, origin, h: float, dims: Sequence[int], sub: int = 3) -
     nx, ny, nz = dims
     m = np.zeros((nx, ny, nz, 3, 3, 3))
     lo, hi = shape.bounds
-    si = IntCurvesFace_ShapeIntersector()
-    si.Load(shape.wrapped, 1e-7)
-    cl = BRepClass3d_SolidClassifier(shape.wrapped)
+    is_mesh = getattr(shape, "kind", None) == "mesh"
+    if not is_mesh:
+        si = IntCurvesFace_ShapeIntersector()
+        si.Load(shape.wrapped, 1e-7)
+        cl = BRepClass3d_SolidClassifier(shape.wrapped)
     z0, z1 = min(lo.z, o[2]) - 1.0, max(hi.z, o[2] + nz * h) + 1.0
     tol = 1e-9 * max(1.0, z1 - z0)
     t, wt = _columns(sub)
     Lt = _lagrange(t) * wt[:, None]  # per axis: the column's weight times the polynomials there
     t = t + 7.3e-4  # rays a hair off the sample points: never along a face at a round coordinate
 
+    def inside_mesh(x, y):
+        """A mesh's inside stretches along the ray: crossings in order, entering where the normal
+        points down the ray (manifold3d's ray cast)."""
+        hits = shape._manifold().ray_cast((x, y, z0), (x, y, z1))
+        out, start = [], None
+        for hh in hits:
+            w = z0 + hh.distance * (z1 - z0)
+            if hh.normal[2] < 0:
+                if start is None:
+                    start = w
+            elif start is not None:
+                out.append((start, w))
+                start = None
+        return out
+
     def inside(x, y):
+        if is_mesh:
+            return inside_mesh(x, y)
         """The ray's inside stretches [(a, b)]."""
         si.Perform(gp_Lin(gp_Pnt(x, y, z0), gp_Dir(0, 0, 1)), 0.0, z1 - z0)
         hits = sorted(((z0 + si.WParameter(n), si.Transition(n)) for n in range(1, si.NbPnt() + 1)), key=lambda e: e[0])
@@ -899,6 +919,16 @@ class Result:
     __repr__ = __str__
 
 
+def _sel_center(sel) -> np.ndarray:
+    """The area-weighted center of a face selection (B-rep faces or a mesh's triangles)."""
+    if isinstance(sel, MeshFaces):
+        return np.array(sel.center)
+    from .selection import face_area, face_center
+
+    w = [face_area(x) for x in sel.items]
+    return sum((np.array(face_center(x)) * a for x, a in zip(sel.items, w)), np.zeros(3)) / max(sum(w), 1e-30)
+
+
 def _conditions(supports, loads, moves=()) -> tuple[dict, list]:
     """The overlay's faces (fixed, loaded) and arrows (forces, moments, moves) for supports and loads."""
     from .selection import face_area, face_center
@@ -912,8 +942,7 @@ def _conditions(supports, loads, moves=()) -> tuple[dict, list]:
         label = f"moved {_vec(d)} mm" + ("" if dirs == "xyz" else f" (held in {dirs})")
         for i in sel.ids:
             faces[i] = {"role": "load", "label": label}
-        w = [face_area(x) for x in sel.items]
-        c = sum((np.array(face_center(x)) * a for x, a in zip(sel.items, w)), np.zeros(3)) / max(sum(w), 1e-30)
+        c = _sel_center(sel)
         if d.length > 0:
             arrows.append({"at": (np.round(c, 6) + 0.0).tolist(), "dir": list(d.normalized()), "label": label})
     for load, sel in loads:
@@ -921,8 +950,7 @@ def _conditions(supports, loads, moves=()) -> tuple[dict, list]:
         for i in sel.ids:
             both = faces.get(i, {}).get("role") == "load"  # a second load on the same faces
             faces[i] = {"role": "load", "label": f"{faces[i]['label']}; {label}" if both else label}
-        w = [face_area(x) for x in sel.items]
-        c = sum((np.array(face_center(x)) * a for x, a in zip(sel.items, w)), np.zeros(3)) / max(sum(w), 1e-30)
+        c = _sel_center(sel)
         c = np.round(np.array(load.at) if load.at is not None else c, 6) + 0.0  # 0, not -8.9e-16
         if load.kind in ("force", "bearing"):
             arrows.append({"at": c.tolist(), "dir": list(load.value.normalized()), "label": label})
@@ -1207,8 +1235,15 @@ def _inputs(part, material, fixed, loads, accel, op: str, need_fixed: bool = Tru
     """Checks an analysis' inputs: (part, Material, [(Faces, dirs)], [(Load, Faces)], accel Vec or None).
     ``fea.move`` entries (in ``fixed`` or ``loads``) go to ``moves`` as (Faces, dirs, d) when it is a
     list, else they are refused."""
-    if not isinstance(part, Shape):
-        raise TuleError(f"{op} needs a Shape, got {type(part).__name__}", op="fea")
+    kind = getattr(part, "kind", None)
+    if kind == "implicit":
+        raise TuleError(f"{op} needs a surface: an implicit has none until it is meshed", op="fea",
+                        hint="fea.static(body.to_mesh(cell=0.4), …): the cell is the detail you analyse; tag the mesh's "
+                             "faces (or tag the body with predicates before meshing)")
+    if not isinstance(part, Shape) and kind != "mesh":
+        raise TuleError(f"{op} needs a Shape or a Mesh, got {type(part).__name__}", op="fea")
+    if kind == "mesh" and not part.is_closed:
+        raise TuleError(f"{op}: the mesh is not closed", op="fea", hint="mesh.is_closed; meshes of B-reps and implicits are")
     mat = _material(material)
     sups = [] if fixed is None else list(fixed) if isinstance(fixed, (list, tuple)) else [fixed]
     if isinstance(loads, (Load, Move)):
@@ -1224,6 +1259,14 @@ def _inputs(part, material, fixed, loads, accel, op: str, need_fixed: bool = Tru
         s = s if isinstance(s, Support) else Support(s)
         supports.append((_faces(part, s.faces, "fixed"), s.dirs))
     loads = [ld for ld in loads if not isinstance(ld, Move)]
+    if kind == "mesh":  # regions split so every selection is whole regions (ids are exact)
+        masks = [sel.mask for sel, _ in supports] + [m[0].mask for m in (moves or [])]
+        masks += [_faces(part, ld.faces, ld.kind).mask for ld in loads if isinstance(ld, Load)]
+        for mk in masks:
+            part = part._split(mk)
+        supports = [(part._resolve(sel), d) for sel, d in supports]
+        if moves:
+            moves[:] = [(part._resolve(sel), d, v) for sel, d, v in moves]
     if not supports and not moves and need_fixed:
         raise TuleError("nothing holds the part", op="fea", hint='fixed="mount" (a tag) or fixed=part.faces["mount"]'
                         + ("; a free part whose loads balance (a link pulled at both ends): balanced=True"
@@ -1268,6 +1311,10 @@ def _choose_mesh(part, mesh: str, voxel, size, dofs: int, say, need_tet: str | N
     if size:
         return "tet"
     if not tetfe.find_gmsh():
+        return "voxel"
+    if getattr(part, "kind", "brep") == "mesh" and part.triangles > 20_000:
+        say(f"fea: a {part.triangles}-triangle mesh: voxels (gmsh tetrahedra on that many triangles take minutes; "
+            "mesh=\"tet\" asks for them, or .simplify(tol) first)")
         return "voxel"
     th = tetfe.thickness(part)
     h = (part.volume / (dofs / 4.5)) ** (1 / 3)  # about the voxel the budget gives
@@ -1465,7 +1512,7 @@ def _static(part, material, *, fixed, loads, accel, balanced, voxel, dofs, mesh,
         from .selection import face_area
 
         held = _face_nodes(part, sel, Vec(*origin), h, node_active) & node_active
-        grip = float(np.minimum(nodevol[held], 4).sum()) / (4 * sum(face_area(x) for x in sel.items) / h ** 2)
+        grip = float(np.minimum(nodevol[held], 4).sum()) / (4 * sel.area / h ** 2)
         if held.sum() < 4 or grip < 0.35:
             warnings.append(f"the fixed faces {list(sel.ids)} are poorly resolved by the voxels ({int(held.sum())} nodes, "
                             f"holding {100 * grip:.0f} % of a face's worth of material): results can jump between voxel "

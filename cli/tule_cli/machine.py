@@ -134,6 +134,16 @@ def load_items(path: str) -> list[tuple[str, object]]:
     ext = os.path.splitext(path)[1].lower()
     base = os.path.splitext(os.path.basename(path))[0]
     if ext == ".stl":
+        with open(path, "rb") as fh:
+            head = fh.read(80)
+        if head.startswith(b"tule mesh") or os.path.exists(path + ".json"):  # a tule.Mesh: its regions, name, color, tags
+            try:
+                from tule import Mesh
+            except ImportError:
+                Mesh = None
+            if Mesh is not None:
+                m = Mesh.load(path)
+                return [(m.name or base, m)]
         return [(base, read_stl(path))]
     if ext == ".glb":
         return read_glb(path, base)
@@ -186,6 +196,24 @@ def items_to_parts(items, color: str | None = None, name: str | None = None):
 
     out = []
     for nm, item in items:
+        if getattr(item, "kind", None) == "implicit":
+            raise CliError(f"{name or nm} is an implicit: mesh it first (body.to_mesh(cell=0.4))")
+        if getattr(item, "kind", None) == "mesh":  # a tule.Mesh: smooth within regions, lines at borders and creases
+            from tule.mesh import shaded
+
+            if not item.triangles:
+                print(f"tule: {name or nm} is an empty mesh; not drawn", file=sys.stderr)
+                continue
+            P, T, keep = item._weld_arrays()
+            F = item.face_ids[keep].astype(np.int64)
+            V, N, I = shaded(P, T, F)
+            tags: dict[int, list[str]] = {}
+            for t, regions in item._tags.items():
+                for i in regions:
+                    tags.setdefault(int(i), []).append(t)
+            out.append(Part(name or nm, V.astype(np.float32), N.astype(np.float32), I, F,
+                            _rgb(color or item.color), tags, int(F.max()) + 1 if len(F) else 0))
+            continue
         if isinstance(item, np.ndarray):  # STL
             out.append(Part(name or nm, item.reshape(-1, 3), smooth_normals(item),
                             np.arange(3 * len(item)).reshape(-1, 3), np.zeros(len(item), np.int64),

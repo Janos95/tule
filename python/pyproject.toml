@@ -15,6 +15,7 @@ dependencies = [
   "scipy>=1.10",
   "scikit-image>=0.21",
   "python-fcl>=0.7",  # clearance: mesh distances
+  "manifold3d>=3.1",  # mesh Booleans, ray casts (tule.Mesh)
 ]
 
 [project.optional-dependencies]

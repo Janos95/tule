@@ -105,7 +105,63 @@ def thickness(part, per_face: int = 12, reach: float | None = None) -> Thickness
     return th
 
 
+def _ray_hits(man, origins: np.ndarray, dirs: np.ndarray, reach: float):
+    """For each ray, the distances to every surface crossing within ``reach`` and the crossing's
+    direction (+1 leaving the material, -1 entering), from manifold3d's ray cast."""
+    out = []
+    for o, d in zip(origins, dirs):
+        hits = man.ray_cast(tuple(float(v) for v in o), tuple(float(v) for v in o + d * reach))
+        out.append([(h.distance * reach, 1.0 if np.dot(h.normal, d) > 0 else -1.0) for h in hits])
+    return out
+
+
+def _thickness_mesh(part, per_face: int, reach: float | None) -> Thickness:
+    """``thickness`` for a tule.Mesh: per region, rays from its largest triangles (manifold3d's BVH)."""
+    t0 = time.time()
+    lo, hi = part.bounds
+    size = float((hi - lo).length)
+    reach = float(reach or 0.2 * size)
+    man = part._manifold()
+    P, T, keep = part._weld_arrays()
+    fid = part.face_ids[keep].astype(np.int64)
+    a, b, c = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+    cr = np.cross(b - a, c - a)
+    area = 0.5 * np.linalg.norm(cr, axis=1)
+    nrm = cr / np.maximum(2 * area, 1e-300)[:, None]
+    cen = (a + b + c) / 3
+    nf = part.regions
+    wall, gap = np.full(nf, np.inf), np.full(nf, np.inf)
+    wall_at = [(0.0, 0.0, 0.0)] * nf
+    gap_at = [(0.0, 0.0, 0.0)] * nf
+    eps = 1e-6 * size
+    per = 4 * per_face  # a region of a mesh can be a whole organic part: more rays than a B-rep face
+    order = np.lexsort((-area, fid))
+    starts = np.searchsorted(fid[order], np.arange(nf + 1))
+    for f in range(nf):
+        tris = order[starts[f]:starts[f + 1]]
+        tris = tris[area[tris] > 1e-12 * size * size]
+        if len(tris) > per:  # spread over the region, largest triangles first within each stride
+            tris = tris[np.linspace(0, len(tris) - 1, per).astype(int)]
+        if not len(tris):
+            continue
+        for sign, out, at in ((-1.0, wall, wall_at), (1.0, gap, gap_at)):
+            d = sign * nrm[tris]
+            hits = _ray_hits(man, cen[tris] + d * eps, d, reach)
+            # the first crossing past a hair: a wall ends where the ray leaves, a gap where it enters
+            best = [next((w + eps for w, kind in h if w > 10 * eps and kind == (1.0 if sign < 0 else -1.0)), math.inf)
+                    for h in hits]
+            k = int(np.argsort(best)[(len(best) - 1) // 2])
+            out[f] = best[k]
+            at[f] = tuple(float(x) for x in cen[tris[k]])
+    iw = int(np.argmin(wall)) if nf else 0
+    ig = int(np.argmin(gap)) if nf else 0
+    return Thickness(wall, gap, float(wall[iw]) if nf else math.inf, wall_at[iw] if nf else (0.0, 0.0, 0.0),
+                     float(gap[ig]) if nf else math.inf, gap_at[ig] if nf else (0.0, 0.0, 0.0), time.time() - t0)
+
+
 def _thickness(part, per_face: int, reach: float | None) -> Thickness:
+    if getattr(part, "kind", None) == "mesh":
+        return _thickness_mesh(part, per_face, reach)
     from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
     from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
 
@@ -211,8 +267,9 @@ def _face_boxes(part) -> np.ndarray:
     return np.array(out).reshape(-1, 6)
 
 
-def _parse_msh(path: str):
-    """Nodes, tets (type 11) and triangles (type 9) with their surface tags from an ASCII MSH 2.2 file."""
+def _parse_msh(path: str, tri_nodes: int = 6):
+    """Nodes, tets (type 11) and triangles (type 9; type 2 with ``tri_nodes=3``) with their surface
+    tags from an ASCII MSH 2.2 file."""
     with open(path) as fh:
         text = fh.read()
 
@@ -235,11 +292,11 @@ def _parse_msh(path: str):
         typ, nt = v[1], int(v[2])
         if typ == "11":
             tets.append(v[3 + nt:])
-        elif typ == "9":
+        elif typ == ("9" if tri_nodes == 6 else "2"):
             tris.append(v[3 + nt:])
             tags.append(v[4] if nt > 1 else v[3])
     tets = where[np.array(tets, dtype=np.int64).reshape(-1, 10)]
-    tris = where[np.array(tris, dtype=np.int64).reshape(-1, 6)]
+    tris = where[np.array(tris, dtype=np.int64).reshape(-1, tri_nodes)]
     return xyz, tets, tris, np.array(tags, dtype=np.int64)
 
 
@@ -291,6 +348,8 @@ def _flat(m: TetMesh) -> bool:
 
 
 def _mesh(part, size, face_sizes, smallest, curvature, threads, timeout, keep, balls) -> TetMesh:
+    if getattr(part, "kind", None) == "mesh":
+        return _mesh_of_mesh(part, size, face_sizes, smallest, curvature, threads, timeout, keep, balls)
     gmsh = find_gmsh()
     if not gmsh:
         raise TuleError("tetrahedral meshing needs gmsh", op="fea",
@@ -395,6 +454,133 @@ def _mesh(part, size, face_sizes, smallest, curvature, threads, timeout, keep, b
     if any(remap[t] != t - 1 for t in remap):
         notes.append("gmsh numbered the faces differently; matched them by bounding box")
     # drop nodes no element uses (gmsh keeps the B-rep's vertices of dropped bits)
+    used = np.zeros(len(xyz), dtype=bool)
+    used[tets.reshape(-1)] = True
+    used[tris.reshape(-1)] = True
+    if not used.all():
+        new = np.cumsum(used) - 1
+        xyz, tets, tris = xyz[used], new[tets], new[tris]
+    m = TetMesh(xyz, tets, tris, tri_face, float(size), smallest, time.time() - t0, notes)
+    _orient(m)
+    return m
+
+
+def _write_regions_stl(part, path: str):
+    """An ASCII STL with one solid per region, so gmsh keeps the regions' borders."""
+    P, T, keep = part._weld_arrays()
+    F = part.face_ids[keep]
+    lines = []
+    for r in np.unique(F):
+        tri = P[T[F == r]]
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        n /= np.maximum(np.linalg.norm(n, axis=1), 1e-300)[:, None]
+        lines.append(f"solid r{r}")
+        for k in range(len(tri)):
+            lines.append("facet normal %.6g %.6g %.6g\nouter loop" % tuple(n[k]))
+            lines += ["vertex %.9g %.9g %.9g" % tuple(p) for p in tri[k]]
+            lines.append("endloop\nendfacet")
+        lines.append(f"endsolid r{r}")
+    with open(path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def _run_gmsh(work: str, lines: list, timeout: float):
+    gmsh = find_gmsh()
+    with open(os.path.join(work, "part.geo"), "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    msh = os.path.join(work, "part.msh")
+    if os.path.exists(msh):
+        os.remove(msh)
+    try:
+        r = subprocess.run([gmsh, "-nopopup", "-0", "part.geo"], cwd=work, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise TuleError(f"gmsh took over {timeout:.0f} s", op="fea", hint="a coarser size=, or fewer dofs; or mesh=\"voxel\"") from None
+    out = r.stdout + r.stderr
+    ok = os.path.exists(msh) and "Done writing 'part.msh'" in out and not re.search(r"Error\s*:\s*(HXT|.*failed|.*No elements)", out)
+    return ok, out
+
+
+def _mesh_of_mesh(part, size, face_sizes, smallest, curvature, threads, timeout, keep, balls) -> TetMesh:
+    """Tetrahedra for a tule.Mesh: gmsh classifies the triangles into patches along the regions'
+    borders and creases, gives them surfaces (``CreateGeometry``) and meshes those at the sizes asked
+    for. A mesh it cannot reparametrize (a dual-contoured lattice) is meshed on its own triangles
+    instead. Each surface triangle gets the region of the nearest triangle of the part."""
+    from scipy.spatial import cKDTree
+
+    if not find_gmsh():
+        raise TuleError("tetrahedral meshing needs gmsh", op="fea",
+                        hint="apt-get install -y --no-install-recommends gmsh (it is in the Tule image); or mesh=\"voxel\"")
+    t0 = time.time()
+    smallest = float(smallest or size / 50)
+    face_sizes = {int(k): max(float(v), smallest) for k, v in (face_sizes or {}).items() if v < size}
+    work = keep or tempfile.mkdtemp(prefix="tule-fea-")
+    P, T, kept = part._weld_arrays()
+    F = part.face_ids[kept].astype(np.int64)
+    tree = cKDTree(P[T].mean(1))
+    notes = []
+
+    def region_of(xyz, tris, tags):
+        """Per surface triangle: the region most of its gmsh surface lies on (by nearest triangles)."""
+        _, near = tree.query(xyz[tris[:, :3]].mean(1))
+        reg = F[near]
+        out = reg.copy()
+        for t in np.unique(tags):
+            sel = tags == t
+            out[sel] = np.bincount(reg[sel]).argmax()
+        return out
+
+    head = ["General.Terminal = 1;", 'Merge "part.stl";']
+    common = [f"Mesh.MeshSizeMax = {size:.6g};", f"Mesh.MeshSizeMin = {smallest:.6g};",
+              f"Mesh.MeshSizeFromCurvature = {int(curvature)};", "Mesh.ElementOrder = 2;", "Mesh.HighOrderOptimize = 0;",
+              *QUALITY, f"General.NumThreads = {int(threads)};", "Mesh.MshFileVersion = 2.2;"]
+    classify = ["ClassifySurfaces{40 * Pi / 180, 1, 1, Pi};", "CreateGeometry;"]
+    tail = ["ss[] = Surface{:};", "Surface Loop(1) = {ss[]};", "Volume(1) = {1};", "Physical Volume(1) = {1};",
+            "For i In {0:#ss[]-1}", "  Physical Surface(ss[i]) = {ss[i]};", "EndFor"]
+    try:
+        _write_regions_stl(part, os.path.join(work, "part.stl"))
+        fields = []
+        if face_sizes:  # which classified surface is which region: a quick surface mesh first
+            ok, out = _run_gmsh(work, head + classify + tail + [f"Mesh.MeshSizeMax = {size:.6g};", "Mesh.MshFileVersion = 2.2;",
+                                                                "Mesh 2;", 'Save "part.msh";'], timeout)
+            if ok:
+                xyz, _, tris, tags = _parse_msh(os.path.join(work, "part.msh"), tri_nodes=3)
+                reg = region_of(xyz, tris, tags)
+                by_size: dict[float, list[int]] = {}
+                for t in np.unique(tags):
+                    r = int(np.bincount(reg[tags == t]).argmax())
+                    if r in face_sizes:
+                        by_size.setdefault(round(face_sizes[r], 4), []).append(int(t))
+                for n, (h, surfs) in enumerate(sorted(by_size.items()), start=1):
+                    fields += [f"Field[{n}] = Constant;", f"Field[{n}].VIn = {h:.6g};", f"Field[{n}].VOut = {1e22:g};",
+                               f"Field[{n}].SurfacesList = {{{', '.join(map(str, surfs))}}};", f"Field[{n}].IncludeBoundary = 1;"]
+        nf = sum(1 for ln in fields if ln.endswith("= Constant;"))
+        for (cx, cy, cz), r, h in balls:
+            nf += 1
+            fields += [f"Field[{nf}] = Ball;", f"Field[{nf}].Radius = {r:.6g};", f"Field[{nf}].Thickness = {r:.6g};",
+                       f"Field[{nf}].VIn = {max(h, smallest):.6g};", f"Field[{nf}].VOut = {size:.6g};",
+                       f"Field[{nf}].XCenter = {cx:.9g};", f"Field[{nf}].YCenter = {cy:.9g};", f"Field[{nf}].ZCenter = {cz:.9g};"]
+        if nf:
+            fields += [f"Field[{nf + 1}] = Min;", f"Field[{nf + 1}].FieldsList = {{{', '.join(map(str, range(1, nf + 1)))}}};",
+                       f"Background Field = {nf + 1};"]
+        ok, out = _run_gmsh(work, head + classify + tail + common + fields + ["Mesh 3;", 'Save "part.msh";'], timeout)
+        if not ok:  # on the part's own triangles
+            notes.append("gmsh could not give the mesh's patches surfaces; meshed on the part's own triangles "
+                         "(element sizes follow them)")
+            ok, out = _run_gmsh(work, head + ["Coherence Mesh;"] + tail + common + ["Mesh 3;", 'Save "part.msh";'], timeout)
+        if not ok:
+            errs = [ln for ln in out.splitlines() if "Error" in ln][-3:]
+            raise TuleError("gmsh could not mesh the part: " + ("; ".join(errs) or out[-400:]), op="fea",
+                            hint="mesh=\"voxel\" (needs only the inside, no surface quality); or mesh.simplify(…) "
+                                 "or a coarser cell for an implicit's mesh")
+        xyz, tets, tris, tags = _parse_msh(os.path.join(work, "part.msh"))
+    finally:
+        if not keep:
+            shutil.rmtree(work, ignore_errors=True)
+    if not len(tets):
+        raise TuleError("gmsh made no tetrahedra", op="fea", hint="is the mesh closed? mesh.is_closed; or mesh=\"voxel\"")
+    tets = tets[:, _edge_order(xyz, tets, TET_EDGES)]
+    tris = tris[:, _edge_order(xyz, tris, TRI_EDGES)]
+    tri_face = region_of(xyz, tris, tags)
     used = np.zeros(len(xyz), dtype=bool)
     used[tets.reshape(-1)] = True
     used[tris.reshape(-1)] = True
@@ -1022,7 +1208,7 @@ def plan(part, thick: Thickness | None, dofs: int, size: float | None = None, la
     if thick is None:
         return H, {}, notes
     wall = np.asarray(thick.wall)
-    areas = np.array([face_area(f) for f in part.faces.items])
+    areas = part._region_areas() if getattr(part, "kind", None) == "mesh" else np.array([face_area(f) for f in part.faces.items])
     faces: dict[int, float] = {}
     for _ in range(6):
         thin = np.flatnonzero(np.isfinite(wall) & (wall < layers * H * 0.9))

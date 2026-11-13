@@ -11,6 +11,7 @@ on:
     paths:
       - "runtime/**"
       - "python/**"
+      - "fidget-py/**"
       - "cli/**"
       - "skills/**"
       - "templates/**"
@@ -41,6 +42,8 @@ jobs:
             cli/pyproject.toml
       - name: System libraries (OCP loads libGL.so.1; gmsh meshes fea's tetrahedra)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1 libx11-6 gmsh
+      - name: Fidget bindings (tule.sdf's engine; maturin builds them with the runner's Rust)
+        run: rustup toolchain install 1.95.0 --profile minimal && rustup default 1.95.0 && pip install ./fidget-py
       - run: pip install -e "python[test]" -e "cli[test]"
       - run: python -m pytest -q python cli
 
@@ -56,17 +59,17 @@ jobs:
         include:
           - flavor: cpu
             dockerfile: runtime/Dockerfile
-            check: import OCP, tule, tule_cli, PIL, shutil; assert shutil.which('gmsh')
+            check: import OCP, tule, tule_cli, tule_fidget, manifold3d, PIL, shutil; assert shutil.which('gmsh')
             runner: ubuntu-24.04
             platform: linux/amd64
           - flavor: cpu-arm64
             dockerfile: runtime/Dockerfile
-            check: import OCP, tule, tule_cli, PIL, shutil; assert shutil.which('gmsh')
+            check: import OCP, tule, tule_cli, tule_fidget, manifold3d, PIL, shutil; assert shutil.which('gmsh')
             runner: ubuntu-24.04-arm
             platform: linux/arm64
           - flavor: cuda
             dockerfile: runtime/Dockerfile.cuda
-            check: import OCP, tule, tule_cli, PIL, scipy, cupy, shutil; assert shutil.which('gmsh')
+            check: import OCP, tule, tule_cli, tule_fidget, manifold3d, PIL, scipy, cupy, shutil; assert shutil.which('gmsh')
             runner: ubuntu-24.04
             platform: linux/amd64
     env:

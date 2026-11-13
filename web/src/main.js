@@ -485,6 +485,8 @@ function prepare(list) {
     }));
     // an overlay's field grids and surface meshes: drawn on the part, not a view
     const field = new Set((Array.isArray(o.meta?.fields) ? o.meta.fields : []).flatMap((x) => [x?.file, ...Object.values(x?.mesh && typeof x.mesh === "object" ? x.mesh : {})]));
+    // a tule.Mesh's name, color and tags beside its STL (x.stl.json): read with the mesh, not a view
+    for (const f of all) if (/\.stl\.json$/i.test(f.file) && all.some((g) => g.file === f.file.slice(0, -5))) field.add(f.file);
     return { ...o, root, id: root === "outputs" ? o.name : `${root}/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry" && !field.has(f.file)), fields: all.filter((f) => field.has(f.file)) };
   });
 }

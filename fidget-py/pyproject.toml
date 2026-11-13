@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "tule-fidget"
+version = "0.1.0"
+description = "Minimal Python bindings to Fidget (JIT evaluation and meshing of implicit surfaces) for tule.sdf"
+requires-python = ">=3.10"
+license = { text = "MPL-2.0" }
+
+[tool.maturin]
+features = []

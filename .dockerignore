@@ -13,3 +13,5 @@ scratch
 python/build
 python/dist
 qa
+fidget-py/target
+fidget-py/dist

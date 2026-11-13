@@ -33,6 +33,7 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 | `setup` | logging in, keys, starting machines, GPUs, SSH |
 | `loop` | the working loop: edit, build, look, iterate; project layout; saving and merging; long jobs |
 | `modeling` | writing geometry with `tule` (values, operators, selections, tags) |
+| `bodies` | meshes (STL, scans, topopt) and implicit bodies (lattices, blends) as parts; converting between kinds |
 | `outputs` | what the viewer shows and how to write it |
 | `drawings` | shop drawings: dimensions, tolerances, callouts, sections; exploded assembly drawings, parts lists |
 | `sheetmetal` | bent sheet parts: flanges, flat patterns, bend tables, DXF for the laser |

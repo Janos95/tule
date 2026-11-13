@@ -2,6 +2,17 @@
 # the repository root (control/wrangler.jsonc sets it).
 #   docker build --platform linux/amd64 -f runtime/Dockerfile -t tule-runtime .
 # runtime/Dockerfile.cuda is the same stack on CUDA for GPU machines; keep them in step.
+# tule_fidget: tule.sdf's engine, Python bindings to Fidget (implicit surfaces: JIT evaluation and
+# meshing; fidget-py/), built as an abi3 wheel for this platform (x86_64 or arm64) in a stage of its own
+FROM python:3.13-slim AS fidget
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0 \
+ && /root/.cargo/bin/rustc --version \
+ && pip install --no-cache-dir maturin==1.16.0
+COPY fidget-py /src/fidget-py
+RUN cd /src/fidget-py && PATH=/root/.cargo/bin:$PATH maturin build --release --locked -o /wheels
+
 FROM python:3.13-slim
 
 RUN apt-get update \
@@ -27,9 +38,12 @@ RUN printf 'user-agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 
 # OCP links against VTK libraries at import (vtk is its only heavy dependency)
 COPY runtime/prune_vtk.sh /tmp/prune_vtk.sh
-RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh lxml networkx pymupdf ezdxf python-fcl vl-convert-python==1.9.0.post1 \
+RUN pip install --no-cache-dir cadquery-ocp==8.0.1.1.0 numpy scipy scikit-image pillow==11.3.0 websockets==17.4 pytest requests beautifulsoup4 trimesh lxml networkx pymupdf ezdxf python-fcl vl-convert-python==1.9.0.post1 manifold3d==3.5.5 \
  && sh /tmp/prune_vtk.sh && rm /tmp/prune_vtk.sh
 
+# tule.sdf's Fidget bindings, from the stage above
+RUN --mount=from=fidget,source=/wheels,target=/tmp/wheels pip install --no-cache-dir /tmp/wheels/*.whl \
+ && python -c 'import tule_fidget'
 RUN --mount=type=bind,source=python,target=/tmp/py,rw pip install --no-cache-dir --no-deps /tmp/py \
  && echo /workspace > "$(python -c 'import site; print(site.getsitepackages()[0])')/workspace.pth"
 # (any script imports the project's lib/, as under tule build; appended, so it shadows nothing)

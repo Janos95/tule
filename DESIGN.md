@@ -929,6 +929,9 @@ and a rendered document (`.page-doc`: content, its own reading scale).
 
 ## Python API (`tule`)
 
+Parts come in three kinds — B-rep `Shape`, triangle `Mesh`, implicit `sdf.Implicit` — with
+explicit conversions between them: see `DESIGN-bodies.md`.
+
 A thin, opinionated layer over OCP (no build123d dependency; build123d's
 source and tests are a reference for OCCT edge cases).
 
