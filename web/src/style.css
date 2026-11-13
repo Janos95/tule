@@ -928,3 +928,12 @@ button.link:hover, a.link:hover { text-decoration-color: var(--link); }
 .foot-save:disabled { color: var(--faint); cursor: default; text-decoration: none; }
 
 select.field-pick { height: 24px; max-width: 100%; font: inherit; font-size: var(--fs-small); padding: 0 6px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+
+/* an empty project: what to ask the agent, and how to connect one */
+.empty-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 32px)); padding: 18px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 6px 24px rgb(0 0 0 / 6%); z-index: 2; }
+.empty-hint h2 { margin: 0 0 8px; font-size: var(--fs-title); font-weight: 600; }
+.empty-hint p { margin: 0 0 8px; line-height: 1.5; }
+.empty-hint p:last-child { margin-bottom: 0; }
+.empty-hint q { color: var(--text); }
+.empty-hint .muted { color: var(--muted); font-size: var(--fs-small); }
+.empty-hint a { color: var(--link); }

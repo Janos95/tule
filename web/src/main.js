@@ -630,6 +630,13 @@ function renderList() {
   const outs = all.filter((o) => o.root === "outputs");
   partsTree.remove(); // shown only under the entry that has parts (below)
   $("outputs-empty").hidden = outs.length > 0;
+  // an empty project in its owner's view: nothing happens here without an agent, so say how to bring one
+  const hint = $("empty-hint");
+  hint.hidden = !!shareToken || all.length > 0;
+  if (!hint.hidden) {
+    hint.querySelector(".pname").textContent = project;
+    hint.querySelector(".add-claude").href = `https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tule&connectorUrl=${encodeURIComponent(`${location.origin}/mcp`)}`;
+  }
   fill($("output-list"), outs);
   for (const root of ["work", "inputs"]) {
     const list = all.filter((o) => o.root === root);

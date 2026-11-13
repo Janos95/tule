@@ -41,6 +41,11 @@
         <div id="stage">
           <div id="viewer"></div>
           <div id="page" class="page"></div>
+          <div id="empty-hint" class="empty-hint" hidden>
+            <h2>Your agent builds this project</h2>
+            <p>Ask it, for example: <q>In my Tule project <b class="pname"></b>, design a 3D-printable wall hook for my bike.</q> The parts show up here while it works.</p>
+            <p class="muted">No agent connected yet? <a class="add-claude" target="_blank" rel="noopener">Add Tule to Claude</a>, or see the <a href="/">projects page</a> for ChatGPT, Claude Code, Codex and Cursor.</p>
+          </div>
           <div id="hud" class="hud">
             <button id="annotate-toggle" class="toggle" title="Annotate: draw and pick faces for your agent" aria-controls="annotate" aria-expanded="false">
               <svg viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8H2.5v-3zM9 4l3 3" /></svg><span class="label">Annotate</span>
