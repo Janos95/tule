@@ -93,6 +93,11 @@ def edge_table(T: np.ndarray):
     return s[first], tris, count
 
 
+def _degenerate(A: np.ndarray) -> np.ndarray:
+    """Triangles of next to no area (a mesher's slivers), whose normals mean nothing."""
+    return A < 1e-4 * float(np.median(A)) if len(A) else np.zeros(0, bool)
+
+
 def crease_regions(P: np.ndarray, T: np.ndarray, angle: float = CREASE) -> np.ndarray:
     """A region id per triangle: triangles joined across edges flatter than ``angle``."""
     from scipy.sparse import coo_matrix
@@ -100,11 +105,12 @@ def crease_regions(P: np.ndarray, T: np.ndarray, angle: float = CREASE) -> np.nd
 
     if not len(T):
         return np.zeros(0, np.uint32)
-    N, _ = tri_normals(P, T)
+    N, A0 = tri_normals(P, T)
     _, tris, count = edge_table(T)
     inner = (count == 2)
     a, b = tris[inner, 0], tris[inner, 1]
-    smooth = np.einsum("ij,ij->i", N[a], N[b]) > math.cos(math.radians(angle))
+    deg = _degenerate(A0)  # a zero-area sliver's normal is noise: never a crease beside one
+    smooth = (np.einsum("ij,ij->i", N[a], N[b]) > math.cos(math.radians(angle))) | deg[a] | deg[b]
     a, b = a[smooth], b[smooth]
     g = coo_matrix((np.ones(len(a)), (a, b)), shape=(len(T), len(T)))
     _, lab = connected_components(g, directed=False)
@@ -144,12 +150,14 @@ def feature_edges(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, ang
     """Line segments (k, 2, 3) worth drawing: region borders, creases over ``angle``, open edges."""
     if not len(T):
         return np.zeros((0, 2, 3))
-    N, _ = tri_normals(P, T)
+    N, A = tri_normals(P, T)
     e, tris, count = edge_table(T)
     a, b = tris[:, 0], tris[:, 1]
     draw = count != 2
     two = ~draw
-    draw[two] = np.einsum("ij,ij->i", N[a[two]], N[b[two]]) < math.cos(math.radians(angle))
+    deg = _degenerate(A)
+    draw[two] = (np.einsum("ij,ij->i", N[a[two]], N[b[two]]) < math.cos(math.radians(angle))) \
+        & ~deg[a[two]] & ~deg[b[two]]
     if F is not None:
         F = np.asarray(F)
         draw[two] |= F[a[two]] != F[b[two]]

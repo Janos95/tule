@@ -179,6 +179,38 @@ def mix(a, b, t) -> Expr:
     return _e(a) + (_e(b) - _e(a)) * t
 
 
+def interp(t, xs, ys) -> Expr:
+    """A station table as a field: piecewise linear in ``t`` through ``(xs[i], ys[i])``, constant
+    beyond the ends (as ``numpy.interp``). ``r = sdf.interp(x, [0, 2, 9], [0, 0.4, 0.86])``."""
+    xs, ys = [float(v) for v in xs], [float(v) for v in ys]
+    if len(xs) != len(ys) or len(xs) < 1 or any(b <= a for a, b in zip(xs, xs[1:])):
+        raise TuleError("interp(t, xs, ys): xs increasing, as many ys", op="sdf.interp",
+                        hint="sdf.interp(x, [0, 2, 9], [0, 0.4, 0.86])")
+    out = _e(ys[0])
+    for (ta, va), (tb, vb) in zip(zip(xs, ys), zip(xs[1:], ys[1:])):
+        if vb != va:
+            out = out + (vb - va) / (tb - ta) * clamp(t - ta, 0, tb - ta)
+    return out
+
+
+def smooth_min(a, b, k: float) -> Expr:
+    """Union of two fields with a fillet of about ``k`` (polynomial smooth minimum)."""
+    if k <= 0:
+        return min(a, b)
+    h = max(k - abs(_e(a) - b), 0) / k
+    return min(a, b) - h * h * (k / 4)
+
+
+def smooth_max(a, b, k: float) -> Expr:
+    """Intersection of two fields, its edge rounded by about ``k``."""
+    return -smooth_min(-_e(a), -_e(b), k)
+
+
+def slab(t, lo: float, hi: float) -> Expr:
+    """``lo <= t <= hi`` as a field (a station range: ``sdf.slab(x, 3.6, 13.0)``)."""
+    return max(lo - _e(t), _e(t) - hi)
+
+
 def length(*v) -> Expr:
     out = None
     for c in v:
@@ -700,32 +732,52 @@ class Implicit:
 
 
 def _clean(e: Expr, m, cell: float):
-    """Dual contouring's leftovers fixed: zero-area triangles collapsed (manifold3d), and the small
+    """Dual contouring's leftovers fixed: coincident vertices welded, and the small
     flaps folded back over their neighbours (normal against the field's gradient) untangled: their
     vertices moved to their neighbours' mean, then back onto the surface along the gradient."""
     from scipy.sparse import coo_matrix
 
-    from .mesh import Mesh, tri_normals
+    from .mesh import Mesh, tri_normals, weld
 
-    try:
-        m = m.simplify(1e-6 * m._diag())
-    except TuleError:
-        return m  # not a closed manifold: leave it as Fidget made it
-    P, T = m._P.copy(), m._T
+    # coincident vertices merged and the triangles that collapse with them dropped (not manifold3d's
+    # simplify: even at a tiny tolerance it collapses edges along a thin rim and bites into it)
+    P, T, _ = weld(m._P, m._T, 1e-6 * cell)
+    P = P.copy()
+    # back-to-back triangle pairs on the same three vertices (a flat flap hanging off an edge): they
+    # enclose nothing, so dropping both leaves the solid as it was
+    key = np.sort(T, axis=1)
+    _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    T = T[cnt[inv.reshape(-1)] == 1]
+    used, T = np.unique(T, return_inverse=True)
+    P, T = P[used], T.reshape(-1, 3)
     n = len(P)
     i = np.concatenate([T[:, 0], T[:, 1], T[:, 2], T[:, 1], T[:, 2], T[:, 0]])
     j = np.concatenate([T[:, 1], T[:, 2], T[:, 0], T[:, 0], T[:, 1], T[:, 2]])
     W = coo_matrix((np.ones(len(i)), (i, j)), shape=(n, n)).tocsr()
     W.data[:] = 1.0
     deg = np.maximum(np.asarray(W.sum(1)).ravel(), 1)
+    def unit(g):
+        return g / np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
+
     for _ in range(8):
         N, A = tri_normals(P, T)
         g = evaluate(e, P[T].mean(1), grad=True)[:, 1:]
-        bad = (np.einsum("ij,ij->i", N, g) < 0) & (A > 1e-12 * cell * cell)
+        gv = unit(evaluate(e, P, grad=True)[:, 1:])
+        # a vertex within a cell of a sharp edge (a chine, a trailing edge) stays where Fidget put it:
+        # the gradient turns there, and averaging would round the edge off. Six probes a cell away.
+        smooth = np.ones(len(P), bool)
+        for d in np.vstack([np.eye(3), -np.eye(3)]) * cell:
+            smooth &= np.einsum("ij,ij->i", gv, unit(evaluate(e, P + d, grad=True)[:, 1:])) > 0.9
+        flat = smooth[T].all(1)
+        # a flap: its normal against the gradient at its middle and at every corner (inside a knife
+        # edge the middle alone can read the far side)
+        against = (np.einsum("ij,ij->i", N, g) < 0) & (np.einsum("tkj,tj->tk", gv[T], N) < 0).all(1)
+        bad = against & (A > 1e-12 * cell * cell) & flat
         if not bad.any():
             break
         v = np.unique(T[bad])
         v = np.unique(np.concatenate([v, W[v].indices]))  # and their neighbours
+        v = v[smooth[v]]
         P[v] = (W[v] @ P) / deg[v][:, None]
         for _ in range(3):  # Newton steps back to the surface, at most half a cell each
             fg = evaluate(e, P[v], grad=True)

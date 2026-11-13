@@ -32,6 +32,8 @@ print(m)
 outputs.part("blended", m)
 ```
 
+Drawing a part from stations, as a loft drawing does: `sdf.field(lambda x, y, z: ..., bounds)` with `sdf.interp(x, stations, values)` (a station table), `sdf.smooth_min(a, b, r)` / `smooth_max` (fillets on raw fields), `sdf.slab(x, lo, hi)` (a station range). `examples/blackbird.py` builds an SR-71 that way: 26 parts, one assembly.
+
 Primitives: `box`, `cube`, `sphere`, `cylinder`, `capsule`, `torus`, `plane`; `gyroid`, `schwarz_p`, `diamond(period, thickness)` (without thickness: a solid half, e.g. `.sheet(t)` later). Math on `sdf.x, y, z`: `+ - * /`, `abs`, `sdf.sin/cos/sqrt/exp/min/max/clamp/mix/length`. Booleans `| - &`, or `.union/.difference/.intersection(..., smooth=r)`. `.offset(d)`, `.shell(t)`, `.sheet(t)`, `.clip(lo, hi)`, `.at`, `.rotate`, `.scale`, `.mirror`. `.value(points)`, `.contains(points)`.
 
 ## Meshes
