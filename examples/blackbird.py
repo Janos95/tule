@@ -81,7 +81,7 @@ def nearest(t, stations):
     return sdf.min(*[abs(t - s) for s in stations]) if len(stations) > 1 else abs(t - stations[0])
 
 
-NOSE_BAY = (6.8, 8.7, 0.36)      # FS from, to; half-width
+NOSE_BAY = (8.05, 9.95, 0.36)      # FS from, to; half-width
 RECEPTACLE = (10.55, 11.55, 0.13, 0.11)   # FS from, to; half-width; depth below the spine
 
 
@@ -252,7 +252,7 @@ def fin_piece(side, lo, hi):
 
 # ---------------------------------------------------------------- landing gear (down) and receptacle
 GROUND = -1.93               # WL of the runway: 5.64 m from it to the fin tips
-NOSE_FS, MAIN_FS, MAIN_BL = 7.75, 20.55, 2.5
+NOSE_FS, MAIN_FS, MAIN_BL = 9.0, 20.55, 2.5   # 11.5 m wheelbase, 5 m track
 NOSE_TYRE, MAIN_TYRE = (0.34, 0.085), (0.42, 0.095)   # radius, half-width
 
 
@@ -283,7 +283,7 @@ def union_of(*fs):
 def nose_gear_parts():
     r, hw = NOSE_TYRE
     zc = GROUND + r
-    top = FUSE_WL - 0.8 * 0.80 * pwl(NOSE_FS, FUSE_R) if False else -0.35
+    top = FUSE_WL - 0.25 - 0.03              # into the bay roof
     leg = union_of(lambda x, y, z: _capsule(x, y, z, (NOSE_FS - 0.12, 0, top), (NOSE_FS, 0, zc), 0.075),
                    lambda x, y, z: _capsule(x, y, z, (NOSE_FS, -0.2, zc), (NOSE_FS, 0.2, zc), 0.05),
                    lambda x, y, z: _capsule(x, y, z, (NOSE_FS + 0.55, 0, top), (NOSE_FS, 0, zc + 0.55), 0.04))
@@ -298,9 +298,9 @@ def nose_gear_parts():
 def main_gear_parts(side):
     r, hw = MAIN_TYRE
     yc, zc = side * MAIN_BL, GROUND + r
-    leg = union_of(lambda x, y, z: _capsule(x, y, z, (MAIN_FS - 0.15, yc, -0.05), (MAIN_FS, yc, zc), 0.11),
+    leg = union_of(lambda x, y, z: _capsule(x, y, z, (MAIN_FS - 0.15, yc, 0.0), (MAIN_FS, yc, zc), 0.11),
                    lambda x, y, z: _capsule(x, y, z, (MAIN_FS, yc - 0.3, zc), (MAIN_FS, yc + 0.3, zc), 0.07),
-                   lambda x, y, z: _capsule(x, y, z, (MAIN_FS - 1.1, yc, -0.05), (MAIN_FS, yc, zc + 0.75), 0.06))
+                   lambda x, y, z: _capsule(x, y, z, (MAIN_FS - 1.1, yc, 0.0), (MAIN_FS, yc, zc + 0.75), 0.06))
     tyres = union_of(*[tyre(MAIN_FS, yc + d, zc, r, hw) for d in (-0.23, 0.0, 0.23)])
     hubs = union_of(*[hub(MAIN_FS, yc + d, zc, r, hw) for d in (-0.23, 0.0, 0.23)])
     lo, hi, b0, b1 = MAIN_BAY
@@ -411,7 +411,7 @@ leg, tyres, hubs, doors = nose_gear_parts()
 gb = ((NOSE_FS - 0.8, -0.6, GROUND - 0.05), (NOSE_FS + 0.8, 0.6, 0.0))
 parts += [make("nose gear leg", leg, gb, STRUT, cell=0.008), make("nose tyres", tyres, gb, TYRE, cell=0.01),
           make("nose wheel hubs", hubs, gb, HUB, cell=0.01),
-          make("nose gear doors", doors, ((6.6, -0.5, -1.0), (8.9, 0.5, 0.0)), SKIN, cell=0.008)]
+          make("nose gear doors", doors, ((NOSE_BAY[0] - 0.2, -0.5, -1.0), (NOSE_BAY[1] + 0.2, 0.5, 0.0)), SKIN, cell=0.008)]
 for side, tag in ((1, "left"), (-1, "right")):
     leg, tyres, hubs, door = main_gear_parts(side)
     yb = (side * (MAIN_BL - 0.9), side * (MAIN_BL + 0.9))
@@ -424,13 +424,13 @@ parts.append(make("refuelling receptacle", receptacle, ((10.4, -0.2, 0.6), (11.7
 # markings
 for side, tag in ((1, "left"), (-1, "right")):
     lettering = text("U.S. AIR FORCE", 0.27, align="center", bold=True)
-    parts.append(decal(f"lettering {tag}", fuselage, ((9.2, min(0, side * 1.0), 0.2), (12.9, max(0, side * 1.0), 0.8)),
-                       on_side(lettering, side, 11.05, 0.36), WHITE))
-    blue, white, red = insignia()
+    parts.append(decal(f"lettering {tag}", fuselage, ((8.0, min(0, side * 1.0), 0.2), (11.4, max(0, side * 1.0), 0.9)),
+                       on_side(lettering, side, 9.4, 0.45), WHITE))
+    blue, white, red = insignia(0.32)
     nb = ((19.2, min(side * 4.45, side * 6.0), -0.6), (21.9, max(side * 4.45, side * 6.0), 1.2))
     nac = nacelle_piece(side, 16.0, 29.8)
     for prof, col, out, nm in ((blue, BLUE, 0.012, "blue"), (white, WHITE, 0.018, "white"), (red, RED, 0.024, "red")):
-        parts.append(decal(f"insignia {nm} {tag}", nac, nb, on_side(prof, side, 20.55, 0.45, (4.45, 6.2)), col, out=out))
+        parts.append(decal(f"insignia {nm} {tag}", nac, nb, on_side(prof, side, 20.55, 0.72, (4.45, 6.2)), col, out=out))
     # the serial on the outboard face of the rudder, drawn in the fin's own frame, then canted with it
     serial = text("17972", 0.36, align="center", bold=True)
     rud = lambda x, y, z: sdf.max(fin_local(x, y, z), between(z, RUDDER_Z, FIN_H + 0.1))
