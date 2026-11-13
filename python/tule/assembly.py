@@ -35,8 +35,11 @@ class Assembly:
             else:
                 flat.append(c)
         for c in flat:
-            if not isinstance(c, (Shape, Assembly)):
-                raise TypeError(f"assembly children must be Shapes or Assemblies, got {type(c).__name__}")
+            if getattr(c, "kind", None) == "implicit":
+                raise TuleError("an implicit has no surface to show or export yet", op="assembly",
+                                hint="mesh it at the resolution you want: Assembly(base, lattice.to_mesh(cell=0.4), …)")
+            if not (isinstance(c, (Shape, Assembly)) or getattr(c, "kind", None) == "mesh"):
+                raise TypeError(f"assembly children must be Shapes, Meshes or Assemblies, got {type(c).__name__}")
         self.children: list[Child] = flat
         self.name = name
 
@@ -110,7 +113,11 @@ class Assembly:
         c = TopoDS_Compound()
         b = BRep_Builder()
         b.MakeCompound(c)
-        for _, p in self.parts():
+        for path, p in self.parts():
+            if not hasattr(p, "wrapped"):
+                raise TuleError(f"{path} is a mesh: no B-rep compound of this assembly", op="assembly",
+                                hint="meshes join B-rep parts in assemblies, outputs and plates, but not in B-rep "
+                                     "operations; part.to_mesh() the B-rep parts to combine them")
             b.Add(c, p.wrapped)
         return Shape(c, name=self.name)
 
@@ -129,7 +136,8 @@ class Assembly:
 
     @property
     def size(self):
-        return self.to_shape().size
+        lo, hi = self.bounds
+        return hi - lo
 
     @property
     def volume(self) -> float:

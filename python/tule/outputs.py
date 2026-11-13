@@ -105,6 +105,7 @@ import numpy as np
 
 from .assembly import Assembly
 from .errors import TuleError
+from .mesh import MeshFaces
 from .io import Mesh, export_gltf, export_step, export_stl, write_atomic, write_stl_mesh
 from .selection import Selection
 from .shape import Shape
@@ -205,6 +206,11 @@ def folder(name: str | None = None) -> "Folder":
 
 
 def _not_empty(item, what: str):
+    if getattr(item, "kind", None) == "implicit":
+        raise TuleError(f"{item.name or what} is an implicit: it has no surface until it is meshed", op="outputs",
+                        hint="choose the resolution: body.to_mesh(cell=0.4) (smaller cells, finer detail)")
+    if isinstance(item, Mesh) and not item.triangles:
+        raise TuleError(f"{item.name or what} is an empty mesh", op="outputs", hint="check mesh.triangles after each step")
     if isinstance(item, Shape) and not item.faces:
         raise TuleError(f"{item.name or what} is empty (no faces)", op="outputs",
                         hint="the operation that made it left nothing: check len(part.faces) after each step")
@@ -213,13 +219,19 @@ def _not_empty(item, what: str):
 def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
     _not_empty(item, os.path.basename(path))
     ext = os.path.splitext(path)[1].lower()
+    if isinstance(item, Mesh):  # PLY: regions, name, color and tags in one file
+        if ext == ".stl":
+            return item.export_stl(path)
+        if ext != ".ply":
+            raise TuleError(f"a mesh is written as PLY, not {ext}", op="outputs", hint="leave out fmt= for meshes")
+        return item.export_ply(path)
     if ext in (".step", ".stp"):
         return export_step(item, path)
     if ext == ".stl":
         return export_stl(item, path)
     if ext in (".glb", ".gltf"):
         return export_gltf(item, path if ext == ".glb" else path[:-5] + ".glb")
-    raise TuleError(f"unsupported format {ext!r}", op="outputs", hint="use step, stl or glb")
+    raise TuleError(f"unsupported format {ext!r}", op="outputs", hint="use step, stl or glb (ply for meshes)")
 
 
 def _write_json(folder: str, data: dict) -> str:
@@ -254,22 +266,15 @@ def _mesh_arrays(mesh) -> tuple:
 def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: str | None = None) -> str:
     """Write one part: ``outputs/<name>/<name>.<fmt>``. Returns the folder.
 
-    ``shape`` is a Shape (STEP unless ``fmt`` says otherwise) or a ``Mesh``
-    (always STL), such as a topology optimization result.
+    ``shape`` is a Shape (STEP unless ``fmt`` says otherwise) or a ``Mesh`` (STL, keeping its
+    regions, name, color and tags). An implicit is meshed first: ``body.to_mesh(cell=0.4)``.
     """
     if isinstance(shape, Assembly):
         raise TuleError(f"{name}: this is an assembly", op="outputs", hint=f'use outputs.assembly("{name}", …)')
     _not_empty(shape, name)  # before the folder: an empty part leaves no empty output behind
     folder = _folder(name)
     if isinstance(shape, Mesh):
-        fname = f"{_slug(name.rsplit('/', 1)[-1])}.stl"
-        P, I = _mesh_arrays(shape)
-        write_stl_mesh(os.path.join(folder, fname), P, I)
-        meta: dict[str, Any] = {"kind": "part", "file": fname}
-        if title:
-            meta["title"] = title
-        _write_json(folder, meta)
-        return folder
+        fmt = "stl" if fmt == "stl" else "ply"  # a mesh is PLY (regions, name, color, tags in one file)
     fmt = "glb" if fmt == "gltf" else fmt or "step"  # a binary glTF is written either way
     fname = f"{_slug(name.rsplit('/', 1)[-1])}.{fmt}"  # named after the output, so its path stays put when the label changes
     _write_geometry(os.path.join(folder, fname), shape)
@@ -288,7 +293,9 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
     """Write an assembly: one file per part plus ``output.json`` listing names and colors."""
     asm = item if isinstance(item, Assembly) else Assembly(*item, name=name)
     for path, shp in asm.parts():
-        if not shp.faces:
+        if isinstance(shp, Mesh):
+            _not_empty(shp, path)
+        elif not shp.faces:
             raise TuleError(f"{path} is empty (no faces)", op="outputs",
                             hint="the operation that made it left nothing: check len(part.faces) after each step")
     fmt = "glb" if fmt == "gltf" else fmt
@@ -297,10 +304,10 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
     used = set()
     for path, shp in asm.parts():
         base = _slug(path.split("/", 1)[-1].replace("/", "_"))
-        fname = f"{base}.{fmt}"
+        fname = f"{base}.{'ply' if isinstance(shp, Mesh) else fmt}"
         i = 2
         while fname in used:
-            fname = f"{base}_{i}.{fmt}"
+            fname = f"{base}_{i}.{'ply' if isinstance(shp, Mesh) else fmt}"
             i += 1
         used.add(fname)
         _write_geometry(os.path.join(folder, fname), shp)
@@ -388,9 +395,10 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
             copies = total[n]
             if n not in files:
                 base_name = _slug(n.replace("/", "_"))
-                fname, i = f"{base_name}.step", 2
+                ext = "ply" if isinstance(shp, Mesh) else "step"
+                fname, i = f"{base_name}.{ext}", 2
                 while fname in used:
-                    fname, i = f"{base_name}_{i}.step", i + 1
+                    fname, i = f"{base_name}_{i}.{ext}", i + 1
                 used.add(fname)
                 _write_geometry(os.path.join(folder, fname), shp)
                 files[n] = (fname, shp.bounds[0])
@@ -585,10 +593,10 @@ def _face_entries(shape: Shape, data) -> dict:
     if not isinstance(data, dict):
         raise TuleError("faces is a {face id: value} dict", op="overlay",
                         hint='{part.faces["load"]: {"role": "load", "label": "500 N"}, 12: 1.8}')
-    nfaces = len(shape.faces)
+    nfaces = shape.regions if isinstance(shape, Mesh) else len(shape.faces)
     faces: dict[str, dict] = {}
     for k, v in data.items():
-        if isinstance(k, Selection):  # part.faces["load"]: every face of the selection
+        if isinstance(k, (Selection, MeshFaces)):  # part.faces["load"]: every face of the selection
             if k.kind != "face":
                 raise TuleError(f"overlay keys must be faces, got {k.kind}s", op="overlay")
             for i in shape._resolve(k, "face").ids:
@@ -726,8 +734,9 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     (``tule.fea`` writes both kinds). ``fact``: the result in a few words, for the outputs list.
     The format is described at the top of this module. Returns the folder.
     """
-    if not isinstance(part, Shape):
-        raise TuleError(f"an overlay needs a Shape, got {type(part).__name__}", op="overlay")
+    _not_empty(part, name)
+    if not isinstance(part, (Shape, Mesh)):
+        raise TuleError(f"an overlay needs a Shape or a Mesh, got {type(part).__name__}", op="overlay")
     if scale is not None:
         if not isinstance(scale, dict) or set(scale) - {"label", "unit", "min", "max"}:
             raise TuleError("scale is a dict with label, unit, min and max (all optional)", op="overlay",
@@ -737,7 +746,7 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     entries = _face_entries(part, faces)
     grids = _fields(fields)
     folder = _folder(name)
-    fname = f"{_slug(name.rsplit('/', 1)[-1])}.step"
+    fname = f"{_slug(name.rsplit('/', 1)[-1])}.{'ply' if isinstance(part, Mesh) else 'step'}"
     _write_geometry(os.path.join(folder, fname), part)
     for _, own in grids:
         for fn, arr in own.items():

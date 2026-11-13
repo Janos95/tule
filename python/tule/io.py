@@ -11,8 +11,9 @@ import math
 import os
 import struct
 import sys
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterable, Union
+
+from dataclasses import dataclass
 
 import numpy as np
 from OCP.APIHeaderSection import APIHeaderSection_MakeHeader
@@ -42,6 +43,7 @@ except ImportError:  # OCP 8
 
 from ._occ import ShapeSet, kind_of, static, subshapes
 from .errors import TuleError
+from .mesh import Mesh, weld
 
 
 def _quiet_occt():
@@ -240,6 +242,12 @@ def export_step(item: Union["Shape", "Assembly"], path: str) -> str:
     """Write a shape or assembly to STEP with part names, colors and tags."""
     from .assembly import Assembly
 
+    parts = item.parts() if isinstance(item, Assembly) else [("", item)]
+    for pname, part in parts:
+        if not hasattr(part, "wrapped"):  # a mesh or an implicit: STEP holds exact surfaces
+            raise TuleError(f"{pname or part.name or 'the part'} is a {getattr(part, 'kind', type(part).__name__)}: STEP holds B-reps",
+                            op="export_step", hint="export STL or 3MF (or glb) for meshes; mesh.to_brep() makes a faceted "
+                            "solid of a small mesh")
     doc, st, ct = _new_doc()
     if isinstance(item, Assembly):
         root = st.NewShape()
@@ -408,21 +416,6 @@ def import_step(path: str):
 # ---------------------------------------------------------------- meshes
 
 
-@dataclass
-class Mesh:
-    """A triangle mesh with B-rep face ids per triangle and B-rep edges as polylines."""
-
-    positions: np.ndarray  # (n, 3) float32
-    normals: np.ndarray  # (n, 3) float32
-    indices: np.ndarray  # (m, 3) uint32
-    face_ids: np.ndarray  # (m,) uint32, the B-rep face of each triangle
-    edges: list = field(default_factory=list)  # [(edge_id, (k, 3) float32 polyline)]
-
-    @property
-    def triangles(self) -> int:
-        return int(len(self.indices))
-
-
 CREASE_COS = math.cos(math.radians(35))  # faceted shapes and meshes: an edge where the surface turns more than this
 
 
@@ -440,6 +433,17 @@ def tessellate(item: Union["Shape", "Assembly"], tolerance: float = 0.05, angula
     """Triangulate a shape; normals come from the surfaces, ids match ``shape.faces``/``shape.edges``."""
     from .assembly import Assembly
 
+    if isinstance(item, Mesh):  # a mesh is its own tessellation
+        return item
+    if getattr(item, "kind", None) == "implicit":
+        raise TuleError("an implicit has no triangles until it is meshed", op="tessellate", hint="body.to_mesh(cell=0.5)")
+    if isinstance(item, Assembly) and any(isinstance(p, Mesh) for _, p in item.parts()):
+        ms = [tessellate(p, tolerance, angular) for _, p in item.parts()]
+        base = np.cumsum([0] + [len(m.positions) for m in ms])
+        fbase = np.cumsum([0] + [int(m.face_ids.max()) + 1 if m.triangles else 0 for m in ms])
+        return Mesh(np.concatenate([m.positions for m in ms]), np.concatenate([m.normals for m in ms]),
+                    np.concatenate([m.indices.astype(np.int64) + b for m, b in zip(ms, base)]),
+                    np.concatenate([m.face_ids.astype(np.int64) + f for m, f in zip(ms, fbase)]), [])
     shape = item.to_shape() if isinstance(item, Assembly) else item
     s = shape.wrapped
     _mesh(s, tolerance, angular)
@@ -510,7 +514,37 @@ def tessellate(item: Union["Shape", "Assembly"], tolerance: float = 0.05, angula
         np.asarray(idx, dtype=np.uint32).reshape(-1, 3),
         np.asarray(fid, dtype=np.uint32),
         edges,
+        name=shape.name, color=shape.color,
+        history=(f"tessellated from B-rep within {tolerance:g} mm",),
     )
+
+
+def brep_to_mesh(shape: "Shape", tolerance: float = 0.05, angular: float = 0.2) -> Mesh:
+    """A B-rep as a welded, closed mesh: one region per B-rep face (ids as ``shape.faces``), its
+    face tags, name and color. Loses the exact surfaces: chords within ``tolerance`` mm."""
+    m = tessellate(shape, tolerance, angular)
+    if not m.triangles:
+        raise TuleError(f"{shape.name or 'the part'} has no surface to mesh", op="to_mesh", hint="is it empty? len(part.faces)")
+    P = m.positions.astype(np.float64)
+    size = float(np.linalg.norm(P.max(0) - P.min(0))) or 1.0
+    best = None
+    # the same B-rep edge point, once per face: within a hair, or within the solid's own tolerance (as _closed_mesh)
+    for w in sorted({1e-7 * size, 1e-3, min(0.05, max(1e-3, 2 * _max_tolerance(shape)))}):
+        V, T, keep = weld(P, m.indices, w)
+        best = (V, T, keep)
+        cand = Mesh(V, T, face_ids=m.face_ids[keep], welded=True)
+        if cand.is_closed:
+            break
+    V, T, keep = best
+    tags = {}
+    for t in shape.tags:
+        try:
+            ids = shape.faces[t].ids
+        except Exception:  # noqa: BLE001 - an edge-only tag has no faces to carry
+            continue
+        tags[t] = ids
+    return Mesh(V, T, face_ids=m.face_ids[keep], tags=tags, name=shape.name, color=shape.color, welded=True,
+                history=(f"tessellated from B-rep within {tolerance:g} mm (exact surfaces dropped; faces kept as regions)",))
 
 
 def write_stl_mesh(path: str, positions, indices) -> str:
@@ -746,6 +780,15 @@ def _closed_mesh(shape: "Shape", name: str, tolerance: float, angular: float, or
     from scipy.sparse.csgraph import connected_components
     from scipy.spatial import cKDTree
 
+    if isinstance(shape, Mesh):  # already a mesh: it must be closed as it is
+        P, T, _ = shape._weld_arrays()
+        if not shape.is_closed:
+            raise TuleError(f"part {name!r} is not a closed mesh", op="export_3mf",
+                            hint="check mesh.is_closed; meshes of B-reps (part.to_mesh) and implicits (body.to_mesh) are")
+        t = P[T]
+        if np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() < 0:
+            T = T[:, ::-1]
+        return P, T
     m = tessellate(shape, tolerance, angular)
     if not m.triangles:
         raise TuleError(f"part {name!r} has no surface to print", op="export_3mf", hint="pass solids")
@@ -800,14 +843,17 @@ def _plate_items(items) -> list[tuple[str, "Shape", dict, int]]:
     from .assembly import Assembly
     from .shape import Shape
 
-    if isinstance(items, (Shape, Assembly)) or (isinstance(items, tuple) and items and isinstance(items[0], str)):
+    if isinstance(items, (Shape, Assembly, Mesh)) or (isinstance(items, tuple) and items and isinstance(items[0], str)):
         items = [items]
     out = []
 
     def add(name, shape, settings=None):
-        if not isinstance(shape, Shape):
+        if getattr(shape, "kind", None) == "implicit":
+            raise TuleError("an implicit has no surface to print yet", op="export_3mf",
+                            hint="mesh it at the resolution you want: body.to_mesh(cell=0.3)")
+        if not isinstance(shape, (Shape, Mesh)):
             raise TuleError(f"cannot print a {type(shape).__name__}", op="export_3mf",
-                            hint="pass Shapes, (name, shape) pairs, (name, shape, settings) or an Assembly")
+                            hint="pass Shapes or Meshes, (name, shape) pairs, (name, shape, settings) or an Assembly")
         own = _print_settings(settings, f"settings of {name or shape.name or 'a part'!r}")
         if own.get("down") is not None:
             shape = _lay_down(shape, own.pop("down"), name or shape.name or "a part")
@@ -817,7 +863,7 @@ def _plate_items(items) -> list[tuple[str, "Shape", dict, int]]:
         if isinstance(it, Assembly):
             for path, p in it.parts():
                 add(path.rsplit("/", 1)[-1], p)
-        elif isinstance(it, Shape):
+        elif isinstance(it, (Shape, Mesh)) or getattr(it, "kind", None) == "implicit":
             add(None, it)
         elif isinstance(it, (tuple, list)) and 2 <= len(it) <= 3 and isinstance(it[0], str):
             add(*it)
@@ -841,17 +887,29 @@ def _lay_down(shape, down, name: str):
 
     from .selection import Selection, face_area, face_normal
 
+    if isinstance(shape, Mesh):
+        try:
+            sel = shape.face(down) if isinstance(down, int) else shape.faces[down] if isinstance(down, str) else shape._resolve(down)
+        except TuleError as e:
+            raise TuleError(f"{name}'s down={down!r}: {e}", op="export_3mf",
+                            hint="a tag of the mesh (mesh.tags), a region id, or mesh.faces...") from None
+        if not sel:
+            raise TuleError(f"{name}'s down={down!r} selects nothing", op="export_3mf")
+        n = np.array(tuple(sel.largest().normal_mean), dtype=float)
+    else:
+        n = None
     try:
-        faces = (shape.face(down) if isinstance(down, int) else shape.faces[down] if isinstance(down, str)
+        faces = None if n is not None else (shape.face(down) if isinstance(down, int) else shape.faces[down] if isinstance(down, str)
                  else shape._resolve(down, "face") if isinstance(down, Selection) else None)
     except TuleError as e:
         raise TuleError(f"{name}'s down={down!r}: {e.message if hasattr(e, 'message') else e}", op="export_3mf",
                         hint="a tag of the part (part.tags), a face id, or part.faces...") from None
-    flat = faces.planar().items if faces is not None else []
-    if not flat:
-        raise TuleError(f"{name}'s down={down!r} names no flat face to lay on the bed", op="export_3mf",
-                        hint="a tag of a planar face, a face id, or part.faces.normal((0, 0, -1))")
-    n = np.array(tuple(face_normal(max(flat, key=face_area))), dtype=float)
+    if n is None:
+        flat = faces.planar().items if faces is not None else []
+        if not flat:
+            raise TuleError(f"{name}'s down={down!r} names no flat face to lay on the bed", op="export_3mf",
+                            hint="a tag of a planar face, a face id, or part.faces.normal((0, 0, -1))")
+        n = np.array(tuple(face_normal(max(flat, key=face_area))), dtype=float)
     want = np.array([0.0, 0.0, -1.0])
     axis = np.cross(n, want)
     angle = float(np.degrees(np.arccos(np.clip(n @ want, -1, 1))))
@@ -950,7 +1008,11 @@ def _spaced(parts, boxes, every, which):
         for j in range(i + 1, len(parts)):
             (c, d) = boxes[j]
             if b.x + need > c.x and d.x + need > a.x and b.y + need > c.y and d.y + need > a.y:
-                gap = parts[i][1].at(0, 0, -a.z).distance(parts[j][1].at(0, 0, -c.z))
+                pi, pj = parts[i][1], parts[j][1]
+                if isinstance(pi, Mesh) or isinstance(pj, Mesh):  # the boxes' gap (meshes: no exact distance)
+                    gap = max(c.x - b.x, a.x - d.x, c.y - b.y, a.y - d.y, 0.0)
+                else:
+                    gap = pi.at(0, 0, -a.z).distance(pj.at(0, 0, -c.z))
                 if gap < need - 1e-6:
                     near.append((gap, i, j))
     if not near:

@@ -74,7 +74,7 @@ ETC = "/etc/tule"
 TEMPLATE = "/opt/tule/template"
 BOOT_LOG = "/var/log/tule-boot.log"
 SSHD_PORT = 22
-GEOMETRY = (".step", ".stp", ".stl")
+GEOMETRY = (".step", ".stp", ".stl", ".ply", ".obj")
 STARTED = int(time.time() * 1000)
 
 
@@ -407,20 +407,27 @@ def encode_mesh(path: str) -> bytes:
         return [start, len(b)]
 
     parts = []
-    if path.lower().endswith(".stl"):
-        tri = read_stl(path)
-        n = len(tri)
-        e1, e2 = tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
-        nor = np.cross(e1, e2)
-        nor /= np.maximum(np.linalg.norm(nor, axis=1, keepdims=True), 1e-20)
+    if path.lower().endswith((".stl", ".ply", ".obj")):
+        # welded, normals smooth within regions and split at creases; lines only at region borders and
+        # creases over 35° (a traced or implicit part never shows every triangle edge). A PLY tule wrote
+        # keeps its regions (face ids), name, color and tags.
+        from tule.mesh import Mesh, feature_edges, shaded
+
+        m = Mesh.load(path)
+        P, T, keep = m._weld_arrays()
+        F = m.face_ids[keep].astype(np.uint32)
+        V, N, I = shaded(P, T, F)
+        E = feature_edges(P, T, F).reshape(-1, 3)
         parts.append({
-            "name": os.path.splitext(os.path.basename(path))[0],
-            "color": None,
-            "tags": {},
-            "positions": put(tri.reshape(-1, 3).astype(np.float32)),
-            "normals": put(np.repeat(nor, 3, axis=0).astype(np.float32)),
-            "indices": put(np.arange(3 * n, dtype=np.uint32)),
-            "faceIds": put(np.zeros(n, dtype=np.uint32)),
+            "name": m.name or os.path.splitext(os.path.basename(path))[0],
+            "color": m.color,
+            "tags": {t: sorted(int(i) for i in r) for t, r in m._tags.items()},
+            "positions": put(V.astype(np.float32)),
+            "normals": put(N.astype(np.float32)),
+            "indices": put(I.astype(np.uint32).reshape(-1)),
+            "faceIds": put(F),
+            "edges": put(E.astype(np.float32)),
+            "edgeIds": put(np.zeros(len(E) // 2, np.uint32)),
         })
     else:
         from tule import Assembly, import_step, tessellate
@@ -546,21 +553,6 @@ def _faces_ok(shp, tag) -> bool:
         return bool(shp.faces[tag].items)
     except Exception:
         return False
-
-
-def read_stl(path: str):
-    """(n, 3, 3) float32 triangles from a binary or ASCII STL."""
-    import numpy as np
-
-    with open(path, "rb") as f:
-        data = f.read()
-    if len(data) >= 84:
-        n = struct.unpack_from("<I", data, 80)[0]
-        if 84 + 50 * n == len(data):
-            rec = np.frombuffer(data, dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]), count=n, offset=84)
-            return rec["v"].astype(np.float32)
-    pts = [list(map(float, line.split()[1:4])) for line in data.decode(errors="replace").splitlines() if line.strip().startswith("vertex")]
-    return np.asarray(pts, dtype=np.float32).reshape(-1, 3, 3)
 
 
 # ---------------------------------------------------------------- sshd

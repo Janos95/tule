@@ -1222,7 +1222,7 @@ const extras = (o) => o.docs.filter((f) => f.type === "file" || sheetSvg(o, f));
 const sheetSvg = (o, f) => /\.svg$/i.test(f.file) && o.docs.some((d) => d.type === "pdf" && base(d.file) === base(f.file).replace(/-\d+$/, ""));
 
 // a file to print (3MF, STL) first: it is what most people come for
-const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.stl$/i.test(f.file) ? 1 : 2);
+const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.(stl|ply|obj)$/i.test(f.file) ? 1 : 2);
 /** The Download button offers the shown output's geometry files, or the file shown. */
 function offerDownload(list) {
   const next = [...list].sort((a, b) => printable(a) - printable(b));

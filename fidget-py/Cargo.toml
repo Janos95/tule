@@ -1,0 +1,29 @@
+[package]
+name = "tule-fidget"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+description = "Minimal Python bindings to Fidget (implicit surfaces: JIT evaluation and meshing) for tule.sdf"
+publish = false
+
+[lib]
+name = "tule_fidget"
+crate-type = ["cdylib"]
+
+[dependencies]
+fidget = { version = "=0.5.1", default-features = false, features = ["jit", "mesh"] }
+nalgebra = "0.35"
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+# Fidget 0.5.1 plus our fixes for NaN gradients at sqrt(0) (exact distance fields meshed with
+# coincident vertices, zero-area triangles and folds) and NaN vertices from zero gradients.
+# Offered upstream from the fork's manifold-fixes branch; back to crates.io once released.
+[patch.crates-io]
+fidget = { git = "https://github.com/Janos95/fidget", rev = "72da0be108137cb33bed632896516bd651a607d3" }
+fidget-core = { git = "https://github.com/Janos95/fidget", rev = "72da0be108137cb33bed632896516bd651a607d3" }
+fidget-jit = { git = "https://github.com/Janos95/fidget", rev = "72da0be108137cb33bed632896516bd651a607d3" }
+fidget-mesh = { git = "https://github.com/Janos95/fidget", rev = "72da0be108137cb33bed632896516bd651a607d3" }

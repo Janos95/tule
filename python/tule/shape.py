@@ -136,8 +136,10 @@ def _move_bounds(lohi, t: gp_Trsf, cache: dict):
 
 
 class Shape:
-    """An immutable solid (or compound) with tags, provenance and metadata."""
+    """An immutable solid (or compound) with tags, provenance and metadata: Tule's B-rep kind
+    (``kind == "brep"``; the others are ``tule.Mesh`` and ``tule.Implicit``)."""
 
+    kind = "brep"
     __slots__ = ("_s", "_g", "_alias", "name", "color", "_cache", "_sm")
 
     def __init__(
@@ -825,6 +827,18 @@ class Shape:
 
         return tessellate(self, tolerance, angular)
 
+    def to_mesh(self, tolerance: float = 0.05, angular: float = 0.2):
+        """This part as a closed ``tule.Mesh`` within ``tolerance`` mm (``angular`` radians): one region
+        per face (the same ids), the face tags, name and color. Loses the exact surfaces."""
+        from .io import brep_to_mesh
+
+        return brep_to_mesh(self, tolerance, angular)
+
+    def to_implicit(self, cell: float = 0.5, tolerance: float | None = None):
+        """This part as a signed-distance ``tule.Implicit`` sampled every ``cell`` mm (through a mesh
+        within ``tolerance``, default cell / 4): for smooth blends and offsets with implicits."""
+        return self.to_mesh(tolerance or cell / 4).to_implicit(cell)
+
 
 # ---------------------------------------------------------------- Booleans
 
@@ -841,6 +855,10 @@ def _as_shape(x) -> Shape:
     if isinstance(x, Profile):  # a 2D region: no volume to add or cut
         raise TypeError("expected a Shape, got a Profile (2D); make it a solid first, e.g. prof.extrude(h), "
                         "placed with .at(x, y, z)")
+    if getattr(x, "kind", None) in ("mesh", "implicit"):
+        from .mesh import _mixed
+
+        raise _mixed(Shape, x, "combine")
     raise TypeError(f"expected a Shape, got {type(x).__name__}")
 
 

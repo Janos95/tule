@@ -9,18 +9,25 @@ part  = (plate | boss).fillet(boss.edges["bottom"], 2)
 part -= cylinder(3.2, 50, center=True)
 outputs.part("bracket", part.named("bracket", "#4a8"))
 ```
+
+Three kinds of geometry, equally supported, each with ``.kind``: ``Shape`` (B-rep, exact
+faces), ``Mesh`` (triangles with regions and tags) and ``Implicit`` (``tule.sdf``: signed
+distance fields). Conversions are explicit and say what they lose: ``part.to_mesh(0.05)``,
+``body.to_mesh(cell=0.4)``, ``mesh.to_implicit(cell=0.5)``, ``mesh.to_brep()``.
 """
 
-from . import drawing, fea, outputs, topopt
+from . import drawing, fea, outputs, sdf, topopt
 from .assembly import Assembly
 from .bevel import BevelPair, bevel_gear, bevel_pair
 from .clearance import Clearance, clearance
 from .contact import Touch, touch
 from .errors import TuleError
+from .mesh import Mesh, MeshFaces
 from .gears import CycloidalDrive, GearPair, cycloidal_disc, cycloidal_drive, gear_pair, internal_gear, spur_gear
 from .geom import ORIGIN, Vec, X, Y, Z
-from .io import Mesh, export_3mf, export_gltf, export_step, export_stl, import_step, tessellate
+from .io import export_3mf, export_gltf, export_step, export_stl, import_step, tessellate
 from .primitives import box, cone, cube, cylinder, polyhedron, sphere, torus, wedge
+from .sdf import Implicit
 from .profile import Profile, circle, ellipse, polygon, rect, regular_polygon, slot, spline, text
 from .selection import Edges, Faces, Selection, Vertices
 from .shape import Shape, difference, intersection, union
@@ -30,11 +37,11 @@ from .sweeps import extrude, loft, pipe, revolve, sweep
 __version__ = "0.1.0"
 
 __all__ = [
-    "Assembly", "Bend", "BevelPair", "Clearance", "CycloidalDrive", "Edges", "Faces", "GearPair", "Mesh", "ORIGIN",
+    "Assembly", "Bend", "BevelPair", "Clearance", "CycloidalDrive", "Edges", "Faces", "GearPair", "Implicit", "Mesh", "MeshFaces", "ORIGIN",
     "Profile", "Selection", "Shape", "TuleError", "Vec", "Vertices", "X", "Y", "Z", "bevel_gear", "bevel_pair", "box",
     "circle", "clearance", "cone", "cube", "cylinder", "cycloidal_disc", "cycloidal_drive", "difference", "drawing",
     "ellipse", "export_3mf", "export_dxf", "export_gltf", "export_step", "export_stl", "extrude", "fea", "gear_pair",
     "import_step", "internal_gear", "intersection", "loft", "outputs", "pipe", "sweep", "polygon", "polyhedron", "rect",
-    "regular_polygon", "revolve", "SheetMetal", "sheet", "slot", "sphere", "spline", "spur_gear", "tessellate", "text",
+    "regular_polygon", "sdf", "revolve", "SheetMetal", "sheet", "slot", "sphere", "spline", "spur_gear", "tessellate", "text",
     "topopt", "torus", "Touch", "touch", "union", "wedge",
 ]

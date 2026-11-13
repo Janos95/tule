@@ -1,4 +1,4 @@
-// A worker that turns a STEP or STL file into the viewer's mesh message, in the browser: a view-only
+// A worker that turns a STEP, PLY or STL file into the viewer's mesh message, in the browser: a view-only
 // link has no machine to do it. The message is what runtime/tule_agent.py's encode_mesh sends:
 // [u32 header length][JSON header][arrays], per part positions, normals, indices, a B-rep face id per
 // triangle (OpenCascade's face order, as Tule numbers faces) and edge segments where faces meet.
@@ -13,7 +13,8 @@ const ready = () => (occt ??= occtimportjs({ locateFile: (f) => `__OCCT__${f}` }
 
 onmessage = async ({ data: { id, name, bytes } }) => {
   try {
-    const parts = /\.stl$/i.test(name) ? [stl(new Uint8Array(bytes), stem(name))] : await step(new Uint8Array(bytes), stem(name));
+    const b = new Uint8Array(bytes);
+    const parts = /\.stl$/i.test(name) ? [stl(b, stem(name))] : /\.ply$/i.test(name) ? [ply(b, stem(name))] : await step(b, stem(name));
     const buf = encode(parts);
     postMessage({ id, buf }, [buf]);
   } catch (e) {
@@ -54,6 +55,65 @@ function stl(b, name) {
   }
   const indices = Uint32Array.from({ length: pts.length / 3 }, (_, i) => i);
   return { name, color: null, positions: pts, normals: flatNormals(pts, indices), indices, faceIds: new Uint32Array(indices.length / 3), edges: new Float32Array(0) };
+}
+
+// PLY as tule.Mesh writes it (binary little-endian or ASCII; a "region" per face is the face id, and a
+// "comment tule {json}" header line carries name and color); polygons become fans.
+const PLY_SIZE = { char: 1, int8: 1, uchar: 1, uint8: 1, short: 2, int16: 2, ushort: 2, uint16: 2, int: 4, int32: 4, uint: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+
+function ply(b, name) {
+  const headEnd = new TextDecoder("latin1").decode(b.subarray(0, Math.min(b.length, 65536))).indexOf("end_header");
+  if (headEnd < 0) throw new Error("not a PLY file");
+  const lines = new TextDecoder("latin1").decode(b.subarray(0, headEnd)).split(/\r?\n/);
+  let fmt = "ascii", meta = {};
+  const els = [];
+  for (const line of lines) {
+    const w = line.trim().split(/\s+/);
+    if (w[0] === "format") fmt = w[1];
+    else if (w[0] === "comment" && w[1] === "tule") try { meta = JSON.parse(line.slice(line.indexOf("tule") + 4)); } catch { /* not ours */ }
+    else if (w[0] === "element") els.push({ name: w[1], n: +w[2], props: [] });
+    else if (w[0] === "property") els.at(-1).props.push(w[1] === "list" ? { list: true, count: w[2], type: w[3], name: w[4] } : { type: w[1], name: w[2] });
+  }
+  if (fmt === "binary_big_endian") throw new Error("big-endian PLY is not supported");
+  let off = b.indexOf(10, headEnd) + 1;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const tokens = fmt === "ascii" ? new TextDecoder().decode(b.subarray(off)).trim().split(/\s+/) : null;
+  let ti = 0;
+  const read = (type) => {
+    if (tokens) return +tokens[ti++];
+    const t = type, o = off;
+    off += PLY_SIZE[type];
+    if (/^(float|float32)$/.test(t)) return dv.getFloat32(o, true);
+    if (/^(double|float64)$/.test(t)) return dv.getFloat64(o, true);
+    if (/^(uchar|uint8)$/.test(t)) return dv.getUint8(o);
+    if (/^(char|int8)$/.test(t)) return dv.getInt8(o);
+    if (/^(ushort|uint16)$/.test(t)) return dv.getUint16(o, true);
+    if (/^(short|int16)$/.test(t)) return dv.getInt16(o, true);
+    if (/^(uint|uint32)$/.test(t)) return dv.getUint32(o, true);
+    return dv.getInt32(o, true);
+  };
+  let positions = new Float32Array(0);
+  const idx = [], fid = [];
+  for (const el of els) {
+    if (el.name === "vertex") positions = new Float32Array(3 * el.n);
+    for (let i = 0; i < el.n; i++) {
+      let face = null, region = 0;
+      for (const p of el.props) {
+        if (p.list) {
+          const c = read(p.count), v = [];
+          for (let k = 0; k < c; k++) v.push(read(p.type));
+          if (p.name === "vertex_indices" || p.name === "vertex_index") face = v;
+        } else {
+          const v = read(p.type);
+          if (el.name === "vertex" && "xyz".includes(p.name) && p.name.length === 1) positions[3 * i + "xyz".indexOf(p.name)] = v;
+          if (el.name === "face" && p.name === "region") region = v;
+        }
+      }
+      if (face) for (let k = 1; k + 1 < face.length; k++) idx.push(face[0], face[k], face[k + 1]), fid.push(region);
+    }
+  }
+  const indices = Uint32Array.from(idx), faceIds = Uint32Array.from(fid);
+  return { name: meta.name || name, color: meta.color ?? null, positions, normals: flatNormals(positions, indices), indices, faceIds, edges: featureEdges(positions, indices, faceIds) };
 }
 
 const hex = (c) => (Array.isArray(c) ? `#${c.map((x) => Math.round(255 * x).toString(16).padStart(2, "0")).join("")}` : null);
