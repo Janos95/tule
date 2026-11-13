@@ -14,6 +14,7 @@ const ready = () => (occt ??= occtimportjs({ locateFile: (f) => `__OCCT__${f}` }
 onmessage = async ({ data: { id, name, bytes } }) => {
   try {
     const b = new Uint8Array(bytes);
+    if (/\.obj$/i.test(name)) throw new Error("OBJ files show once the project's machine has meshed them");
     const parts = /\.stl$/i.test(name) ? [stl(b, stem(name))] : /\.ply$/i.test(name) ? [ply(b, stem(name))] : await step(b, stem(name));
     const buf = encode(parts);
     postMessage({ id, buf }, [buf]);

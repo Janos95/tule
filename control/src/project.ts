@@ -930,7 +930,7 @@ export class Project extends DurableObject<Env> {
     if (!agent || !this.state.id) return 0;
     let n = 0;
     for (const f of files) {
-      if (!HASH.test(f.hash) || !/\.(step|stp|stl)$/i.test(f.path) || (await this.env.WORKSPACES.head(meshKey(this.state.id, f.hash)))) continue;
+      if (!HASH.test(f.hash) || !/\.(step|stp|stl|ply|obj)$/i.test(f.path) || (await this.env.WORKSPACES.head(meshKey(this.state.id, f.hash)))) continue;
       const grid = this.relay(undefined, 0, "mesh", slot!, f.hash);
       agent.send(JSON.stringify({ t: "mesh", rid: grid, path: f.path, hash: f.hash, v: 2 }));
       n++;

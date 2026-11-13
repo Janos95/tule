@@ -128,7 +128,7 @@ export async function outputs(env: Env, user: User, name: unknown, origin: strin
     viewer: viewerUrl(origin, p.name),
     outputs: list.map((o) => {
       const root = o.root ?? "outputs";
-      const models = o.files.filter((f) => /\.(step|stp|stl)$/i.test(f.file)).length;
+      const models = o.files.filter((f) => /\.(step|stp|stl|ply|obj)$/i.test(f.file)).length;
       const id = root === "outputs" ? o.name : `${root}/${o.name}`; // the viewer's id (web/src/main.js)
       return {
         name: o.name,
