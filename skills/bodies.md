@@ -5,7 +5,7 @@ A part is one of three kinds (`.kind`). Each keeps its own operators; nothing co
 | kind | made by | good for | loses |
 |---|---|---|---|
 | `Shape` "brep" | `box`, `cylinder`, sketches, STEP | exact faces, fillets, drawings, STEP | — |
-| `Mesh` "mesh" | `shape.to_mesh(tol)`, `body.to_mesh(cell)`, `Mesh.load("x.stl")`, topopt | anything you have triangles of; prints | exact surfaces: STL/3MF out, no STEP |
+| `Mesh` "mesh" | `shape.to_mesh(tol)`, `body.to_mesh(cell)`, `Mesh.load("x.ply")`, topopt | anything you have triangles of; prints | exact surfaces: PLY/STL/3MF out, no STEP |
 | `sdf.Implicit` "implicit" | `tule.sdf`: fields, lattices, blends | organic shapes, TPMS lattices, smooth unions, shells | nothing until meshed |
 
 `a | b` of two kinds raises and says which conversion to write. Convert on purpose, once, where it is stated:
@@ -52,7 +52,7 @@ outputs.plate("print", [part])
 ```
 
 - Regions: a B-rep face, or triangles between creases (35°) on a plain mesh. `mesh.faces` selects them: `.top()`, `.bottom()`, `.normal(dir)`, `.within(lo, hi)`, `.nearest(p)`, `.largest(n)`, `.where(lambda c, n: ...)` (triangle centers, normals), `| & -`. A tag cuts regions so it is always whole regions.
-- `Mesh.load("scan.stl")` (STL, OBJ), `Mesh(points, triangles)`; `.export_stl`, `.export_3mf`.
+- `Mesh.load("scan.ply")` (PLY, STL, OBJ), `Mesh(points, triangles)`; `.export_ply` (Tule's mesh format: keeps regions, name, color), `.export_stl` (slicers), `.export_3mf`.
 - `.simplify(tol)`, `.refine(edge)`, `.pieces()`, `.at/.rotate/.scale/.mirror`, `| - &`.
 - The viewer draws only feature edges of a mesh; `outputs.picture`, plates, assemblies take meshes like shapes.
 

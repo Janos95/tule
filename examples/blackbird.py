@@ -6,7 +6,9 @@ parts placed in one assembly with the joint gaps a real airframe has.
 Parts: nose section, forward fuselage (with chines and canopy fairing), aft fuselage, pitot boom,
 canopy glazing, wing (with its fillets into the fuselage and nacelles), inboard and outboard elevons,
 and per side: inlet spike, inlet cowl, nacelle, ejector (slotted tail feathers), afterburner nozzle,
-turbine face, fin base and all-moving rudder.
+turbine face, fin base and all-moving rudder. Landing gear down: nose gear and two main gears with
+tyres, hubs, drag braces and open doors; the refuelling receptacle on the spine. Engraved panel lines;
+markings as decals (B-rep text and insignia profiles, meshed, cut to a thin skin over the part).
 """
 import math
 import time
@@ -66,8 +68,35 @@ def chine(x, y, z):
     return sdf.max(abs(y) - w, abs(z) - CHINE_T * (1 - s * s) * clamp(x / 2.5, 0.25, 1) - EDGE, 0.25 - x, x - 13.0)
 
 
+LINE_W, LINE_D = 0.012, 0.016   # panel line half-width and depth (0.17 mm wide, 0.1 mm deep at 1:144)
+FUSE_FRAMES = [2.3, 5.0, 7.9, 10.4, 15.6, 18.2, 20.8, 23.4, 26.0, 28.4]
+
+
+def engrave(F, lines):
+    """Panel lines cut into a skin: ``lines`` is the distance to the nearest line (a field)."""
+    return sdf.max(F, -sdf.max(lines - LINE_W, -F - LINE_D))
+
+
+def nearest(t, stations):
+    return sdf.min(*[abs(t - s) for s in stations]) if len(stations) > 1 else abs(t - stations[0])
+
+
+NOSE_BAY = (6.8, 8.7, 0.36)      # FS from, to; half-width
+RECEPTACLE = (10.55, 11.55, 0.13, 0.11)   # FS from, to; half-width; depth below the spine
+
+
+def spine_top(x, y):
+    return FUSE_WL + 0.85 * pwl(x, FUSE_R) + pwl(x, FAIR_H) * (1 - (y / FAIR_W) * (y / FAIR_W))
+
+
 def fuselage(x, y, z):
-    return smin(smin(fuse_body(x, y, z), chine(x, y, z), 0.35), fairing(x, y, z), 0.15)
+    F = smin(smin(fuse_body(x, y, z), chine(x, y, z), 0.35), fairing(x, y, z), 0.15)
+    F = engrave(F, nearest(x, FUSE_FRAMES))
+    lo, hi, w = NOSE_BAY
+    bay = sdf.max(sdf.slab(x, lo, hi), abs(y) - w, z - (FUSE_WL - 0.25))
+    a, b, w, d = RECEPTACLE
+    slot = sdf.max(sdf.slab(x, a, b), abs(y) - w, spine_top(x, y) - d - z)
+    return sdf.max(F, -bay, -slot)
 
 
 def window_mask(x, y, z):
@@ -97,6 +126,7 @@ ROOT_HALF = 0.13            # the wing box is no deeper than this inboard (half-
 TIP = 8.47
 CORR_A, CORR_P = 0.014, 0.33  # corrugation depth and pitch (0.1 mm, 2.3 mm at 1:144)
 DROOP = 0.16                 # conical camber: outer leading edge droop at the tip
+MAIN_BAY = (19.2, 21.9, 1.95, 3.05)   # FS from, to; BL from, to
 ELEVONS = [("inboard elevon", 1.05, 3.12, 1.55), ("outboard elevon", 5.85, 8.05, 1.35)]  # BL from, to; chord
 
 
@@ -141,7 +171,11 @@ def wing(x, y, z):
     w = sdf.max(w, -sdf.max(x - 13.0 - GAP / 2, abs(y) - 4.45))      # the chine ahead of FS 13 is the fuselage's
     for name, *_ in ELEVONS:
         w = sdf.max(w, HINGE_GAP / 2 - elevon_region(name, x, y, z))
-    return w
+    b = abs(y)
+    w = engrave(w, sdf.min(nearest(b, [1.25, 2.0, 2.9, 6.6, 7.4]), nearest(x, [16.5, 19.0, 21.5, 24.0])))
+    lo, hi, b0, b1 = MAIN_BAY
+    bay = sdf.max(sdf.slab(x, lo, hi), sdf.slab(b, b0, b1), z - 0.04)
+    return sdf.max(w, -bay)
 
 
 def elevon(name):
@@ -158,7 +192,7 @@ def nacelle_piece(side, lo, hi):
 
     def f(x, y, z):
         r = sdf.length(y - yc, z - NAC_WL)
-        shell = sdf.max(r - nac_r(x), between(x, lo, hi))
+        shell = engrave(sdf.max(r - nac_r(x), between(x, lo, hi)), nearest(x, [13.8, 18.6, 21.4, 24.2, 27.0]))
         duct = sdf.max(r - pwl(x, INLET_BORE), x - 15.5)
         bore = sdf.max(r - (nac_r(x) - 0.07), 30.2 - x)
         return sdf.max(shell, -duct, -bore)
@@ -216,6 +250,117 @@ def fin_piece(side, lo, hi):
     return body.rotate(x=side * FIN_CANT).at(0, side * NAC_BL, NAC_WL + 1.20)
 
 
+# ---------------------------------------------------------------- landing gear (down) and receptacle
+GROUND = -1.93               # WL of the runway: 5.64 m from it to the fin tips
+NOSE_FS, MAIN_FS, MAIN_BL = 7.75, 20.55, 2.5
+NOSE_TYRE, MAIN_TYRE = (0.34, 0.085), (0.42, 0.095)   # radius, half-width
+
+
+def tyre(xc, yc, zc, r, hw):
+    def f(x, y, z):
+        q = sdf.length(x - xc, z - zc)
+        return smax(q - r, abs(y - yc) - hw, 0.06)          # a rounded tyre section
+    return f
+
+
+def hub(xc, yc, zc, r, hw):
+    return lambda x, y, z: sdf.max(sdf.length(x - xc, z - zc) - 0.55 * r, abs(y - yc) - hw - 0.012)
+
+
+def _capsule(x, y, z, a, b, r):
+    ax, ay, az = a
+    bx, by, bz = b
+    dx, dy, dz = bx - ax, by - ay, bz - az
+    L2 = dx * dx + dy * dy + dz * dz
+    h = clamp(((x - ax) * dx + (y - ay) * dy + (z - az) * dz) / L2, 0, 1)
+    return sdf.length(x - ax - h * dx, y - ay - h * dy, z - az - h * dz) - r
+
+
+def union_of(*fs):
+    return lambda x, y, z: sdf.min(*[f(x, y, z) for f in fs])
+
+
+def nose_gear_parts():
+    r, hw = NOSE_TYRE
+    zc = GROUND + r
+    top = FUSE_WL - 0.8 * 0.80 * pwl(NOSE_FS, FUSE_R) if False else -0.35
+    leg = union_of(lambda x, y, z: _capsule(x, y, z, (NOSE_FS - 0.12, 0, top), (NOSE_FS, 0, zc), 0.075),
+                   lambda x, y, z: _capsule(x, y, z, (NOSE_FS, -0.2, zc), (NOSE_FS, 0.2, zc), 0.05),
+                   lambda x, y, z: _capsule(x, y, z, (NOSE_FS + 0.55, 0, top), (NOSE_FS, 0, zc + 0.55), 0.04))
+    tyres = union_of(tyre(NOSE_FS, 0.2, zc, r, hw), tyre(NOSE_FS, -0.2, zc, r, hw))
+    hubs = union_of(hub(NOSE_FS, 0.2, zc, r, hw), hub(NOSE_FS, -0.2, zc, r, hw))
+    lo, hi, w = NOSE_BAY
+    doors = lambda x, y, z: sdf.max(sdf.slab(x, lo + 0.05, hi - 0.05), abs(abs(y) - w - 0.02) - 0.018,
+                                    sdf.slab(z, -0.95, FUSE_WL - 0.3))
+    return leg, tyres, hubs, doors
+
+
+def main_gear_parts(side):
+    r, hw = MAIN_TYRE
+    yc, zc = side * MAIN_BL, GROUND + r
+    leg = union_of(lambda x, y, z: _capsule(x, y, z, (MAIN_FS - 0.15, yc, -0.05), (MAIN_FS, yc, zc), 0.11),
+                   lambda x, y, z: _capsule(x, y, z, (MAIN_FS, yc - 0.3, zc), (MAIN_FS, yc + 0.3, zc), 0.07),
+                   lambda x, y, z: _capsule(x, y, z, (MAIN_FS - 1.1, yc, -0.05), (MAIN_FS, yc, zc + 0.75), 0.06))
+    tyres = union_of(*[tyre(MAIN_FS, yc + d, zc, r, hw) for d in (-0.23, 0.0, 0.23)])
+    hubs = union_of(*[hub(MAIN_FS, yc + d, zc, r, hw) for d in (-0.23, 0.0, 0.23)])
+    lo, hi, b0, b1 = MAIN_BAY
+    door = lambda x, y, z: sdf.max(sdf.slab(x, lo + 0.05, hi - 0.05), abs(y - side * (b1 + 0.03)) - 0.02,
+                                   sdf.slab(z, -1.05, -0.06))
+    return leg, tyres, hubs, door
+
+
+def receptacle(x, y, z):
+    a, b, w, d = RECEPTACLE
+    floor = spine_top(x, y) - d
+    return sdf.max(sdf.slab(x, a + 0.04, b - 0.04), abs(y) - w + 0.03, z - floor - 0.03, floor - 0.06 - z)
+
+
+# ---------------------------------------------------------------- markings
+WHITE, RED, BLUE = "#ecebe6", "#b7262c", "#24407a"
+
+
+def skin(field_fn, bounds, out):
+    """A thin skin over a part's surface, ``out`` above it: what a decal is cut from."""
+    return sdf.field(lambda x, y, z: (lambda F: sdf.max(F - out, -F - 0.03))(field_fn(x, y, z)), bounds)
+
+
+def on_side(profile, side, x, z, depth=(0.0, 1.4)):
+    """A profile drawn as read from the side ``side`` (+1: from +BL), at FS x, WL z, as a solid
+    reaching from BL depth[0] to depth[1] on that side."""
+    s = profile.extrude(depth[1] - depth[0]).rotate(x=90)                  # reads along +FS, solid to -BL
+    if side > 0:
+        s = s.rotate(z=180)                                                # reads along -FS, solid to +BL
+    return s.at(x, side * depth[0], z)
+
+
+def decal(name, field_fn, bounds, solid, color, out=0.014, cell=0.007, place=None):
+    """``solid`` cut to a skin ``out`` proud of the part ``field_fn``: a painted marking."""
+    t = time.time()
+    cut = solid.to_mesh(0.002).scale(SCALE)
+    (lo, hi), (blo, bhi) = cut.bounds, bounds
+    box = (tuple(max(l / SCALE - 0.05, b) for l, b in zip(lo, blo)), tuple(min(h / SCALE + 0.05, b) for h, b in zip(hi, bhi)))
+    m = skin(field_fn, box, out).scale(SCALE).to_mesh(cell * SCALE) & cut
+    if place:
+        m = place(m)
+    print(f"  {name}: {m.triangles:,} triangles, {time.time() - t:.1f} s")
+    return m.named(name, color)
+
+
+def insignia(R=0.42):
+    """The national insignia: a white star in a blue disc, white bars with a red stripe, a blue outline."""
+    import math as _m
+    pts = []
+    for i in range(10):
+        a = _m.pi / 2 + i * _m.pi / 5
+        rr = 0.92 * R if i % 2 == 0 else 0.92 * R * 0.382
+        pts.append((rr * _m.cos(a), rr * _m.sin(a)))
+    star = polygon(pts)
+    bars = rect(4 * R, R / 2, center=True)
+    stripe = rect(4 * R - 0.06, R / 6, center=True) - circle(R)
+    blue = circle(R + 0.05) | rect(4 * R + 0.1, R / 2 + 0.1, center=True)
+    return blue, (star | (bars - circle(R))), stripe
+
+
 # ---------------------------------------------------------------- parts
 def make(name, f, bounds, color, cell=0.015):
     t = time.time()
@@ -259,6 +404,44 @@ for side, tag in ((1, "left"), (-1, "right")):
         make(f"fin base {tag}", fin_piece(side, -0.6, RUDDER_Z), None, SKIN, cell=0.008),
         make(f"rudder {tag}", fin_piece(side, RUDDER_Z, FIN_H + 0.1), None, PANEL, cell=0.008),
     ]
+
+# landing gear and receptacle
+TYRE, STRUT, HUB, METAL = "#151515", "#a6a8ab", "#7c7f84", "#9c9c96"
+leg, tyres, hubs, doors = nose_gear_parts()
+gb = ((NOSE_FS - 0.8, -0.6, GROUND - 0.05), (NOSE_FS + 0.8, 0.6, 0.0))
+parts += [make("nose gear leg", leg, gb, STRUT, cell=0.008), make("nose tyres", tyres, gb, TYRE, cell=0.01),
+          make("nose wheel hubs", hubs, gb, HUB, cell=0.01),
+          make("nose gear doors", doors, ((6.6, -0.5, -1.0), (8.9, 0.5, 0.0)), SKIN, cell=0.008)]
+for side, tag in ((1, "left"), (-1, "right")):
+    leg, tyres, hubs, door = main_gear_parts(side)
+    yb = (side * (MAIN_BL - 0.9), side * (MAIN_BL + 0.9))
+    gb = ((MAIN_FS - 1.4, min(yb), GROUND - 0.05), (MAIN_FS + 0.6, max(yb), 0.1))
+    parts += [make(f"main gear leg {tag}", leg, gb, STRUT, cell=0.008), make(f"main tyres {tag}", tyres, gb, TYRE, cell=0.01),
+              make(f"main wheel hubs {tag}", hubs, gb, HUB, cell=0.01),
+              make(f"main gear door {tag}", door, ((19.0, min(side * 2.8, side * 3.4), -1.1), (22.1, max(side * 2.8, side * 3.4), 0.0)), PANEL, cell=0.008)]
+parts.append(make("refuelling receptacle", receptacle, ((10.4, -0.2, 0.6), (11.7, 0.2, 1.6)), METAL, cell=0.006))
+
+# markings
+for side, tag in ((1, "left"), (-1, "right")):
+    lettering = text("U.S. AIR FORCE", 0.27, align="center", bold=True)
+    parts.append(decal(f"lettering {tag}", fuselage, ((9.2, min(0, side * 1.0), 0.2), (12.9, max(0, side * 1.0), 0.8)),
+                       on_side(lettering, side, 11.05, 0.36), WHITE))
+    blue, white, red = insignia()
+    nb = ((19.2, min(side * 4.45, side * 6.0), -0.6), (21.9, max(side * 4.45, side * 6.0), 1.2))
+    nac = nacelle_piece(side, 16.0, 29.8)
+    for prof, col, out, nm in ((blue, BLUE, 0.012, "blue"), (white, WHITE, 0.018, "white"), (red, RED, 0.024, "red")):
+        parts.append(decal(f"insignia {nm} {tag}", nac, nb, on_side(prof, side, 20.55, 0.45, (4.45, 6.2)), col, out=out))
+    # the serial on the outboard face of the rudder, drawn in the fin's own frame, then canted with it
+    serial = text("17972", 0.36, align="center", bold=True)
+    rud = lambda x, y, z: sdf.max(fin_local(x, y, z), between(z, RUDDER_Z, FIN_H + 0.1))
+    parts.append(decal(f"serial {tag}", rud, ((27.0, min(0, side * 0.4), 0.8), (30.6, max(0, side * 0.4), 1.8)),
+                       on_side(serial, side, 29.0, 1.12, (0.0, 0.5)), RED,
+                       place=lambda m, sd=side: m.rotate(x=sd * FIN_CANT).at(0, sd * NAC_BL * SCALE, (NAC_WL + 1.20) * SCALE)))
+# red walkway outlines on the inner wings
+for side, tag in ((1, "left"), (-1, "right")):
+    walk = (rect(9.0, 1.5, center=True) - rect(8.88, 1.38, center=True)).at(20.5, side * 2.05)
+    parts.append(decal(f"walkway {tag}", wing_raw, ((15.8, min(side * 1.1, side * 3.0), 0.0), (25.2, max(side * 1.1, side * 3.0), 0.4)),
+                       walk.extrude(1.0), RED, out=0.012))
 
 blackbird = Assembly(*parts, name="SR-71 Blackbird 1:144")
 print(f"{len(parts)} parts, {sum(p.triangles for p in parts):,} triangles, {time.time() - t0:.0f} s")

@@ -689,6 +689,9 @@ class Implicit:
         e = self.expr
         if bounds is not None:  # clipped to the bounds asked for (a bare lattice, or a piece of a body)
             e = max(e, box_between(*b).expr)
+        else:  # a surface that runs past the body's own bounds is closed just outside them, not left open
+            g = 1.5 * (float(cell) if cell else float(np.max(np.subtract(b[1], b[0]))) / 128)
+            e = max(e, box_between(tuple(np.subtract(b[0], g)), tuple(np.add(b[1], g))).expr)
         lo, hi = np.array(b[0], dtype=float), np.array(b[1], dtype=float)
         size = float((hi - lo).max())
         cell = float(cell) if cell else size / 128

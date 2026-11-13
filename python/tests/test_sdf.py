@@ -104,3 +104,13 @@ def test_knife_edges_stay_sharp():
         sel = bins == b
         assert np.abs(P[sel, 1]).max() == pytest.approx((b + 0.5) / 3, abs=0.3), b
     assert m.is_closed and np.abs(blade.value(P)).max() < 0.2
+
+
+def test_a_surface_past_its_bounds_is_closed_at_them():
+    from tule import sdf
+
+    slab_ = sdf.field(lambda x, y, z: abs(z) - 1, ((-5, -5, -2), (5, 5, 2)))   # infinite in x and y
+    m = slab_.to_mesh(0.5)
+    assert m.is_closed
+    (lo, hi) = m.bounds
+    assert -5.8 < lo[0] < -5 and 5 < hi[0] < 5.8

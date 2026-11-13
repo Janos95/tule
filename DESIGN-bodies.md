@@ -60,8 +60,8 @@ downstream (viewer, FEA, overlays) keeps working on region ids.
 
 Also: `volume`, `area`, `bounds`, `is_closed` (watertight: each edge used as often both ways, so
 two solids touching along an edge still count), `simplify(tolerance)` (manifold3d),
-`refine(edge)`, transforms, `export_stl`/`export_3mf`, `Mesh.load(path)` (STL, OBJ; an STL Tule
-wrote is welded exactly and keeps its regions), `Mesh(points, triangles)`.
+`refine(edge)`, transforms, `export_ply`/`export_stl`/`export_3mf`, `Mesh.load(path)` (PLY, STL,
+OBJ; a PLY Tule wrote keeps its regions, name, color and tags), `Mesh(points, triangles)`.
 
 ## Implicits (`tule.sdf`, `tule.Implicit`)
 
@@ -99,9 +99,10 @@ Rust), the same NumPy path runs everything, with a note.
 
 ## Viewer, pictures, prints
 
-A mesh part is written as binary STL with each triangle's region id in the record's
-attribute word (ignored by slicers; < 32768 so never read as a color), plus a sidecar
-`<file>.json` with name, color and tags. The agent's `encode_mesh` welds the STL, splits normals
+A mesh part is written as binary little-endian PLY: shared float32 vertices, triangles with an
+`int region` per face, and name, color, tags and history in a `comment tule {json}` header line,
+so one file carries everything (STL only when asked for, for slicers). The agent's `encode_mesh`
+reads PLY, STL and OBJ; view-only links parse them in the browser. It splits normals
 at creases (smooth shading on organic parts) and sends only feature edges (region boundaries and
 creases over 35°): a traced part never shows every triangle edge. Pictures, plates/3MF,
 assemblies and `outputs.part` take meshes like shapes. Implicits must be meshed first
