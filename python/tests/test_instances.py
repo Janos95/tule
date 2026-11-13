@@ -1,6 +1,7 @@
 """Placed copies (part.placed / tule.Instances): one body, N placements, written and drawn once."""
 
 import json
+import os
 
 import numpy as np
 import pytest
@@ -112,7 +113,9 @@ def test_picture_draws_copies(outdir, tmp_path):
     rail = box(240, 2, 2).at(0, -4, 0)
 
     def red(n):
-        p = outputs.picture(Assembly(tile.placed(at=[(i * 8, 0, 0) for i in range(n)]), rail), str(tmp_path / f"{n}.png"), size=300)
+        want = str(tmp_path / f"{n}.png")
+        p = outputs.picture(Assembly(tile.placed(at=[(i * 8, 0, 0) for i in range(n)]), rail), want, size=300)
+        assert p == want and os.path.exists(want)  # at the path asked for, not at a part's name
         im = np.asarray(Image.open(p).convert("RGB")).astype(int)
         return (im[..., 0] > im[..., 2] + 40).sum()
 

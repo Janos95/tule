@@ -174,9 +174,9 @@ def picture(item: Union[Shape, Assembly, Mesh], path: str, view: str = "iso", si
 
     if isinstance(item, (Assembly, Instances)):  # placed copies: tessellated once, drawn at each placement
         parts = []
-        for path, body, T, color in _flat(item):
-            ps = items_to_parts([(path.rsplit("/", 1)[-1], body)], color)
-            parts += copies(ps, T, path) if T is not None else ps
+        for name, body, T, color in _flat(item):
+            ps = items_to_parts([(name.rsplit("/", 1)[-1], body)], color)
+            parts += copies(ps, T, name) if T is not None else ps
     elif isinstance(item, Mesh):
         if not item.triangles:
             raise TuleError("the mesh is empty", op="picture")
