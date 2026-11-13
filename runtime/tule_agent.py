@@ -74,7 +74,7 @@ ETC = "/etc/tule"
 TEMPLATE = "/opt/tule/template"
 BOOT_LOG = "/var/log/tule-boot.log"
 SSHD_PORT = 22
-GEOMETRY = (".step", ".stp", ".stl")
+GEOMETRY = (".step", ".stp", ".stl", ".ply", ".obj")
 STARTED = int(time.time() * 1000)
 
 
@@ -407,10 +407,10 @@ def encode_mesh(path: str) -> bytes:
         return [start, len(b)]
 
     parts = []
-    if path.lower().endswith(".stl"):
+    if path.lower().endswith((".stl", ".ply", ".obj")):
         # welded, normals smooth within regions and split at creases; lines only at region borders and
-        # creases over 35° (a traced or implicit part never shows every triangle edge). An STL tule wrote
-        # keeps its regions (face ids), and its name, color and tags from the .json beside it.
+        # creases over 35° (a traced or implicit part never shows every triangle edge). A PLY tule wrote
+        # keeps its regions (face ids), name, color and tags.
         from tule.mesh import Mesh, feature_edges, shaded
 
         m = Mesh.load(path)

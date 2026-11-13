@@ -217,6 +217,140 @@ def read_stl(path: str) -> tuple[np.ndarray, np.ndarray | None, bytes]:
 REGION_HEADER = b"tule mesh: region id per triangle in the attribute word"
 
 
+_PLY_TYPES = {"char": "i1", "int8": "i1", "uchar": "u1", "uint8": "u1", "short": "i2", "int16": "i2",
+              "ushort": "u2", "uint16": "u2", "int": "i4", "int32": "i4", "uint": "u4", "uint32": "u4",
+              "float": "f4", "float32": "f4", "double": "f8", "float64": "f8"}
+
+
+def write_ply(path: str, P, T, F=None, meta: dict | None = None) -> str:
+    """Binary PLY: shared float32 vertices, triangles with a ``region`` per face, and ``meta`` (name,
+    color, tags, history) as one JSON comment line in the header: one self-contained file."""
+    import json
+
+    from .io import write_atomic
+
+    P = np.asarray(P, dtype="<f4").reshape(-1, 3)
+    T = np.asarray(T, dtype="<i4").reshape(-1, 3)
+    head = ["ply", "format binary_little_endian 1.0", "comment made by tule"]
+    if meta:
+        head.append("comment tule " + json.dumps(meta, separators=(",", ":")))
+    head += [f"element vertex {len(P)}", "property float x", "property float y", "property float z",
+             f"element face {len(T)}", "property list uchar int vertex_indices"]
+    face = [("n", "u1"), ("v", "<i4", (3,))]
+    if F is not None:
+        head.append("property int region")
+        face.append(("region", "<i4"))
+    head.append("end_header")
+    rec = np.zeros(len(T), dtype=face)
+    rec["n"], rec["v"] = 3, T
+    if F is not None:
+        rec["region"] = np.asarray(F, dtype=np.int64)
+    return write_atomic(path, ("\n".join(head) + "\n").encode() + P.tobytes() + rec.tobytes())
+
+
+def read_ply(path: str):
+    """(points, triangles, regions or None, meta dict) from a PLY, binary or ASCII; polygons are
+    split into fans; extra properties (normals, colors) are skipped."""
+    import json
+
+    with open(path, "rb") as f:
+        data = f.read()
+    end = data.find(b"end_header")
+    if not data.startswith(b"ply") or end < 0:
+        raise TuleError(f"{os.path.basename(path)} is not a PLY file", op="Mesh.load")
+    body = data[data.index(b"\n", end) + 1:]
+    fmt, meta, elements = "ascii", {}, []
+    for line in data[:end].decode("latin-1").splitlines():
+        w = line.split()
+        if not w:
+            continue
+        if w[0] == "format":
+            fmt = w[1]
+        elif w[0] == "comment" and len(w) > 1 and w[1] == "tule":
+            try:
+                meta = json.loads(line.split("tule", 1)[1])
+            except ValueError:
+                meta = {}
+        elif w[0] == "element":
+            elements.append((w[1], int(w[2]), []))
+        elif w[0] == "property" and elements:
+            elements[-1][2].append(("list", w[2], w[3], w[4]) if w[1] == "list" else (w[1], w[2]))
+    if fmt == "binary_big_endian":
+        raise TuleError("big-endian PLY", op="Mesh.load", hint="save it as binary little-endian or ASCII PLY")
+    P, T, F = np.zeros((0, 3)), np.zeros((0, 3), np.int64), None
+    tokens = iter(body.split()) if fmt == "ascii" else None
+    pos = 0
+    for name, n, props in elements:
+        fixed = all(p[0] != "list" for p in props)
+        lists = [p for p in props if p[0] == "list"]
+        if fmt != "ascii" and (fixed or (len(lists) == 1 and props[0][0] == "list" or True)):
+            # try a fixed layout first: every face a triangle (what nearly every writer makes)
+            dt = []
+            for i, p in enumerate(props):
+                if p[0] == "list":
+                    dt += [(f"n{i}", "<" + _PLY_TYPES[p[1]]), (f"p{i}", "<" + _PLY_TYPES[p[2]], (3,))]
+                else:
+                    dt.append((p[1], "<" + _PLY_TYPES[p[0]]))
+            dt = np.dtype(dt)
+            rec = np.frombuffer(body, dtype=dt, count=n, offset=pos) if n else np.zeros(0, dt)
+            ok = all((rec[f"n{i}"] == 3).all() for i, p in enumerate(props) if p[0] == "list")
+            if ok:
+                pos += n * dt.itemsize
+                cols = {p[3] if p[0] == "list" else p[1]: rec[f"p{i}"] if p[0] == "list" else rec[p[1]]
+                        for i, p in enumerate(props)}
+            else:  # polygons: walk the records
+                cols, pos = _ply_walk(body, pos, n, props)
+        else:
+            cols = _ply_ascii(tokens, n, props)
+        if name == "vertex":
+            P = np.stack([np.asarray(cols[k], dtype=np.float64) for k in "xyz"], 1)
+        elif name == "face":
+            faces = cols.get("vertex_indices", cols.get("vertex_index"))
+            T, keep = _fans(faces)
+            if "region" in cols:
+                F = np.asarray(cols["region"], dtype=np.int64)[keep]
+    return P, T, F, meta
+
+
+def _fans(faces):
+    """Triangles from faces given as an (n, 3) array or a list of index lists; and which face each came from."""
+    if isinstance(faces, np.ndarray) and faces.ndim == 2:
+        return faces.astype(np.int64), np.arange(len(faces))
+    tris, src = [], []
+    for i, f in enumerate(faces):
+        for k in range(1, len(f) - 1):
+            tris.append((f[0], f[k], f[k + 1]))
+            src.append(i)
+    return np.asarray(tris, dtype=np.int64).reshape(-1, 3), np.asarray(src, dtype=np.int64)
+
+
+def _ply_walk(body, pos, n, props):
+    cols = {(p[3] if p[0] == "list" else p[1]): [] for p in props}
+    for _ in range(n):
+        for p in props:
+            if p[0] == "list":
+                c = np.frombuffer(body, "<" + _PLY_TYPES[p[1]], 1, pos)[0]
+                pos += np.dtype(_PLY_TYPES[p[1]]).itemsize
+                cols[p[3]].append(np.frombuffer(body, "<" + _PLY_TYPES[p[2]], int(c), pos).tolist())
+                pos += int(c) * np.dtype(_PLY_TYPES[p[2]]).itemsize
+            else:
+                cols[p[1]].append(np.frombuffer(body, "<" + _PLY_TYPES[p[0]], 1, pos)[0])
+                pos += np.dtype(_PLY_TYPES[p[0]]).itemsize
+    return cols, pos
+
+
+def _ply_ascii(tokens, n, props):
+    cols = {(p[3] if p[0] == "list" else p[1]): [] for p in props}
+    for _ in range(n):
+        for p in props:
+            if p[0] == "list":
+                c = int(next(tokens))
+                cols[p[3]].append([int(next(tokens)) for _ in range(c)])
+            else:
+                cols[p[1]].append(float(next(tokens)))
+    return cols
+
+
 def write_stl(path: str, P, T, F=None) -> str:
     """A binary STL; with ``F`` each triangle's region id goes in its attribute word (slicers ignore it)."""
     from .io import write_atomic
@@ -841,14 +975,16 @@ class Mesh:
     # ------------------------------------------------------------ files
     @staticmethod
     def load(path: str, name: str | None = None) -> "Mesh":
-        """Read an STL (binary or ASCII) or OBJ. An STL Tule wrote keeps its regions (and, with its
-        ``.json`` beside it, name, color and tags)."""
-        import json
-
+        """Read a PLY, OBJ or STL. A PLY Tule wrote keeps its regions, name, color, tags and history;
+        an STL Tule wrote keeps its regions."""
         path = os.fspath(path)
         ext = os.path.splitext(path)[1].lower()
-        F = None
-        if ext == ".stl":
+        F, meta = None, {}
+        if ext == ".ply":
+            P, T, F, meta = read_ply(path)
+            P, T, keep = weld(P, T, 0.0)
+            F = F[keep] if F is not None else None
+        elif ext == ".stl":
             tri, attr, head = read_stl(path)
             P0, T0 = tri.reshape(-1, 3), np.arange(3 * len(tri)).reshape(-1, 3)
             ours = attr is not None and head.startswith(REGION_HEADER)  # Tule wrote it: copies are exact
@@ -858,35 +994,27 @@ class Mesh:
         elif ext == ".obj":
             P, T = _read_obj(path)
         else:
-            raise TuleError(f"cannot read {ext or path!r} as a mesh", op="Mesh.load", hint="STL or OBJ; STEP: import_step")
-        meta = {}
-        side = path + ".json"
-        if os.path.exists(side):
-            try:
-                with open(side) as fh:
-                    meta = json.load(fh)
-            except (OSError, ValueError):
-                meta = {}
+            raise TuleError(f"cannot read {ext or path!r} as a mesh", op="Mesh.load", hint="PLY, OBJ or STL; STEP: import_step")
         base = os.path.splitext(os.path.basename(path))[0]
         return Mesh(P, T, face_ids=F, tags=meta.get("tags"), name=name or meta.get("name") or base, color=meta.get("color"),
                     history=tuple(meta.get("history", ())) or (f"read from {os.path.basename(path)}",), welded=True)
 
-    def export_stl(self, path: str) -> str:
-        """Write a binary STL (regions in the attribute words; a slicer reads it as a plain STL), and
-        the name, color, tags and history beside it in ``<path>.json`` (what ``Mesh.load`` reads back)."""
-        import json
+    def _meta(self) -> dict:
+        from .io import color_hex, parse_rgba
 
-        from .io import color_hex, parse_rgba, write_atomic
-
-        path = os.fspath(path)
-        side = {k: v for k, v in (("name", self.name), ("color", self.color and color_hex(parse_rgba(self.color))),
+        return {k: v for k, v in (("name", self.name), ("color", self.color and color_hex(parse_rgba(self.color))),
                                   ("tags", {t: sorted(int(i) for i in r) for t, r in self._tags.items()}),
                                   ("history", list(self.history))) if v}
-        if side:
-            write_atomic(path + ".json", json.dumps(side, indent=1) + "\n")
-        elif os.path.exists(path + ".json"):
-            os.remove(path + ".json")
-        return write_stl(path, self._P, self._T, self.face_ids)
+
+    def export_ply(self, path: str) -> str:
+        """Write a binary PLY: shared vertices, a region per triangle, and the name, color, tags and
+        history in its header (what ``Mesh.load`` reads back; Tule's own format for meshes)."""
+        return write_ply(os.fspath(path), self._P, self._T, self.face_ids, self._meta())
+
+    def export_stl(self, path: str) -> str:
+        """Write a binary STL for a slicer (regions in the attribute words; no name, color or tags:
+        ``export_ply`` or ``export_3mf`` keep those)."""
+        return write_stl(os.fspath(path), self._P, self._T, self.face_ids)
 
     def export_3mf(self, path: str, **kw) -> str:
         from .io import export_3mf
@@ -896,7 +1024,7 @@ class Mesh:
     def export_step(self, path: str) -> str:
         raise TuleError("a mesh has no exact surfaces for STEP", op="export_step",
                         hint="mesh.to_brep().export_step(path) for a faceted solid (up to 20,000 triangles), "
-                             "or export_stl / export_3mf")
+                             "or export_ply / export_3mf / export_stl")
 
     def __repr__(self) -> str:
         n = f" {self.name!r}" if self.name else ""

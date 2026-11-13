@@ -212,17 +212,19 @@ def _not_empty(item, what: str):
 def _write_geometry(path: str, item: Union[Shape, Assembly]) -> str:
     _not_empty(item, os.path.basename(path))
     ext = os.path.splitext(path)[1].lower()
-    if isinstance(item, Mesh):  # STL with the regions, and its name, color and tags beside it
-        if ext != ".stl":
-            raise TuleError(f"a mesh is written as STL, not {ext}", op="outputs", hint="leave out fmt= for meshes")
-        return item.export_stl(path)
+    if isinstance(item, Mesh):  # PLY: regions, name, color and tags in one file
+        if ext == ".stl":
+            return item.export_stl(path)
+        if ext != ".ply":
+            raise TuleError(f"a mesh is written as PLY, not {ext}", op="outputs", hint="leave out fmt= for meshes")
+        return item.export_ply(path)
     if ext in (".step", ".stp"):
         return export_step(item, path)
     if ext == ".stl":
         return export_stl(item, path)
     if ext in (".glb", ".gltf"):
         return export_gltf(item, path if ext == ".glb" else path[:-5] + ".glb")
-    raise TuleError(f"unsupported format {ext!r}", op="outputs", hint="use step, stl or glb")
+    raise TuleError(f"unsupported format {ext!r}", op="outputs", hint="use step, stl or glb (ply for meshes)")
 
 
 def _write_json(folder: str, data: dict) -> str:
@@ -265,7 +267,7 @@ def part(name: str, shape: Union[Shape, Mesh], fmt: str | None = None, title: st
     _not_empty(shape, name)  # before the folder: an empty part leaves no empty output behind
     folder = _folder(name)
     if isinstance(shape, Mesh):
-        fmt = "stl"
+        fmt = "stl" if fmt == "stl" else "ply"  # a mesh is PLY (regions, name, color, tags in one file)
     fmt = "glb" if fmt == "gltf" else fmt or "step"  # a binary glTF is written either way
     fname = f"{_slug(name.rsplit('/', 1)[-1])}.{fmt}"  # named after the output, so its path stays put when the label changes
     _write_geometry(os.path.join(folder, fname), shape)
@@ -295,10 +297,10 @@ def assembly(name: str, item: Union[Assembly, list, tuple], fmt: str = "step", t
     used = set()
     for path, shp in asm.parts():
         base = _slug(path.split("/", 1)[-1].replace("/", "_"))
-        fname = f"{base}.{'stl' if isinstance(shp, Mesh) else fmt}"
+        fname = f"{base}.{'ply' if isinstance(shp, Mesh) else fmt}"
         i = 2
         while fname in used:
-            fname = f"{base}_{i}.{'stl' if isinstance(shp, Mesh) else fmt}"
+            fname = f"{base}_{i}.{'ply' if isinstance(shp, Mesh) else fmt}"
             i += 1
         used.add(fname)
         _write_geometry(os.path.join(folder, fname), shp)
@@ -381,7 +383,7 @@ def plate(name: str, parts, *, bed=None, gap: float = 5.0, arrange: bool = True,
             copies = total[n]
             if n not in files:
                 base_name = _slug(n.replace("/", "_"))
-                ext = "stl" if isinstance(shp, Mesh) else "step"
+                ext = "ply" if isinstance(shp, Mesh) else "step"
                 fname, i = f"{base_name}.{ext}", 2
                 while fname in used:
                     fname, i = f"{base_name}_{i}.{ext}", i + 1
@@ -732,7 +734,7 @@ def overlay(name: str, part: Shape, faces=None, *, arrows=(), title: str | None 
     entries = _face_entries(part, faces)
     grids = _fields(fields)
     folder = _folder(name)
-    fname = f"{_slug(name.rsplit('/', 1)[-1])}.{'stl' if isinstance(part, Mesh) else 'step'}"
+    fname = f"{_slug(name.rsplit('/', 1)[-1])}.{'ply' if isinstance(part, Mesh) else 'step'}"
     _write_geometry(os.path.join(folder, fname), part)
     for _, own in grids:
         for fn, arr in own.items():

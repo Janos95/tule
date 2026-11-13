@@ -52,11 +52,16 @@ def test_transforms_and_selections():
 
 def test_files_roundtrip(tmp_path):
     m = box(10).to_mesh().named("cube", "#c33").tag("top", lambda f: f.top())
-    p = tmp_path / "cube.stl"
-    m.export_stl(p)
-    back = Mesh.load(p)
-    assert back.name == "cube" and back.color == "#cc3333" and back.regions == 6
-    assert back.faces["top"].area == pytest.approx(100)
+    m.export_ply(tmp_path / "cube.ply")  # Tule's format: shared vertices, regions, name, color, tags
+    back = Mesh.load(tmp_path / "cube.ply")
+    assert back.name == "cube" and back.color == "#cc3333" and back.regions == 6 and back.is_closed
+    assert back.faces["top"].area == pytest.approx(100) and back.triangles == 12
+    m.export_stl(tmp_path / "cube.stl")  # for a slicer: regions only
+    assert Mesh.load(tmp_path / "cube.stl").regions == 6
+    (tmp_path / "quad.ply").write_text("ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\n"
+                                       "property float z\nelement face 1\nproperty list uchar int vertex_indices\n"
+                                       "end_header\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n4 0 1 2 3\n")
+    assert Mesh.load(tmp_path / "quad.ply").triangles == 2  # another tool's polygons: split into fans
     m.export_3mf(tmp_path / "cube.3mf")
     assert (tmp_path / "cube.3mf").stat().st_size > 0
     with pytest.raises(TuleError):
@@ -80,7 +85,7 @@ def test_assembly_and_outputs(tmp_path, monkeypatch):
     assert asm.size[0] == pytest.approx(25, abs=0.01)
     folder = outputs.part("ball", m)
     meta = json.load(open(f"{folder}/output.json"))
-    assert meta["file"].endswith(".stl") and meta["name"] == "ball"
+    assert meta["file"].endswith(".ply") and meta["name"] == "ball"
     outputs.assembly("pair", asm)
     with pytest.raises(TuleError, match="to_mesh"):
         Assembly(sdf.sphere(1))
@@ -103,7 +108,7 @@ def test_picture_and_pinched_roundtrip(tmp_path):
 
     two = box(10).to_mesh() | box(10).at(10, 10, 0).to_mesh()  # touching along an edge: four triangles on it
     assert two.is_closed
-    two.export_stl(tmp_path / "two.stl")
-    assert Mesh.load(tmp_path / "two.stl").is_closed
+    two.export_ply(tmp_path / "two.ply")
+    assert Mesh.load(tmp_path / "two.ply").is_closed
     p = outputs.picture(sdf.sphere(5).to_mesh(0.5).named("ball", "#48c"), tmp_path / "ball.png", size=300)
     assert (tmp_path / "ball.png").stat().st_size > 1000

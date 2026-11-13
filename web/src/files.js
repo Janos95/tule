@@ -12,7 +12,7 @@
 //   download(file),
 // }
 
-export const GEOMETRY = /\.(step|stp|stl)$/i;
+export const GEOMETRY = /\.(step|stp|stl|ply|obj)$/i;
 
 /** geometry, chart, table, data (a table when it is a list of records), document, pdf, dxf, image, text, or file. */
 export function typeOf(file) {

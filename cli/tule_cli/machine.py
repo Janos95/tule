@@ -20,7 +20,7 @@ import struct
 import subprocess
 import sys
 
-GEOMETRY = (".step", ".stp", ".stl", ".glb")
+GEOMETRY = (".step", ".stp", ".stl", ".ply", ".obj", ".glb")
 SOCKET = os.environ.get("TULE_AGENT_SOCKET", "/run/tule/agent.sock")
 DOC_ORDER = ["index", "setup", "loop", "modeling", "outputs", "drawings", "sheetmetal", "occt", "annotations", "fea", "topopt", "golden-paths"]
 
@@ -130,13 +130,18 @@ def _need_tule():
 
 
 def load_items(path: str) -> list[tuple[str, object]]:
-    """[(name, Shape or triangles)] for a STEP, STL or glTF (.glb) file."""
+    """[(name, Shape, Mesh or triangles)] for a STEP, PLY, OBJ, STL or glTF (.glb) file."""
     ext = os.path.splitext(path)[1].lower()
     base = os.path.splitext(os.path.basename(path))[0]
+    if ext in (".ply", ".obj"):
+        from tule import Mesh
+
+        m = Mesh.load(path)
+        return [(m.name or base, m)]
     if ext == ".stl":
         with open(path, "rb") as fh:
             head = fh.read(80)
-        if head.startswith(b"tule mesh") or os.path.exists(path + ".json"):  # a tule.Mesh: its regions, name, color, tags
+        if head.startswith(b"tule mesh"):  # a tule.Mesh: its regions
             try:
                 from tule import Mesh
             except ImportError:

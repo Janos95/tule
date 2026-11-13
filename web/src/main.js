@@ -485,8 +485,6 @@ function prepare(list) {
     }));
     // an overlay's field grids and surface meshes: drawn on the part, not a view
     const field = new Set((Array.isArray(o.meta?.fields) ? o.meta.fields : []).flatMap((x) => [x?.file, ...Object.values(x?.mesh && typeof x.mesh === "object" ? x.mesh : {})]));
-    // a tule.Mesh's name, color and tags beside its STL (x.stl.json): read with the mesh, not a view
-    for (const f of all) if (/\.stl\.json$/i.test(f.file) && all.some((g) => g.file === f.file.slice(0, -5))) field.add(f.file);
     return { ...o, root, id: root === "outputs" ? o.name : `${root}/${o.name}`, files: all.filter((f) => f.type === "geometry"), docs: all.filter((f) => f.type !== "geometry" && !field.has(f.file)), fields: all.filter((f) => field.has(f.file)) };
   });
 }
@@ -1217,7 +1215,7 @@ const extras = (o) => o.docs.filter((f) => f.type === "file" || sheetSvg(o, f));
 const sheetSvg = (o, f) => /\.svg$/i.test(f.file) && o.docs.some((d) => d.type === "pdf" && base(d.file) === base(f.file).replace(/-\d+$/, ""));
 
 // a file to print (3MF, STL) first: it is what most people come for
-const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.stl$/i.test(f.file) ? 1 : 2);
+const printable = (f) => (/\.3mf$/i.test(f.file) ? 0 : /\.(stl|ply|obj)$/i.test(f.file) ? 1 : 2);
 /** The Download button offers the shown output's geometry files, or the file shown. */
 function offerDownload(list) {
   const next = [...list].sort((a, b) => printable(a) - printable(b));
