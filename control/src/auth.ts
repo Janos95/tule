@@ -269,7 +269,10 @@ export async function authorize(req: Request, env: Env, url: URL, user: User | n
     const d = await oauth.describeConsent(request);
     const consent = await oauth.beginConsent(request);
     consent.headers.set("Content-Type", "text/html; charset=utf-8");
-    const body = html`<p>Signed in as <b>${user.email}</b>.</p>
+    // a guest allowing would connect the app to the guest, deleted after a day: signing in keeps the guest's projects
+    const body = html`${user.guest
+        ? html`<p class="warn">You are signed in as a guest. Allowing connects ${d.clientName} to this guest, whose projects are deleted after a day: sign in to keep them (they come along).</p>`
+        : html`<p>Signed in as <b>${user.email}</b>.</p>`}
       <p><b>${d.clientName}</b> wants to manage your Tule projects: create and delete projects, start and stop
       machines, manage your SSH keys and read your usage.</p>
       <p class="muted">${d.clientDomain ? html`Published by <b>${d.clientDomain}</b>.` : "This app registered itself; its name is not verified."}
@@ -277,7 +280,9 @@ export async function authorize(req: Request, env: Env, url: URL, user: User | n
       ${d.redirectIsLoopback ? html`<p class="warn">This sends access to an app on your computer. Continue only if you just started connecting it.</p>` : ""}
       <form method="post" class="row">
         <input type="hidden" name="handle" value="${consent.handle}" />
-        <button class="primary" name="decision" value="approve">Allow</button>
+        ${user.guest
+          ? html`<a class="button primary" href="${loginUrl(url.pathname + url.search)}">Sign in, then allow</a><button name="decision" value="approve">Allow as guest</button>`
+          : html`<button class="primary" name="decision" value="approve">Allow</button>`}
         <button name="decision" value="deny">Deny</button>
       </form>`;
     return new Response(layout(`Connect ${d.clientName}`, body), { headers: consent.headers });
