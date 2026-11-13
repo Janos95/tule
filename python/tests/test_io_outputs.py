@@ -381,3 +381,15 @@ def test_sequence_fps_is_the_play_rate(outdir):
     assert json.load(open(outdir / "run" / "output.json"))["fps"] == 20
     with pytest.raises(TuleError, match="between 0 and 60"):
         outputs.sequence("bad", fps=0)
+
+
+def test_mesh_made_without_edges_keeps_none(tmp_path):
+    m = box(10).to_mesh(0.5)
+    plain = Mesh(m.points, m.indices, name="plain")
+    bare = Mesh(m.points, m.indices, edges=[], name="bare")
+    assert len(plain.edges) == 12 and bare.edges == []
+    moved = bare.at(5, 0, 0).rotate(z=30).named("bare")
+    assert moved.edges == []  # moving it keeps it edge-free
+    moved.export_ply(tmp_path / "b.ply")
+    plain.export_ply(tmp_path / "p.ply")
+    assert Mesh.load(tmp_path / "b.ply").edges == [] and len(Mesh.load(tmp_path / "p.ply").edges) == 12

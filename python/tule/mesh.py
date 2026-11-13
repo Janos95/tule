@@ -853,7 +853,7 @@ class Mesh:
         if self._N is not None and not flip and abs(abs(np.linalg.det(M[:3, :3])) - 1) < 1e-9:
             N = _f32(self._N @ M[:3, :3].T)
         out = Mesh(P, T, face_ids=self._F, normals=N, tags=self._tags, name=self.name, color=self.color,
-                   history=self.history, welded=self._welded_flag)
+                   edges=[] if self._no_edges else None, history=self.history, welded=self._welded_flag)
         return out
 
     def at(self, x: float | VecLike = 0, y: float = 0, z: float = 0) -> "Mesh":
@@ -1004,6 +1004,7 @@ class Mesh:
             raise TuleError(f"cannot read {ext or path!r} as a mesh", op="Mesh.load", hint="PLY, OBJ or STL; STEP: import_step")
         base = os.path.splitext(os.path.basename(path))[0]
         return Mesh(P, T, face_ids=F, tags=meta.get("tags"), name=name or meta.get("name") or base, color=meta.get("color"),
+                    edges=[] if meta.get("edges") == "none" else None,
                     history=tuple(meta.get("history", ())) or (f"read from {os.path.basename(path)}",), welded=True)
 
     def _meta(self) -> dict:
@@ -1011,7 +1012,13 @@ class Mesh:
 
         return {k: v for k, v in (("name", self.name), ("color", self.color and color_hex(parse_rgba(self.color))),
                                   ("tags", {t: sorted(int(i) for i in r) for t, r in self._tags.items()}),
-                                  ("history", list(self.history))) if v}
+                                  ("history", list(self.history)),
+                                  ("edges", "none" if self._no_edges else None)) if v}
+
+    @property
+    def _no_edges(self) -> bool:
+        """Made with ``edges=[]``: no lines drawn (dense detail: tiles, studs), also after moving or saving it."""
+        return self._edges is not None and len(self._edges) == 0
 
     def export_ply(self, path: str) -> str:
         """Write a binary PLY: shared vertices, a region per triangle, and the name, color, tags and

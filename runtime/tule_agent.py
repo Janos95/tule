@@ -417,7 +417,7 @@ def encode_mesh(path: str) -> bytes:
         P, T, keep = m._weld_arrays()
         F = m.face_ids[keep].astype(np.uint32)
         V, N, I = shaded(P, T, F)
-        E = feature_edges(P, T, F).reshape(-1, 3)
+        E = np.zeros((0, 3)) if m._no_edges else feature_edges(P, T, F).reshape(-1, 3)  # made with edges=[]: none
         parts.append({
             "name": m.name or os.path.splitext(os.path.basename(path))[0],
             "color": m.color,
