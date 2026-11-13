@@ -494,6 +494,20 @@ main {
 .shared-view .project-head .back, .shared-view #annotate-toggle, .shared-view #save-now,
 .shared-view #machine-more, .shared-view #machine-pick, .shared-view #outputs-empty { display: none !important; }
 .shared-view .view-only { display: inline; }
+/* a view-only link's visitor: what made this, and where to try it */
+.made-with { display: none; flex: none; margin: 0 8px 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.shared-view .made-with { display: block; }
+.made-with p { margin: 0 0 9px; font-size: var(--fs-small); line-height: 1.45; color: var(--muted); }
+.made-with b { color: var(--text); font-weight: 600; }
+.made-with .cta { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 6px; background: var(--accent); color: var(--on-accent); font-weight: 500; font-size: var(--fs-body); text-decoration: none; }
+.made-with .cta:hover { background: var(--accent-hover); }
+.made-with .cta svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 640px) { /* phones: one row, so the outputs list keeps its room */
+  .shared-view .made-with { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 10px; }
+  .made-with p { flex: 1; margin: 0; }
+  .made-with .long { display: none; }
+  .made-with .cta { flex: none; height: 26px; padding: 0 10px; }
+}
 .project-name { margin-top: 8px; font-size: var(--fs-title); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .machine {

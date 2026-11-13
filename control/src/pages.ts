@@ -436,13 +436,14 @@ export function adminPage(user: User, m: Metrics): Response {
     ${tile("Projects", m.projects.total, `+${m.projects.week} this week`)}
     ${tile("Running now", m.running.accounts + m.running.guests, `${m.running.accounts} accounts · ${m.running.guests} guests`)}
     ${tile("Cloud CPU this month", `${num(m.month.cpuHours)} h`, m.month.gpuHours ? `GPU ${num(m.month.gpuHours)} h · $${m.month.gpuCost.toFixed(2)}` : "no GPU hours")}
+    ${tile("Link views this week", m.funnel.shareViews, `${m.funnel.shareClicks} clicked Make your own · ${m.funnel.guestProjects} guest projects`)}
     ${tile("Computers", m.machines.computers, `${m.machines.runpod} RunPod accounts · ${m.machines.shares} shares`)}
   </div>`;
-  const series = (k: "signups" | "guests" | "agents" | "active" | "cpuHours") => m.days.map((d) => ({ day: d.day, v: d[k] }));
+  const series = (k: "signups" | "guests" | "agents" | "active" | "cpuHours" | "shareViews") => m.days.map((d) => ({ day: d.day, v: d[k] }));
   const charts = html`<div class="charts">
     ${dayChart("Sign-ups", "", series("signups"))}${dayChart("Agents connected", "", series("agents"))}
     ${dayChart("Active accounts", "", series("active"))}${dayChart("Guests", "", series("guests"))}
-    ${dayChart("Cloud CPU", " h", series("cpuHours"))}</div>`;
+    ${dayChart("Cloud CPU", " h", series("cpuHours"))}${dayChart("Link views", "", series("shareViews"))}</div>`;
   const yes = (b: boolean) => (b ? "yes" : "no");
   const last = (d: string | null) => (d ? fmtDay(d) : "–");
   const top = m.top.length

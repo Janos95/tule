@@ -174,7 +174,10 @@ async function shareRoute(req: Request, env: Env, token: string, what: string, u
   const o = p && (await env.WORKSPACES.get(shareKey(p.id, token)));
   if (!p || !o) return error("this link was turned off or the project deleted", 404, "ask for a new link");
   const s = (await o.json()) as { project: string; snapshot: string; at: number; outputs: unknown[] };
-  if (!what) return json({ project: s.project, at: s.at, outputs: s.outputs });
+  if (!what) {
+    await accounts(env).count("share_views"); // the funnel: a link opened (its outputs list, once per page)
+    return json({ project: s.project, at: s.at, outputs: s.outputs });
+  }
   if (what === "/mesh") {
     // a model's mesh, made by the machine when it was viewed or shared; 404: the viewer meshes the file itself
     const hash = url.searchParams.get("hash") ?? "";
@@ -865,6 +868,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     return userApi(req, env, url, user, origin);
   }
   if (path === "/") {
+    if (url.searchParams.get("from") === "share") await accounts(env).count("share_clicks"); // "Make your own" on a view-only link
     if (user) return projectsPage(user, await projectRows(env, user), origin, { shown: showcase(env), machines: await machinesData(env, user) });
     // a first visit: a guest account, so Tule can be tried without signing in
     const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");

@@ -142,11 +142,14 @@ def cmd_stats(args):
     print(f"running now     {run['accounts']} accounts, {run['guests']} guests")
     print(f"compute {mo['month']}  CPU {num(mo['cpuHours'])} h, GPU {num(mo['gpuHours'])} h (${mo['gpuCost']:.2f})")
     print(f"connected       {m['machines']['computers']} computers, {m['machines']['runpod']} RunPod, {m['machines']['shares']} shares")
+    if f := m.get("funnel"):
+        print(f"funnel 7 days   {f['shareViews']} link views > {f['shareClicks']} 'Make your own' > {f['guests']} guests"
+              f" > {f['guestProjects']} guest projects; {f['agents']} agents connected, {f['signups']} sign-ups")
     since = f" (daily counts since {m['since']})" if m.get("since") else ""
     print(f"\nlast 7 days{since}")
-    print(f"  {'day':<10} {'signups':>7} {'agents':>6} {'active':>6} {'guests':>6} {'cpu h':>6}")
+    print(f"  {'day':<10} {'views':>5} {'clicks':>6} {'guests':>6} {'signups':>7} {'agents':>6} {'active':>6} {'cpu h':>6}")
     for d in m["days"][-7:]:
-        print(f"  {d['day']:<10} {d['signups']:>7} {d['agents']:>6} {d['active']:>6} {d['guests']:>6} {num(d['cpuHours']):>6}")
+        print(f"  {d['day']:<10} {d.get('shareViews', 0):>5} {d.get('shareClicks', 0):>6} {d['guests']:>6} {d['signups']:>7} {d['agents']:>6} {d['active']:>6} {num(d['cpuHours']):>6}")
     if m["top"]:
         print("\nmost compute this month")
         for r in m["top"]:

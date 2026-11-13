@@ -97,7 +97,8 @@ export class Accounts extends DurableObject<Env> {
     return this.sql.exec(q, ...args).toArray() as T[];
   }
 
-  /** Adds to a daily count for the admin dashboard: guests, signups, agents, projects, cpu_s, gpu_s. */
+  /** Adds to a daily count for the admin dashboard: guests, signups, agents, projects, guest_projects, cpu_s, gpu_s,
+   * share_views (a view-only link opened), share_clicks (its "Make your own"). */
   count(key: string, n = 1) {
     this.sql.exec("INSERT INTO metrics_day VALUES (?, ?, ?) ON CONFLICT (day, key) DO UPDATE SET n = n + excluded.n", day(), key, n);
   }
@@ -746,7 +747,11 @@ export class Accounts extends DurableObject<Env> {
       running: { accounts: n(`SELECT COUNT(*) AS n FROM running WHERE guest = 0 ${notIn("user_id")}`, ...internal), guests: n("SELECT COUNT(*) AS n FROM running WHERE guest = 1") },
       machines: { computers: n(`SELECT COUNT(*) AS n FROM hosts WHERE 1 ${notIn("user_id")}`, ...internal), runpod: n(`SELECT COUNT(*) AS n FROM runpod WHERE 1 ${notIn("user_id")}`, ...internal), shares: n("SELECT COUNT(*) AS n FROM shares") },
       month: { month: m, cpuHours: hours(kind("cpu")?.seconds), gpuHours: hours(kind("gpu")?.seconds), gpuCost: Math.round((kind("gpu")?.cost ?? 0) * 100) / 100 },
-      days: days.map((d) => ({ day: d, signups: at(d, "signups"), guests: at(d, "guests"), agents: at(d, "agents"), active: act.find((a) => a.day === d)?.n ?? 0, cpuHours: hours(at(d, "cpu_s")) })),
+      // last 7 days, from a link to an account: links opened, "Make your own" clicked, guests, their projects, agents connected, sign-ups
+      funnel: Object.fromEntries((["share_views", "share_clicks", "guests", "guest_projects", "agents", "signups"] as const).map((k) =>
+        [k.replace(/_(\w)/g, (_, c: string) => c.toUpperCase()), counts.filter((c) => c.key === k && c.day >= day(ago(6))).reduce((t, c) => t + c.n, 0)])) as
+        Record<"shareViews" | "shareClicks" | "guests" | "guestProjects" | "agents" | "signups", number>,
+      days: days.map((d) => ({ day: d, shareViews: at(d, "share_views"), shareClicks: at(d, "share_clicks"), signups: at(d, "signups"), guests: at(d, "guests"), agents: at(d, "agents"), active: act.find((a) => a.day === d)?.n ?? 0, cpuHours: hours(at(d, "cpu_s")) })),
       top: this.all<{ email: string; cpu: number; gpu: number; cost: number; projects: number; agent: number | null; last: string | null }>(
         `SELECT u.email, COALESCE(c.seconds, 0) AS cpu, COALESCE(g.seconds, 0) AS gpu, COALESCE(g.cost, 0) AS cost,
            (SELECT COUNT(*) FROM projects p WHERE p.user_id = u.id) AS projects, u.agent_seen AS agent, ${lastActive} AS last
