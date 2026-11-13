@@ -18,6 +18,13 @@ function partKeys(meshes) {
   return meshes.map((m) => m.name ?? `shape ${++unnamed}`);
 }
 
+/** Whether a part's path ("ship/heatshield/tiles") is the part or group `name` names: the whole path, a group
+ * ("ship/heatshield"), or a run of its names ("heatshield"), as tule screenshot reads --hide (camera.py). */
+export function namedBy(path, name) {
+  const n = String(name).trim().replace(/^\/+|\/+$/g, "");
+  return !!n && `/${path}/`.includes(`/${n}/`);
+}
+
 /** viewer: the Viewer; project: () => the open project's id. */
 export function initParts({ viewer, project }) {
   const $ = (id) => document.getElementById(id);
@@ -253,10 +260,41 @@ export function initParts({ viewer, project }) {
     restyle();
   });
 
+  // parts to hide by name (a link's ?hide=, window.tule.hide): applied to the next frame that has parts
+  let wanted = null;
+  const applyWanted = () => {
+    if (!wanted || !keys.length) return;
+    for (const k of new Set(keys)) setHidden(k, wanted.some((n) => namedBy(k, n)));
+    wanted = null;
+  };
+
   return {
+    /** Hides the parts and groups these names name ("tiles", "ship/flaps": as tule screenshot --hide), and
+     * shows the rest; on the shown parts now, or on the next ones drawn. */
+    hide(names) {
+      wanted = (Array.isArray(names) ? names : String(names ?? "").split(",")).map((n) => String(n).trim()).filter(Boolean);
+      if (keys.length) {
+        applyWanted();
+        restyle();
+      }
+    },
+    /** The hidden parts' names, a group's name for a whole hidden group (for a link). */
+    hidden() {
+      if (!offered) return [];
+      const out = [];
+      const seen = new Set();
+      for (const row of [...rows.values()].sort((a, b) => a.depth - b.depth)) {
+        if (!row.keys.length || !row.keys.every((k) => isHidden(k)) || row.keys.some((k) => seen.has(k))) continue;
+        if (row.id.endsWith(" ×")) continue; // a folded row of numbered parts: name them
+        row.keys.forEach((k) => seen.add(k));
+        out.push(row.kind === "group" ? row.id.slice(2) : row.keys[0]);
+      }
+      return out;
+    },
     /** A new frame (or a replayed one): returns its viewer style. The tree is offered for several parts. */
     frame(meshes) {
       keys = partKeys(meshes);
+      applyWanted();
       offered = keys.length > 1;
       const next = offered ? JSON.stringify(keys) : "";
       if (next !== shape) {

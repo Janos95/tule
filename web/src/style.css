@@ -197,6 +197,8 @@ main {
   color: var(--on-accent);
 }
 
+.hud button.icon { width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+
 .hud button svg {
   fill: none;
   stroke: currentColor;
@@ -854,7 +856,7 @@ main {
 
 .page { position: absolute; inset: 0; display: none; overflow: auto; background: var(--bg); }
 #stage.paged .page { display: block; }
-#stage.paged #annotate-toggle, #stage.paged #fit, #stage.paged #counts, #stage.paged #caption, #stage.paged #marks, #stage.paged #pick,
+#stage.paged #annotate-toggle, #stage.paged #fit, #stage.paged #view-link, #stage.paged #counts, #stage.paged #caption, #stage.paged #marks, #stage.paged #pick,
 #stage.paged #ink, #stage.paged #annotate, #stage.paged #annot-shown { display: none; }
 .page-body { max-width: 920px; margin: 0 auto; padding: 52px 28px 40px; }
 .page-empty { color: var(--muted); font-size: var(--fs-body); text-align: center; margin-top: 18vh; }

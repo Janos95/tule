@@ -82,6 +82,10 @@ const state = {
   drawn: null, // the key of the last drawing that finished (state.shown while loading is the next one)
   record: null, // what is drawn, for an annotation: {name, kind, title, files, frame}
 };
+// a link's camera (?cam=az,el,distance,tx,ty,tz[,fov], as tule screenshot prints it) and hidden parts (?hide=a,b):
+// applied once the output is drawn
+let wantCam = parseCam(new URLSearchParams(location.search).get("cam"));
+if (new URLSearchParams(location.search).get("hide")) parts?.hide(new URLSearchParams(location.search).get("hide"));
 const meshes = new Map(); // hash -> Promise<parts>
 const pending = new Map(); // rid -> {resolve, reject, raw: bytes wanted as they are}
 let ws = null;
@@ -874,6 +878,7 @@ function remember() {
   else u.searchParams.delete("f");
   if (state.frame > 0) u.searchParams.set("frame", String(state.frame + 1));
   else u.searchParams.delete("frame");
+  if (!wantCam) u.searchParams.delete("cam"); // the link's camera, once used, is not this view's
   history.replaceState(null, "", u);
 }
 
@@ -1094,6 +1099,10 @@ async function show() {
     const all = loaded.flatMap((ps, i) => ps.map((m) => named(m, shownFiles[i], i)));
     const style = parts ? parts.frame(all) : undefined;
     viewer?.setMeshes(all, first && !drawn ? "fresh" : "auto", style, placed ? studyBox(o, shownFiles, loaded) : null);
+    if (wantCam && viewer) {
+      viewer.setOrbit(wantCam);
+      wantCam = null;
+    }
     const field = (name) => {
       const f = o.fields.find((x) => x.file === name);
       return f ? readFile(f) : Promise.reject(new Error("not in the output"));
@@ -1211,6 +1220,75 @@ $("scrub").addEventListener("input", (e) => {
 });
 
 $("fit").addEventListener("click", () => viewer?.fit());
+
+// ------------------------------------------------------------ the camera as numbers (tule screenshot's)
+
+/** "az,el,distance,tx,ty,tz[,fov]" -> {azimuth, elevation, distance, target, fov}, or null. */
+function parseCam(text) {
+  if (!text) return null;
+  const v = String(text).split(",").map(Number);
+  if (!(v.length === 6 || v.length === 7) || !v.every(Number.isFinite) || !(v[2] > 0)) return null;
+  return { azimuth: v[0], elevation: v[1], distance: v[2], target: v.slice(3, 6), fov: v[6] ?? 30 };
+}
+const camParam = (c) => [c.azimuth, c.elevation, c.distance, ...c.target, c.fov].map((x) => +x.toPrecision(7)).join(",");
+
+/** A link to this output from this camera, with the hidden parts. */
+function viewLink() {
+  const u = new URL(location.href);
+  u.searchParams.set("cam", camParam(viewer.orbit()));
+  const hidden = parts?.hidden() ?? [];
+  if (hidden.length) u.searchParams.set("hide", hidden.join(","));
+  else u.searchParams.delete("hide");
+  return u.toString().replace(/%2C/g, ",").replace(/%2F/g, "/");
+}
+
+$("view-link").addEventListener("click", async () => {
+  if (!viewer) return;
+  const link = viewLink();
+  const c = viewer.orbit();
+  const what = `az ${+c.azimuth.toFixed(1)}°, el ${+c.elevation.toFixed(1)}°, ${+c.distance.toPrecision(4)} mm`;
+  try {
+    await navigator.clipboard.writeText(link);
+    flash(`View link copied: ${what} (tule screenshot --cam=${camParam(c)})`);
+  } catch {
+    prompt("This view (tule screenshot --cam=… takes the cam= part):", link);
+  }
+});
+// a moved camera is no longer the link's
+viewer?.controls.addEventListener("start", () => {
+  const u = new URL(location.href);
+  if (!u.searchParams.has("cam")) return;
+  u.searchParams.delete("cam");
+  history.replaceState(null, "", u);
+});
+
+// For scripts (a headless browser): the same camera as tule screenshot.
+//   await tule.ready()                                   the output drawn
+//   tule.setCamera({azimuth: 30, elevation: 20, distance: 15000, target: [0, 0, 60000], fov: 30})  or "30,20,15000,0,0,60000"
+//   tule.getCamera()                                     {azimuth, elevation, distance, target, fov, cam}
+//   tule.hide(["tiles", "ship/flaps"])                   parts or groups not drawn ([] shows all)
+//   tule.capture({width: 1600, height: 1200, ...camera}) a PNG data URL, exactly that size, as tule screenshot frames it
+//                                                        (no floor grid unless grid: true; the view is left as it was)
+window.tule = {
+  getCamera: () => (viewer ? { ...viewer.orbit(), cam: camParam(viewer.orbit()) } : null),
+  setCamera(c) {
+    const cam = typeof c === "string" ? parseCam(c) : c;
+    if (!cam) throw new Error("a camera is {azimuth, elevation, distance, target: [x, y, z], fov} or \"az,el,distance,tx,ty,tz[,fov]\"");
+    viewer?.setOrbit(cam);
+    return window.tule.getCamera();
+  },
+  hide: (names) => parts?.hide(names ?? []),
+  viewLink: () => (viewer ? viewLink() : null),
+  ready: () =>
+    new Promise((resolve) => {
+      const check = () => (state.shown && state.drawn === state.shown && !wantCam ? resolve(true) : setTimeout(check, 100));
+      check();
+    }),
+  capture({ width = 1200, height = 900, grid = false, background, ...camera } = {}) {
+    const cam = typeof camera.cam === "string" ? parseCam(camera.cam) : Object.keys(camera).length ? camera : null;
+    return viewer?.shot(width, height, cam, { grid, ...(background ? { background } : {}) }).toDataURL("image/png") ?? null;
+  },
+};
 document.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "f" || e.key === "F") viewer?.fit();

@@ -32,6 +32,7 @@ const BEHIND = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits
 
 // the 3/4 view's camera direction (from the target); z is up, "front" looks along +y
 const ISO = [0.62, -1.0, 0.68];
+const MAX_EL = 89.99; // an orbit's elevation stays off the poles, so it keeps its azimuth (as tule screenshot)
 
 /** Sets a geometry's positions to rest + scale × vec (or rest), reusing its own array: whether anything changed. */
 function place(geometry, rest, vec, scale) {
@@ -789,6 +790,66 @@ export class Viewer {
     this.fitted ||= this.bounds?.clone() ?? null;
     this.moved = true; // a chosen view (an annotation's): keep it
     this.dirty = true;
+  }
+
+  /** The camera as tule screenshot names it (cli/tule_cli/camera.py): an orbit about the target, z up.
+   * azimuth: degrees about +Z from +X toward +Y; elevation: above the XY plane; distance: mm to the
+   * target; fov: the vertical field of view in degrees. */
+  orbit() {
+    const t = this.controls.target;
+    const d = this.camera.position.clone().sub(t);
+    const distance = d.length() || 1;
+    const r = (x, n = 7) => +x.toPrecision(n);
+    return {
+      azimuth: r(THREE.MathUtils.radToDeg(Math.atan2(d.y, d.x)), 6),
+      elevation: r(THREE.MathUtils.radToDeg(Math.asin(Math.max(-1, Math.min(1, d.z / distance)))), 6),
+      distance: r(distance),
+      target: [t.x, t.y, t.z].map((v) => r(v)),
+      fov: r(this.camera.fov, 6),
+    };
+  }
+
+  /** Puts the camera at an orbit (orbit()'s numbers; missing ones stay as they are). */
+  setOrbit({ azimuth, elevation, distance, target, fov } = {}) {
+    const now = this.orbit();
+    const az = THREE.MathUtils.degToRad(Number.isFinite(azimuth) ? azimuth : now.azimuth);
+    const el = THREE.MathUtils.degToRad(Math.max(-MAX_EL, Math.min(MAX_EL, Number.isFinite(elevation) ? elevation : now.elevation)));
+    const dist = distance > 0 ? distance : now.distance;
+    const t = Array.isArray(target) && target.length === 3 && target.every(Number.isFinite) ? target : now.target;
+    const position = [t[0] + dist * Math.cos(el) * Math.cos(az), t[1] + dist * Math.cos(el) * Math.sin(az), t[2] + dist * Math.sin(el)];
+    this.setCamera({ position, target: t, up: [0, 0, 1], fov: fov > 0 ? fov : now.fov });
+  }
+
+  /** A picture through the camera (or through `orbit`, leaving the view as it is), exactly w×h pixels with
+   * nothing shifted for panels and no floor grid (grid: true keeps it): what tule screenshot draws through the
+   * same camera. */
+  shot(w, h, orbit = null, { background = palette("--view-mid"), grid = false } = {}) {
+    const r = this.renderer;
+    const cam = this.camera;
+    const saved = { cam: this.getCamera(), size: r.getSize(new THREE.Vector2()), ratio: r.getPixelRatio(), moved: this.moved, fitted: this.fitted, grid: this.grid.visible };
+    this.grid.visible = grid && saved.grid;
+    if (orbit) this.setOrbit(orbit);
+    r.setPixelRatio(1);
+    r.setSize(w, h, false);
+    cam.aspect = w / h;
+    cam.clearViewOffset();
+    cam.updateProjectionMatrix();
+    r.render(this.scene, cam);
+    const out = Object.assign(document.createElement("canvas"), { width: w, height: h });
+    const g = out.getContext("2d");
+    g.fillStyle = background;
+    g.fillRect(0, 0, w, h);
+    g.drawImage(r.domElement, 0, 0, w, h, 0, 0, w, h);
+    this.grid.visible = saved.grid;
+    r.setPixelRatio(saved.ratio);
+    r.setSize(saved.size.x, saved.size.y, false);
+    cam.aspect = saved.size.x / saved.size.y;
+    this.setCamera(saved.cam);
+    this.moved = saved.moved;
+    this.fitted = saved.fitted;
+    this.offset();
+    r.render(this.scene, cam);
+    return out;
   }
 
   /** Orbit, pan and zoom on or off (annotation strokes keep their view). */
