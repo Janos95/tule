@@ -101,6 +101,9 @@ export const snapshotKey = (p: string, id: string) => `projects/${p}/snapshots/$
 export const meshKey = (p: string, hash: string) => `projects/${p}/meshes/v2/${hash}`;
 const MESH_MAGIC = [84, 77, 90, 50]; // "TMZ2": pack_mesh's format, the one kept
 const MESH_CACHE_MAX = 64 << 20; // a bigger mesh is not kept
+const NPY_MAGIC = [0x93, 78, 85, 77, 80, 89]; // "\x93NUMPY": an assembly's placements (.npy), kept beside the meshes
+/** The cache name of a placements .npy read whole: its content hash, apart from the meshes'. */
+const npyCache = (hash: string) => `npy-${hash}`;
 const VIEW_CHUNK = 8 << 20; // a cached mesh goes to the viewer in parts of this size, as the machine sends them
 const HASH = /^[0-9a-f]{32}$/;
 /** A pushed git bundle, and a Git LFS object, in R2. */
@@ -915,7 +918,8 @@ export class Project extends DurableObject<Env> {
     if (!last) return;
     const size = p.parts.reduce((n, c) => n + c.byteLength, 0);
     const first = p.parts[0];
-    if (!this.state.id || size > MESH_CACHE_MAX || !MESH_MAGIC.every((v, i) => first?.[i] === v)) return;
+    const magic = p.hash!.startsWith("npy-") ? NPY_MAGIC : MESH_MAGIC;
+    if (!this.state.id || size > MESH_CACHE_MAX || !magic.every((v, i) => first?.[i] === v)) return;
     const data = new Uint8Array(size);
     let at = 0;
     for (const c of p.parts) data.set(c, at), (at += c.byteLength);
@@ -970,8 +974,13 @@ export class Project extends DurableObject<Env> {
       const away = m0?.on ? "the machine is reconnecting; try again in a moment" : "the machine is stopped: start it (tule up)";
       if (m.t === "req") {
         const r = m as { rid: number; op?: unknown; args?: unknown };
+        // an assembly's placed copies (a .npy read whole, by its content hash): from the cache like its meshes,
+        // so a stopped machine's assembly still shows its tiles; kept when the machine sends it
+        const a = (r.args ?? {}) as { path?: unknown; hash?: unknown };
+        const npy = r.op === "read" && typeof a.path === "string" && /\.npy$/i.test(a.path) && typeof a.hash === "string" && HASH.test(a.hash) ? npyCache(a.hash) : undefined;
+        if (npy && (await this.sendCached(ws, r.rid, npy))) return;
         if (!agent) return ws.send(JSON.stringify({ t: "res", rid: r.rid, error: away }));
-        const grid = this.relay(ws, r.rid, "req", slot!);
+        const grid = this.relay(ws, r.rid, "req", slot!, npy);
         agent.send(JSON.stringify({ t: "req", rid: grid, op: r.op, args: r.args ?? {} }));
         this.touch(slot);
         return;

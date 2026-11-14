@@ -924,7 +924,8 @@ let pageCleanup = null;
 const reads = new Map(); // hash -> Promise<ArrayBuffer>: a small file is read from the machine once
 function readFile(f) {
   if (!reads.has(f.hash)) {
-    const p = req("read", { path: f.path, max: WHOLE }, 300_000).then((buf) => {
+    // with its content hash: a placements .npy then comes from the cache when the machine is stopped
+    const p = req("read", { path: f.path, max: WHOLE, ...(f.hash ? { hash: f.hash } : {}) }, 300_000).then((buf) => {
       if (buf.byteLength > 8 << 20) reads.delete(f.hash); // a big one each time it is shown
       return buf;
     });
