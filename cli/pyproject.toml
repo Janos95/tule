@@ -13,7 +13,7 @@ dependencies = ["websockets>=15"]
 [project.optional-dependencies]
 # tule screenshot / inspect also need the tule modeling package (python/)
 render = ["numpy>=1.24", "pillow>=10.1"]
-test = ["numpy>=1.24", "pillow>=10.1", "pytest>=8"]
+test = ["numpy>=1.24", "pillow>=10.1", "pytest>=8", "pytest-xdist>=3"]
 
 [project.scripts]
 tule = "tule_cli:main"

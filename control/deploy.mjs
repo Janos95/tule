@@ -7,6 +7,8 @@
 //
 //   node deploy.mjs                 the image of the newest image commit on origin/main
 //   node deploy.mjs --local-image   build and push runtime/Dockerfile from here instead (wrangler's own way)
+//   node deploy.mjs --previous-image  the newest image CI has finished, even if later commits change the image
+//                                     (an urgent Worker fix while CI still builds; it lists what the image lacks)
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 
@@ -41,8 +43,20 @@ else {
   const later = git("rev-list", "--ancestry-path", `${commit}..HEAD`).split("\n").filter(Boolean).reverse();
   let digest = null;
   for (const c of [commit, ...later]) if ((digest = await imageDigest(`sha-${c.slice(0, 7)}`))) break;
-  if (!digest) fail(`the machine image for ${short} (${subject}) is not in Cloudflare's registry yet. CI builds it after the tests: ${ciStatus(commit)}`);
-  console.log(`deploy: machine image of ${short} (${subject}), ${digest.slice(0, 19)}…`);
+  if (digest) console.log(`deploy: machine image of ${short} (${subject}), ${digest.slice(0, 19)}…`);
+  else if (!process.argv.includes("--previous-image"))
+    fail(`the machine image for ${short} (${subject}) is not in Cloudflare's registry yet. CI builds it after the tests: ${ciStatus(commit)}\n` +
+      `deploy: to ship the Worker now with the last image CI finished, run: node deploy.mjs --previous-image`);
+  else {
+    // the newest commit before it that has an image (CI tags the newest commit of each push)
+    let found = null;
+    for (const c of git("rev-list", "--max-count", "300", `${commit}~1`).split("\n").filter(Boolean))
+      if ((digest = await imageDigest(`sha-${c.slice(0, 7)}`))) { found = c; break; }
+    if (!found) fail("no machine image in Cloudflare's registry for the last 300 commits");
+    const missing = git("diff", "--stat", found, "HEAD", "--", ...IMAGE_PATHS);
+    console.warn(`deploy: --previous-image: the image of ${found.slice(0, 7)} (${git("log", "-1", "--format=%s", found)}), ${digest.slice(0, 19)}…\n` +
+      `deploy: machines won't have these changes until the next deploy with CI's newer image:\n${missing}`);
+  }
 
   // a copy of wrangler.jsonc that names the image instead of its Dockerfile (same folder: its paths stay right)
   const config = readFileSync("wrangler.jsonc", "utf8");

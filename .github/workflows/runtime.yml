@@ -1,8 +1,10 @@
-# Tests the Python packages, then builds the machine images and pushes them to GHCR:
+# Tests the Python packages and, at the same time, builds the machine images; once both pass, publishes them:
 #   ghcr.io/janos95/tule-runtime:cpu   and :sha-<short>-cpu    (runtime/Dockerfile, Cloudflare Containers)
 #     also to Cloudflare's registry as tule-project-cpu:sha-<short>, which `npm run deploy` in control/ deploys
 #   ghcr.io/janos95/tule-runtime:cuda  and :sha-<short>-cuda   (runtime/Dockerfile.cuda, RunPod pods, your NVIDIA computers)
 #   ghcr.io/janos95/tule-runtime:cpu-arm64                       (runtime/Dockerfile on ARM, for Apple Silicon computers)
+# The image jobs push only the commit's own tag (sha-<short>-<flavor>) while the tests run; the publish job, after
+# both, points the moving tags (:cpu, :cuda, :cpu-arm64) at them and pushes the cpu image to Cloudflare.
 name: runtime
 
 on:
@@ -45,10 +47,9 @@ jobs:
       - name: Fidget bindings (tule.sdf's engine; maturin builds them with the runner's Rust)
         run: rustup toolchain install 1.95.0 --profile minimal && rustup default 1.95.0 && pip install ./fidget-py
       - run: pip install -e "python[test]" -e "cli[test]"
-      - run: python -m pytest -q python cli
+      - run: python -m pytest -q -n auto python cli   # pytest-xdist: one worker per core
 
   image:
-    needs: test
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -105,32 +106,53 @@ jobs:
           docker run --rm --entrypoint tule "$IMAGE:${{ matrix.flavor }}" docs
           docker run --rm -v "$PWD/examples:/examples:ro" -e TULE_OUTPUTS=/tmp/outputs --entrypoint sh "$IMAGE:${{ matrix.flavor }}" \
             -c "python /examples/bracket.py && tule screenshot -o /tmp/view.png --labels"
-      - name: Push
+      - name: Push the commit's tag (the moving tags wait for the tests, in publish)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ matrix.flavor }}
-            ${{ env.IMAGE }}:sha-${{ steps.meta.outputs.short }}-${{ matrix.flavor }}
+          tags: ${{ env.IMAGE }}:sha-${{ steps.meta.outputs.short }}-${{ matrix.flavor }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.flavor }}
+
+  publish:
+    needs: [test, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/janos95/tule-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point the moving tags at this commit's images (no rebuild)
+        run: |
+          for f in cpu cpu-arm64 cuda; do
+            docker buildx imagetools create -t "$IMAGE:$f" "$IMAGE:sha-${{ steps.meta.outputs.short }}-$f"
+          done
       - uses: actions/setup-node@v4
-        if: matrix.flavor == 'cpu'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: control/package-lock.json
       - name: Push to Cloudflare's registry (control/deploy.mjs pins this image by digest)
-        if: matrix.flavor == 'cpu'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: d4ea6567fb9a32c0979ace82a862f4fe
         run: |
-          docker tag "$IMAGE:cpu" "tule-project-cpu:sha-${{ steps.meta.outputs.short }}"
+          docker pull --platform linux/amd64 "$IMAGE:sha-${{ steps.meta.outputs.short }}-cpu"
+          docker tag "$IMAGE:sha-${{ steps.meta.outputs.short }}-cpu" "tule-project-cpu:sha-${{ steps.meta.outputs.short }}"
           npm ci --prefix control --ignore-scripts
           npx --prefix control wrangler containers push "tule-project-cpu:sha-${{ steps.meta.outputs.short }}"

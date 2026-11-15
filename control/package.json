@@ -11,7 +11,8 @@
     "deploy": "npm --prefix ../web run build && node deploy.mjs",
     "types": "wrangler types",
     "check": "wrangler types && tsc --noEmit",
-    "deploy:local-image": "npm --prefix ../web run build && node deploy.mjs --local-image"
+    "deploy:local-image": "npm --prefix ../web run build && node deploy.mjs --local-image",
+    "deploy:previous-image": "npm --prefix ../web run build && node deploy.mjs --previous-image"
   },
   "devDependencies": {
     "typescript": "5.9.3",
