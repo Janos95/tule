@@ -101,4 +101,4 @@ On the branch `fix/viewer-clip-and-smoothness`.
 - `tule screenshot --section` draws the same cut.
 - Fix: `tule screenshot --elevation 0` was dropped as if no elevation had been given.
 
-**Known issue left:** `tule inspect` crashes on this output (`'_AllFaces' object has no attribute 'info'`).
+**Fixed afterwards:** `tule inspect` crashed on mesh outputs like this one; it now reports them (8843648).
