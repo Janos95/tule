@@ -21,7 +21,7 @@ export async function resolve(env: Env, user: User, name: unknown): Promise<Proj
   const p = await accounts(env).project(user.id, name);
   if (p) return p;
   const names = (await accounts(env).projects(user.id)).map((x) => x.name);
-  return fail(`no project ${JSON.stringify(name)}`, names.length ? `your projects: ${names.join(", ")}; or create it` : "create it first (tule new, or the projects_create tool)");
+  return fail(`no project ${JSON.stringify(name)}`, names.length ? `your projects: ${names.join(", ")}; or create it` : "create it first (tule new, or the project tool with action=create)");
 }
 
 export const isRef = (r: ProjectRef | Result): r is ProjectRef => typeof (r as ProjectRef).id === "string" && !("error" in r);
@@ -48,7 +48,7 @@ export async function createProject(env: Env, user: User, name: unknown, origin:
   const p = await accounts(env).createProject(user.id, name);
   if ("error" in p) return p;
   await projectStub(env, p.id).init(p.id, name, user.id);
-  return { project: name, viewer: viewerUrl(origin, name), next: `load it on a machine (tule up -p ${name}, or machine_start)` };
+  return { project: name, viewer: viewerUrl(origin, name), next: `load it on a machine (tule up -p ${name}, or the machine tool with action=start)` };
 }
 
 export async function deleteProject(env: Env, user: User, name: unknown): Promise<Result> {
@@ -97,7 +97,7 @@ export async function forget(env: Env, user: User, name: unknown, machine: unkno
   const p = await resolve(env, user, name);
   if (!isRef(p)) return p;
   const m = machineArg(machine);
-  return m ? projectStub(env, p.id).forget(m) : fail("say which machine's copy to forget", "the ids are in machine_status");
+  return m ? projectStub(env, p.id).forget(m) : fail("say which machine's copy to forget", "the ids are in info what=project");
 }
 
 export async function join(env: Env, user: User, name: unknown, origin: string): Promise<Result> {
@@ -159,7 +159,7 @@ export async function addSshKey(env: Env, user: User, key: unknown, name: unknow
 export async function removeSshKey(env: Env, user: User, id: unknown): Promise<Result> {
   const ok = await accounts(env).removeSshKey(user.id, String(id ?? ""));
   if (ok) await refreshKeys(env, user);
-  return ok ? { removed: id } : fail(`no SSH key ${JSON.stringify(id)}`, "list them with ssh_keys_list");
+  return ok ? { removed: id } : fail(`no SSH key ${JSON.stringify(id)}`, "list them with info what=keys");
 }
 
 export async function connectInfo(env: Env, user: User, origin: string, name: string): Promise<Result> {

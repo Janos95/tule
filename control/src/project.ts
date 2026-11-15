@@ -218,7 +218,7 @@ export class Project extends DurableObject<Env> {
     }
     const on = this.connected();
     if (on.length === 1) return { slot: on[0].id };
-    if (!on.length) return { error: "the project's machine is not running", hint: "start one: tule up, or machine_start" };
+    if (!on.length) return { error: "the project's machine is not running", hint: "start one: tule up, or the machine tool with action=start" };
     return { error: `the project runs on ${on.map((m) => m.id).join(" and ")}`, hint: "say which machine (--machine, or the machine argument)" };
   }
 
@@ -517,7 +517,7 @@ export class Project extends DurableObject<Env> {
     const p = this.pick(machine);
     if ("error" in p) return p;
     const m = this.machines[p.slot];
-    if (m.on) return { error: `${m.id} is running`, hint: "stop it first (machine_stop), or save its work" };
+    if (m.on) return { error: `${m.id} is running`, hint: "stop it first (machine action=stop), or save its work" };
     delete this.machines[p.slot];
     this.outputs.delete(p.slot);
     await this.ctx.storage.delete(`outputs:${p.slot}`);
@@ -654,7 +654,7 @@ export class Project extends DurableObject<Env> {
   /** Sends a command to a slot's agent and waits for its reply. */
   ask(slot: string, msg: Result, timeoutMs: number): Promise<Result> {
     const agent = this.agent(slot);
-    if (!agent) return Promise.resolve({ error: `the machine ${slot} is not running`, hint: "start it with tule up, or machine_start" });
+    if (!agent) return Promise.resolve({ error: `the machine ${slot} is not running`, hint: "start it with tule up, or the machine tool with action=start" });
     const rid = crypto.getRandomValues(new Uint32Array(1))[0];
     return new Promise((resolve) => {
       const timer = setTimeout(() => {

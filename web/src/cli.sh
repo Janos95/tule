@@ -3,7 +3,7 @@
 #
 #   curl -fsSL __TULE_URL__/cli.sh | sh -s -- tulel_…
 #
-# Agents get this command, with a one-time code, from the connector's connect_info,
+# Agents get this command, with a one-time code, from the connector's info (what=connect),
 # so the user does nothing. Without a code, `tule login` shows a link to approve.
 # Running it again is safe.
 set -eu

@@ -10,7 +10,7 @@ How it fits together: [DESIGN.md](DESIGN.md).
 
 Add `https://tule.janosmeny.com/mcp` to your agent as a custom connector (Claude, ChatGPT) or as a remote MCP
 server (Claude Code, Codex, Cursor). The agent then installs and signs in the `tule` CLI itself: the connector's
-`connect_info` gives it the command.
+`info` (what=connect) gives it the command.
 
 By hand:
 

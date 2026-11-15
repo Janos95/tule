@@ -65,7 +65,7 @@ Tule does not run or bill for an agent. Users bring their own.
    connector, the app opens Tule's sign-in page (MCP OAuth): the user signs
    in with Google and approves "Allow Claude to manage your Tule projects".
    That is the user's only step. The agent sets up its CLI itself:
-   `connect_info` returns one command, `curl -fsSL <tule>/cli.sh | sh -s --
+   `info` (what=connect) returns one command, `curl -fsSL <tule>/cli.sh | sh -s --
    tulel_…`, that installs the CLI (with uv, else pip) from Tule's own
    `/install/` wheel and signs it in with a code the connector approved in
    advance (works once, for an hour). The user never opens a terminal, copies
@@ -185,7 +185,7 @@ containerized:
   WebSocket to the computer's **Host** Durable Object and reports its specs
   (cores, memory, GPUs, architecture). No inbound ports, no tunnel software.
 - **Machines on it:** `tule up -p bracket --on <computer>` (or
-  `machine_start` with the computer's name): the Project Durable Object asks
+  the `machine` tool (action=start) with the computer's name): the Project Durable Object asks
   the Host object to start a container; the host runs Tule's machine image
   (`docker run`, the arch's image, `--gpus all` if it has GPUs, the join token
   in the environment, **no CPU or memory limits**: the container may use the
@@ -219,7 +219,7 @@ where it runs:
    only new bytes move), and tells the viewer when `outputs/` changes.
 4. On stop it takes a final snapshot.
 
-**Another machine** (`tule up --machine gpu-rtx4090`, the `machine_start`
+**Another machine** (`tule up --machine gpu-rtx4090`, the `machine`
 tool) loads the project there too, with its own copy (see "Several machines
 per project, saves in git"). Resizing the Tule cloud machine (`cpu-1/2/4`):
 the Project Durable Object asks it to snapshot and stop, starts the new
@@ -300,7 +300,7 @@ There are two separate kinds of saving:
   They take the whole `/workspace`, unsaved and unmerged work included, so
   nothing is lost when a machine disconnects or a pod is preempted. They
   never commit or merge.
-- **Save is git.** `tule save` (the `save` MCP tool, or on the machine) adds
+- **Save is git.** `tule save` (the `project` MCP tool with action=save, or on the machine) adds
   everything, commits, fetches, merges main, and pushes to main. Work on
   different parts merges cleanly; a conflict stops the save, lists the
   files, and the agent resolves it with ordinary git and saves again.
@@ -329,7 +329,7 @@ There are two separate kinds of saving:
   main. Projects from before git saves start from their newest autosave.
 - **Unsaved work stays visible:** a stopped machine with unsaved work stays
   on the project ("stopped · unsaved") until it is loaded again and saved,
-  or forgotten (`tule forget --machine …`, `machine_forget`).
+  or forgotten (`tule forget --machine …`, `machine` action=forget).
 - **Choosing a machine:** commands take `--machine` (MCP: `machine`), and
   need it only when several run. SSH host names are `tule-<project>.<slot>`.
 - **UI:** the projects list shows each project with its machines as rows
@@ -753,7 +753,7 @@ request `id`.
   cookie for 30 days. `tule login` uses a device code: it shows a link and a
   code, the user approves it at `/device`, and the CLI receives an API key.
   `tule login --code tulel_…` redeems a device code the connector's
-  `connect_info` approved in advance, so agents sign in without the user.
+  `info` (what=connect) approved in advance, so agents sign in without the user.
   API keys (`tule_…`) are also made in Settings. `DEV_TOKEN` acts as a "dev"
   user, for tests only.
 - **Admin and support:** admins are the accounts in `ADMIN_EMAILS` (signed in,
@@ -808,25 +808,29 @@ over SSH, and skills route the agent between the two.
 ### MCP server (control plane)
 
 Hosted at `/mcp`, Streamable HTTP. Auth: MCP OAuth (the user signs in with
-Google and approves the agent), or a Tule API key as a Bearer header. Tools,
-grouped by resource:
+Google and approves the agent), or a Tule API key as a Bearer header. Five
+tools, so an agent's context isn't spent on a long list (every read in one
+read-only tool, so clients don't ask before reading):
 
-- **Projects:** list, create (from the template), rename, delete (fork later).
-- **Machines:** start, stop, resize (`cpu-1`, `cpu-2`, `cpu-4`, `gpu-<type>`),
-  status, the GPU list with prices; connection info for SSH; a join token for
-  a machine the agent provisions itself (logs later).
-- **Snapshots and outputs:** list snapshots, restore; list outputs with viewer
-  links.
-- **Keys:** SSH keys (list, add, remove), API keys (create, revoke).
-- **Usage:** machine hours, GPU spend.
+- **`guide(topic)`** serves `skills/*.md` (bundled at build time).
+- **`info(what)`** reads: projects, one project's machines and latest save,
+  outputs with viewer links, snapshots, connection info for SSH, resources
+  (machine hours, GPU spend, the user's computers, GPUs with prices), keys.
+- **`project(action)`:** create (from the template), rename, delete, save,
+  join (a token for a machine the agent provisions itself).
+- **`machine(action)`:** start (or resize: `cpu-1`, `cpu-2`, `cpu-4`,
+  `gpu-<type>`, a computer), stop, forget, snapshot, restore.
+- **`keys(action)`:** SSH keys (add, remove), API keys (create, revoke).
 
-No exec or file tools: like RunPod's, the MCP never carries the work. Plus
-`guide(topic)`, which serves `skills/*.md` (bundled at build time).
+Every tool states all of its hints (read-only, destructive, idempotent, open
+world), as the Claude and ChatGPT directories require.
+
+No exec or file tools: like RunPod's, the MCP never carries the work.
 
 ### `tule` CLI (on the agent's machine)
 
 ```
-tule login [--code tulel_…]    # device code: approve in the browser, or a code from connect_info
+tule login [--code tulel_…]    # device code: approve in the browser, or a code from the connector's info (what=connect)
 tule keys add ~/.ssh/id_ed25519.pub
 tule new bracket               # create a project from the template
 tule up [--machine gpu-rtx4090] # load the project on a machine (others keep running)

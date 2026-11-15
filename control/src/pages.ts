@@ -309,7 +309,7 @@ const agentStart = (user: User, origin: string, shown: Example[]) =>
       }</li>
     </ol>${examples(shown)}</div></div>`;
 
-/** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (connect_info).
+/** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (info what=connect).
     Settings also shows the CLI command, for working on a machine by hand. */
 /** A value to copy, shown in full under its label (an install command, a new key). */
 const copyBlock = (label: string, text: string, note: Html | string = "", id = "") =>
