@@ -28,6 +28,7 @@ const GHOST_OPACITY = 0.12; // the other parts while one is highlighted
 const DIM = "--line-strong"; // faces an overlay does not mention (a palette.css variable)
 const LAYERS = ["overlay", "annotate", "hover"];
 // surfaces sit a little behind their edges and behind opaque parts they touch
+const _corner = new THREE.Vector3();
 const BEHIND = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 2 };
 
 // the 3/4 view's camera direction (from the target); z is up, "front" looks along +y
@@ -57,8 +58,12 @@ export class Viewer {
   constructor(el) {
     this.el = el;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true }));
+    // no preserveDrawingBuffer: every read of the canvas (shot, capture, preview) renders right before it, and
+    // keeping the buffer costs a full-screen copy per frame on tiled GPUs (Apple, phones)
+    const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }));
     r.setPixelRatio(dpr);
+    this.ratio = dpr; // the resolution of a still view
+    this.motionRatio = dpr; // while the view moves: lowered (for good) when frames come too slowly, a huge model
     r.setClearColor(0x000000, 0);
     r.toneMapping = THREE.NeutralToneMapping;
     el.appendChild(r.domElement);
@@ -136,15 +141,42 @@ export class Viewer {
     new ResizeObserver(() => this.resize()).observe(el);
     this.resize();
     r.domElement.addEventListener("dblclick", () => this.controls.enabled && this.fit());
-    const loop = () => {
+    // While the camera moves, a model too heavy for the screen's full resolution (missed frames: a stutter) is
+    // drawn at a lower one, and sharp again as soon as it stops.
+    let moving = false;
+    let last = 0;
+    const late = []; // the last 30 moving frames: came late (a missed vsync)?
+    const loop = (t) => {
       requestAnimationFrame(loop);
-      if (this.controls.update() || this.dirty) {
+      const moved = this.controls.update();
+      if (moved) {
+        if (moving && last) {
+          late.push(t - last > 22);
+          if (late.length > 30) late.shift();
+          if (late.filter(Boolean).length >= 3 && this.motionRatio > 1) {
+            this.motionRatio = Math.max(1, this.motionRatio * 0.6);
+            late.length = 0;
+          }
+        }
+        if (r.getPixelRatio() !== this.motionRatio) r.setPixelRatio(this.motionRatio);
+        moving = true;
+      } else if (moving) {
+        moving = false;
+        late.length = 0;
+        if (r.getPixelRatio() !== this.ratio) {
+          r.setPixelRatio(this.ratio);
+          this.dirty = true;
+        }
+      }
+      last = t;
+      if (moved || this.dirty) {
         this.dirty = false;
+        this.clip();
         r.render(this.scene, cam);
         for (const f of this.listeners) f();
       }
     };
-    loop();
+    requestAnimationFrame(loop);
   }
 
   resize() {
@@ -734,18 +766,34 @@ export class Viewer {
     dist = Math.max(dist, 1.05 * r, 1e-3);
     this.controls.target.copy(c);
     cam.position.copy(c).addScaledVector(dir, dist);
-    this.clip(dist, r);
+    this.clip();
     this.controls.update();
     this.fitted = this.bounds.clone();
     this.moved = false;
     this.dirty = true;
   }
 
-  clip(dist, r) {
+  /** The near and far planes from where the camera is now (every frame, so zooming in never cuts into the
+   * model): near just short of the model's box, or, with the camera inside it, a small share of the distance to
+   * what it orbits; far well past the box's farthest corner (the floor grid reaches beyond it). */
+  clip() {
     const cam = this.camera;
-    cam.near = Math.max(dist - r, dist / 100) / 10;
-    cam.far = (dist + r) * 10;
-    cam.updateProjectionMatrix();
+    const b = this.bounds;
+    if (!b || b.isEmpty()) return;
+    const p = cam.position;
+    const focus = Math.max(p.distanceTo(this.controls.target), 1e-6);
+    let farthest = 0;
+    for (let i = 0; i < 8; i++) {
+      _corner.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
+      farthest = Math.max(farthest, _corner.distanceTo(p));
+    }
+    const far = Math.max(farthest, focus) * 4;
+    const near = Math.max(b.distanceToPoint(p) * 0.8, focus / 500, far / 2e5);
+    if (Math.abs(cam.near - near) > near * 0.01 || Math.abs(cam.far - far) > far * 0.01) {
+      cam.near = near;
+      cam.far = far;
+      cam.updateProjectionMatrix();
+    }
   }
 
   // the 3/4 view (from above, one of four corners) that sees the most surface
@@ -796,8 +844,8 @@ export class Viewer {
     this.controls.target.set(...target);
     if (up) cam.up.set(...up);
     if (fov) cam.fov = fov;
-    const r = this.bounds ? this.bounds.getBoundingSphere(new THREE.Sphere()).radius : 1;
-    this.clip(cam.position.distanceTo(this.controls.target), r);
+    cam.updateProjectionMatrix(); // the fov; clip() only updates it when the planes move
+    this.clip();
     this.controls.update();
     this.fitted ||= this.bounds?.clone() ?? null;
     this.moved = true; // a chosen view (an annotation's): keep it
@@ -927,10 +975,9 @@ export class Viewer {
       const z = p.dot(dir);
       dist = Math.max(dist, z + (1.08 * Math.abs(p.dot(right))) / th, z + (1.1 * Math.abs(p.dot(up))) / tv);
     }
-    const rad = this.bounds.getBoundingSphere(new THREE.Sphere()).radius || 1;
     cam.position.copy(c).addScaledVector(dir, Math.max(dist, 1e-3));
     cam.lookAt(c);
-    this.clip(dist, rad);
+    this.clip();
     // the box's corners as drawn: zoom until the farthest one is near the edge
     let reach = 0;
     for (let i = 0; i < 8; i++) {
@@ -961,6 +1008,7 @@ export class Viewer {
   /** The view as drawn, on a plain background: a canvas at the device's resolution. */
   capture(background = palette("--view-mid")) {
     const src = this.renderer.domElement;
+    if (this.renderer.getPixelRatio() !== this.ratio) this.renderer.setPixelRatio(this.ratio); // full resolution, even mid-move
     this.renderer.render(this.scene, this.camera);
     const out = document.createElement("canvas");
     out.width = src.width;
