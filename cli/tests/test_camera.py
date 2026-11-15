@@ -153,7 +153,7 @@ def test_screenshot_through_a_camera(rocket, capsys):
     out = capsys.readouterr().out
     assert Image.open(png).size == (320, 240)
     cam = parse_cam(out.split("?cam=")[1].split()[0].split("&")[0])
-    assert cam.azimuth == -90 and cam.target == pytest.approx((0, -4520, 6200)) and cam.distance < 3000
+    assert cam.azimuth == -90 and cam.elevation == 0 and cam.target == pytest.approx((0, -4520, 6200)) and cam.distance < 3000
     assert "&hide=fin" in out and "booster/tiles" in out.split("in view:")[1] and "booster/fin" not in out
     main(["screenshot", "--output", "rocket", "-o", str(png), f"--cam={cam.param()}", "--size", "320x240", "--no-edges"])
     assert f"?cam={cam.param()} " in capsys.readouterr().out  # the same camera again

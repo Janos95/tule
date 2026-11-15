@@ -787,7 +787,7 @@ CAMERA_KEYS = ("azimuth", "elevation", "distance", "fov", "fit", "target", "targ
 
 def _camera_args(args) -> dict:
     """The camera options given on the command line, as a batch camera's keys."""
-    out = {k: getattr(args, k) for k in CAMERA_KEYS if getattr(args, k, None) not in (None, False)}
+    out = {k: getattr(args, k) for k in CAMERA_KEYS if getattr(args, k, None) is not None and getattr(args, k) is not False}
     if args.height:
         out["size"] = [args.size, args.height]
     return out
