@@ -1,0 +1,6 @@
+# Tule project settings.
+
+[packages]
+# installed at every boot (the heavy stack is in the image)
+pip = []
+apt = []    # system packages, e.g. "prusa-slicer"
