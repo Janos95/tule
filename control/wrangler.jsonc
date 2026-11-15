@@ -26,7 +26,7 @@
   // ENCRYPTION_KEY (32 bytes, base64; encrypts stored RunPod keys), DEV_TOKEN.
   "vars": {
     "PUBLIC_URL": "https://tule.janosmeny.com",
-    "ALLOWED_EMAILS": "janos.meny@googlemail.com",
+    "ALLOWED_EMAILS": "*",
     // ADMIN_EMAILS: people with admin rights (support access to every project, deleting accounts)
     "ADMIN_EMAILS": "janos.meny@googlemail.com",
     "CPU_HOURS_MONTH": "100",
