@@ -34,6 +34,7 @@ Read one with `tule docs <topic>` (on the machine) or the connector's `guide(top
 | `loop` | the working loop: edit, build, look, iterate; project layout; saving and merging; long jobs |
 | `modeling` | writing geometry with `tule` (values, operators, selections, tags) |
 | `bodies` | meshes (STL, scans, topopt) and implicit bodies (lattices, blends) as parts; converting between kinds |
+| `implicit-parts` | revolved 2D profiles, polar/linear repeats, wall coordinates (cooling channels, ribs), tubes, fine meshing bands in big parts |
 | `outputs` | what the viewer shows and how to write it |
 | `drawings` | shop drawings: dimensions, tolerances, callouts, sections; exploded assembly drawings, parts lists |
 | `sheetmetal` | bent sheet parts: flanges, flat patterns, bend tables, DXF for the laser |
