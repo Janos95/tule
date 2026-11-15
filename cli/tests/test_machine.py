@@ -160,6 +160,22 @@ def test_inspect(outputs, capsys):
     assert json.loads(capsys.readouterr().out)[step][0]["tags"]["load"] == ["f12"]
 
 
+def test_inspect_a_mesh_output(tmp_path, capsys):
+    """A PLY output (a meshed implicit body is a tule.Mesh, not a B-rep) is reported as a mesh, not a crash."""
+    from tule import sdf
+
+    m = sdf.sphere(10).to_mesh(1.0).named("ball", "#cc5500")
+    d = tmp_path / "ball"
+    d.mkdir()
+    m.export_ply(str(d / "ball.ply"))
+    (p,) = inspect_file(str(d / "ball.ply"))
+    assert p["kind"] == "mesh" and p["name"] == "ball" and p["closed"] and p["triangles"] > 100
+    assert p["size"] == pytest.approx([20, 20, 20], abs=0.6) and p["volume"] == pytest.approx(4188.8, rel=0.03)
+    main(["inspect", str(d)])
+    out = capsys.readouterr().out
+    assert "mesh 'ball'" in out and "closed" in out
+
+
 @contextlib.contextmanager
 def local_agent(agent, tmp_path, monkeypatch):
     """``agent`` behind a tule-agent socket (runtime/local.py), with the CLI on a machine (no login)."""

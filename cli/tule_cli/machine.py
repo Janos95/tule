@@ -1187,6 +1187,12 @@ def inspect_file(path: str) -> list[dict]:
             out.append({"name": name, "kind": "mesh", "triangles": len(tri), "bounds": [P.min(0).tolist(), P.max(0).tolist()],
                         "size": (P.max(0) - P.min(0)).tolist(), "volume": abs(vol)})
             continue
+        if not hasattr(item, "solids"):  # a tule.Mesh (PLY/OBJ outputs, meshed implicit bodies): no B-rep faces
+            lo, hi = item.bounds
+            out.append({"name": name, "kind": "mesh", "triangles": item.triangles, "color": item.color,
+                        "bounds": [list(lo), list(hi)], "size": list(hi - lo), "volume": abs(item.volume),
+                        "area": item.area, "closed": item.is_closed, "regions": item.regions, "tags": list(item.tags)})
+            continue
         lo, hi = item.bounds
         faces = item.faces.info()
         tag_faces = {}
@@ -1229,6 +1235,10 @@ def cmd_inspect(args):
             if p["kind"] == "mesh":
                 print(f"  mesh {p['name']!r}: {p['triangles']} triangles, size {' x '.join(_g(v) for v in p['size'])}, "
                       f"bounds {_vec(p['bounds'][0])}..{_vec(p['bounds'][1])}, volume {_g(p['volume'])}")
+                if "closed" in p:
+                    tags = f"; tags: {', '.join(p['tags'])}" if p["tags"] else ""
+                    print(f"    color {p['color'] or 'none'}  area {_g(p['area'])}  {p['regions']} region(s)  "
+                          f"{'closed' if p['closed'] else 'OPEN (not watertight)'}{tags}")
                 continue
             tags = "; ".join(f"{t} {', '.join(ids)}" for t, ids in p["tags"].items()) or "none"
             print(f"  part {p['name']!r} color {p['color'] or 'none'}")
