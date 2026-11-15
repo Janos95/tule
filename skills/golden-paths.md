@@ -92,7 +92,7 @@ List what is meant to touch (meshing gears, a pin in its bore) in `contacts`. Fi
 
 ## Run a study on a GPU
 
-1. `tule save`, then load the project on a GPU machine too (it starts from the latest save): `tule up --machine gpu-rtx4090`, or the connector's `machine` tool (action=start, machine `gpu-<type>`). It costs the user's RunPod balance: say so and stop it when done.
+1. `tule save`, then load the project on a GPU machine too (it starts from the latest save): `tule up --machine gpu-rtx4090`, or the connector's `machine` tool (action=start). It costs the user's RunPod balance: say so and stop it when done.
 2. Check it: `nvidia-smi` and `python -c "import cupy; print(cupy.cuda.runtime.getDeviceCount())"`.
 3. Write the study so it also runs on CPU (CuPy if there is a GPU, NumPy otherwise), and report progress as a sequence output. `src/plate-study.py`:
 

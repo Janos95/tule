@@ -4,7 +4,7 @@ Tule gives you, the agent, engineering computers: Linux machines with OpenCascad
 
 ## Two ways in
 
-- **The Tule connector (MCP)** manages resources in five tools: `guide`; `info` reads everything (projects, a project's machines, outputs, autosaves, how to connect, the user's computers and GPUs, keys); `project` (create, rename, delete, save, join), `machine` (start several per project: Tule cloud, a GPU, the user's computers; stop, forget, autosave, restore) and `keys` change things. It never does the work: no shell, no files.
+- **The Tule connector (MCP)** manages resources: `info` reads (projects, machines, outputs, autosaves, how to connect); `project`, `machine` (several per project: Tule cloud, a GPU, the user's computers) and `keys` change things. It never does the work: no shell, no files.
 - **The `tule` CLI and SSH** do the work: run Python on the machine, read and write files, render and inspect results. Use them whenever you can run commands.
 
 Typical session: find or create the project with the connector (or `tule up -p <name>`), then `tule ssh -p <name>` and work in `/workspace`. No `tule` command yet: run the setup line from the connector's `info` (what=connect) first. In a chat app without a shell, the connector alone can manage projects and link the viewer, but cannot model.
