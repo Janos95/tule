@@ -868,16 +868,19 @@ def _clean(e: Expr, m, cell: float):
     def unit(g):
         return g / np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
 
-    for _ in range(8):
+    # a vertex within a cell of a sharp edge (a chine, a trailing edge) stays where Fidget put it:
+    # the gradient turns there, and averaging would round the edge off. Six probes a cell away, once
+    # (vertices move by at most half a cell below, which does not move them off or onto an edge)
+    gv = unit(evaluate(e, P, grad=True)[:, 1:])
+    smooth = np.ones(len(P), bool)
+    for d in np.vstack([np.eye(3), -np.eye(3)]) * cell:
+        smooth &= np.einsum("ij,ij->i", gv, unit(evaluate(e, P + d, grad=True)[:, 1:])) > 0.9
+    flat = smooth[T].all(1)
+    for it in range(8):
         N, A = tri_normals(P, T)
         g = evaluate(e, P[T].mean(1), grad=True)[:, 1:]
-        gv = unit(evaluate(e, P, grad=True)[:, 1:])
-        # a vertex within a cell of a sharp edge (a chine, a trailing edge) stays where Fidget put it:
-        # the gradient turns there, and averaging would round the edge off. Six probes a cell away.
-        smooth = np.ones(len(P), bool)
-        for d in np.vstack([np.eye(3), -np.eye(3)]) * cell:
-            smooth &= np.einsum("ij,ij->i", gv, unit(evaluate(e, P + d, grad=True)[:, 1:])) > 0.9
-        flat = smooth[T].all(1)
+        if it:
+            gv = unit(evaluate(e, P, grad=True)[:, 1:])
         # a flap: its normal against the gradient at its middle and at every corner (inside a knife
         # edge the middle alone can read the far side)
         against = (np.einsum("ij,ij->i", N, g) < 0) & (np.einsum("tkj,tj->tk", gv[T], N) < 0).all(1)
@@ -1190,7 +1193,8 @@ class Region:
     def offset(self, d: float) -> "Region":
         """Grown by ``d`` mm (shrunk if negative)."""
         b = self.bounds
-        return Region(self.expr - d, None if b is None else (tuple(v - max(d, 0) for v in b[0]), tuple(v + max(d, 0) for v in b[1])))
+        g = builtins.max(float(d), 0.0)
+        return Region(self.expr - d, None if b is None else (tuple(v - g for v in b[0]), tuple(v + g for v in b[1])))
 
     def shell(self, thickness: float, inward: bool = True) -> "Region":
         """A band ``thickness`` wide along the outline, inside it (or outside: ``inward=False``)."""

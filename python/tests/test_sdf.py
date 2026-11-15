@@ -139,6 +139,8 @@ def test_rect_circle_spline_polyline_and_region_booleans():
     ring = sdf.circle(10) - sdf.circle(6)
     assert list(ring.contains([(8, 0), (3, 0), (11, 0)])) == [True, False, False]
     assert sdf.circle(10).shell(2).contains([(9, 0), (7, 0)]).tolist() == [True, False]
+    grown = sdf.circle(10).offset(2)
+    assert grown.bounds == ((-12, -12), (12, 12)) and sdf.circle(10).offset(-2).bounds == ((-10, -10), (10, 10))
     blob = sdf.spline([(0, 0), (10, 0), (10, 10), (0, 10)])  # a smooth closed curve through the corners
     assert blob.contains([(5, 5)])[0] and not blob.contains([(5, -4)])[0]
     stroke = sdf.polyline([(0, 0), (10, 0), (10, 10)], width=2)
