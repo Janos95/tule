@@ -114,3 +114,124 @@ def test_a_surface_past_its_bounds_is_closed_at_them():
     assert m.is_closed
     (lo, hi) = m.bounds
     assert -5.8 < lo[0] < -5 and 5 < hi[0] < 5.8
+
+
+# ---------------------------------------------------------------- profiles, revolve, repetition, walls, tubes
+
+
+def test_polygon_is_a_signed_distance_either_winding():
+    sq = [(0, 0), (10, 0), (10, 10), (0, 10)]
+    for pts in (sq, sq[::-1]):
+        p = sdf.polygon(pts)
+        assert p.value([(5, 5), (15, 5), (-1, -1), (5, 0)]) == pytest.approx([-5, 5, math.sqrt(2), 0], abs=1e-4)
+    L = sdf.polygon([(0, 0), (20, 0), (20, 5), (5, 5), (5, 20), (0, 20)])  # concave: an L
+    assert L.value([(10, 10), (2, 2), (10, 2.5)]) == pytest.approx([5, -2, -2.5], abs=1e-4)
+    # NumPy agrees with Fidget, and the sign holds on rays through vertices
+    P = np.random.default_rng(3).uniform(-5, 25, (3000, 3))
+    P[:500, 1] = 5.0  # level with two vertices
+    assert sdf.evaluate(L.expr, P) == pytest.approx(sdf._np_eval(L.expr, P), abs=1e-3)
+
+
+def test_rect_circle_spline_polyline_and_region_booleans():
+    r = sdf.rect(10, 4, radius=1)
+    assert r.value([(0, 0), (6, 0), (5, 2)]) == pytest.approx([-2, 1, math.sqrt(2) - 1], abs=1e-4)
+    assert sdf.rect(10, 4, center=False).value([(5, 2)])[0] == pytest.approx(-2, abs=1e-4)
+    ring = sdf.circle(10) - sdf.circle(6)
+    assert list(ring.contains([(8, 0), (3, 0), (11, 0)])) == [True, False, False]
+    assert sdf.circle(10).shell(2).contains([(9, 0), (7, 0)]).tolist() == [True, False]
+    blob = sdf.spline([(0, 0), (10, 0), (10, 10), (0, 10)])  # a smooth closed curve through the corners
+    assert blob.contains([(5, 5)])[0] and not blob.contains([(5, -4)])[0]
+    stroke = sdf.polyline([(0, 0), (10, 0), (10, 10)], width=2)
+    assert stroke.value([(5, 0), (5, 3), (10, 5)]) == pytest.approx([-1, 2, -1], abs=1e-4)
+    moved = sdf.circle(2).at(5, 1).rotate(90)
+    assert moved.value([(-1, 5)])[0] == pytest.approx(-2, abs=1e-4)
+    with pytest.raises(TuleError, match="2D"):
+        sdf.circle(3) | sdf.sphere(2)
+
+
+def test_revolve_a_lathe_profile_and_a_wedge():
+    cone = sdf.polygon([(0, 0), (40, 0), (30, 50), (0, 50)]).revolve()
+    m = cone.to_mesh(0.5)
+    assert m.is_closed
+    assert m.volume == pytest.approx(math.pi * 50 / 3 * (40 ** 2 + 40 * 30 + 30 ** 2), rel=0.01)
+    # a washer from a rectangle off the axis: a distance away from the axis too
+    washer = sdf.rect(4, 2).at(10, 0).revolve()
+    assert washer.value([(0, 10, 0), (0, 13, 0), (0, 0, 0)]) == pytest.approx([-1, 1, 8], abs=1e-4)
+    quarter = washer.to_mesh(0.2).volume / 4
+    assert sdf.rect(4, 2).at(10, 0).revolve(90).to_mesh(0.2).volume == pytest.approx(quarter, rel=0.03)
+    assert sdf.rect(6, 6).at(10, 0).extrude(5).to_mesh(0.3).volume == pytest.approx(180, rel=0.02)
+
+
+def test_polar_and_linear_repetition_stay_one_expression():
+    bolt = sdf.cylinder(6, 10).at(100, 0, 0)
+    ring = bolt.repeat_polar(40)
+    assert sdf._count(ring.expr) < 3 * sdf._count(bolt.expr)  # not 40 copies of the tree
+    assert ring.to_mesh(0.5).volume == pytest.approx(40 * math.pi * 36 * 10, rel=0.02)
+    a = 2 * math.pi * 7 / 40  # the 8th copy
+    assert ring.value([(100 * math.cos(a), 100 * math.sin(a), 5)])[0] == pytest.approx(-5, abs=1e-3)
+    row = sdf.sphere(3).repeat_linear((10, 0, 0), 20)
+    assert row.to_mesh(0.3).volume == pytest.approx(20 * 4 / 3 * math.pi * 27, rel=0.02)
+    assert row.value([(190, 0, 0), (200, 0, 0), (-10, 0, 0)]) == pytest.approx([-3, 7, 7], abs=1e-4)
+    # a copy reaching into its neighbour's cell needs overlap=True to be whole
+    wide = sdf.box(14, 2, 2, center=True)
+    assert wide.repeat_linear((10, 0, 0), 3, overlap=True).value([(16, 0, 0)])[0] < 0
+    assert sdf.sphere(1).repeat_polar(1).value([(0, 0, 0)])[0] == pytest.approx(-1, abs=1e-5)
+
+
+def test_wall_channels_follow_the_contour_and_narrow_at_the_throat():
+    w = sdf.Wall([0, 200, 300, 350, 400, 800], [200, 200, 150, 110, 130, 400], samples=6)
+    assert w.r_at(0) == pytest.approx(200) and w.r_at(800) == pytest.approx(400)
+    liner = w.solid(0, 6)
+    ch = w.channels(60, land=2.0, depth=2.5, offset=1.5, z=(10, 790))
+    body = liner - ch
+    for zc in (100, 350, 700):
+        r = float(w.r_at(zc))
+        mid = r + (1.5 + 1.25) / math.cos(math.atan(np.gradient(w.r, w.z)[np.searchsorted(w.z, zc)]))
+        assert body.value([(mid, 0, zc)])[0] > 0  # a channel on +x (phase 0), inside the wall
+        assert body.value([(r + 0.75, 0, zc)])[0] < 0  # the hot wall under it
+        a = math.pi / 60  # half a pitch on: the land between two channels
+        assert body.value([(mid * math.cos(a), mid * math.sin(a), zc)])[0] < 0
+    # the channel's width at the wall: the pitch less the land, so narrow at the throat
+    def width(zc):
+        r = float(w.r_at(zc)) + 2.75
+        ang = np.linspace(-0.06, 0.06, 4001)
+        v = ch.value(np.column_stack([r * np.cos(ang), r * np.sin(ang), np.full_like(ang, zc)]))
+        return float((v < 0).sum()) / len(ang) * 0.12 * r
+    assert width(350) == pytest.approx(2 * math.pi * (110 + 2.75) / 60 - 2, abs=0.25)
+    assert width(700) > 2.5 * width(350)
+    fixed = w.channels(60, width=[(0, 3.0), (800, 1.0)], depth=2, offset=1)
+    assert fixed.value([(float(w.r_at(400)) + 2, 0, 400)])[0] < 0
+    ribs = w.ribs(24, width=8, height=10, base=6)
+    assert ribs.value([(float(w.r_at(600)) + 10, 0, 600)])[0] < 0
+    with pytest.raises(TuleError, match="width"):
+        w.channels(60, depth=2)
+
+
+def test_tube_along_a_bent_path_hollow_and_open():
+    path = [(0, 0, 0), (0, 0, 100), (80, 0, 160)]
+    t = sdf.tube(path, r=12, wall=2, bend=30)
+    assert t.value([(0, 0, 50), (0, 11, 50), (0, 14, 50)]) == pytest.approx([10, -1, 2], abs=1e-3)  # bore, wall, outside
+    m = t.to_mesh(0.8)
+    assert m.is_closed
+    L = 100 + 100  # about: the legs less the bend's cut corner
+    assert m.volume == pytest.approx(math.pi * (144 - 100) * L, rel=0.12)
+    solid = sdf.tube(path, r=[10, 10, 5])  # tapered
+    assert solid.value([(80 - 0.8, 0, 160 - 0.6)])[0] == pytest.approx(-1, abs=0.2)  # a flat end, 1 mm in
+    assert sdf.tube(path, r=5, spline=True).contains([(0, 0, 50)])[0]
+    with pytest.raises(TuleError, match="wall"):
+        sdf.tube(path, r=3, wall=4)
+
+
+def test_banded_meshing_fine_boxes_and_rest():
+    w = sdf.Wall([0, 300], [100, 100])
+    liner = w.solid(0, 5)
+    body = liner - w.channels(40, width=3, depth=2, offset=1.5, z=(10, 290))
+    m = body.to_mesh(4, fine=[((-200, -6, -10), (200, 6, 310), 0.5)], rest=liner)
+    assert m.is_closed and "pieces" in m.history[-1]
+    # the channels exist in the fine band only: the band's surface is much finer
+    coarse_only = liner.to_mesh(4)
+    assert m.volume == pytest.approx(coarse_only.volume, rel=0.02)
+    band = m.faces.within((-200, -6, 0), (200, 6, 300))
+    assert len(band) > 2000
+    with pytest.raises(TuleError, match="fine"):
+        liner.to_mesh(4, rest=liner)

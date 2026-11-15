@@ -120,6 +120,15 @@ button.line svg,
   color: var(--muted);
 }
 
+/* the section control: the axis, where the plane cuts (a slider over the parts' extent), flip, off */
+.section-panel { width: 230px; gap: 6px; padding: 8px; }
+.section-axes { display: flex; gap: 4px; }
+.dl .section-axes button { flex: 1; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); height: 28px; padding: 0 6px; }
+.dl .section-axes button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.section-panel input[type="range"] { width: 100%; accent-color: var(--accent); }
+.section-foot { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-small); color: var(--muted); }
+.section-foot button { height: 26px; }
+
 /* one line per file however many there are: long names end in … (the full name on hover) */
 #download-menu {
   width: max-content;

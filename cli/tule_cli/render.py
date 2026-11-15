@@ -31,7 +31,8 @@ DEFAULT_COLOR = (0.62, 0.68, 0.75)
 DIM_COLOR = (0.80, 0.81, 0.83)  # faces an overlay does not mention
 BACKGROUND = (0.965, 0.97, 0.975)
 LINE = (0.10, 0.12, 0.14)
-LINE_ON_DARK = (0.62, 0.66, 0.72)  # an edge across a dark part: light, so it shows
+LINE_ON_DARK = (0.62, 0.66, 0.72)
+CAP = (0.83, 0.36, 0.25)  # where a section cuts a part open (as the viewer's)  # an edge across a dark part: light, so it shows
 
 
 def _ink(img: np.ndarray, line: np.ndarray):
@@ -817,7 +818,23 @@ def _clip_near(Q, N, C, T, near):
     """Triangles cut at the near plane (depth -Q[:, 2] >= near): those partly behind the eye become one or
     two triangles in front, their new corners interpolated. Returns the extended Q, N, C, the kept
     triangles and, for each, the index of the triangle it came from."""
-    z = -Q[T, 2]
+    return _clip_by(lambda Q: -Q[:, 2], Q, N, C, T, near)
+
+
+def parse_section(text):
+    """"y:120" or "z:900:flip" (as the viewer's ?section=) -> (axis index, offset mm or None, flip), or ValueError."""
+    import re as _re
+
+    m = _re.fullmatch(r"\s*([xyzXYZ])(?::(-?[\d.]+(?:e-?\d+)?))?(?::(flip))?\s*", str(text))
+    if not m:
+        raise ValueError(f"a section is AXIS[:OFFSET][:flip], e.g. y:0 or z:1200:flip, not {text!r}")
+    return "xyz".index(m.group(1).lower()), (float(m.group(2)) if m.group(2) is not None else None), bool(m.group(3))
+
+
+def _clip_by(dist, Q, N, C, T, lim):
+    """As _clip_near, for any plane: keeps where dist(Q) >= lim (dist is linear in Q)."""
+    z = dist(Q)[T]
+    near = lim
     behind = z < near
     nb = behind.sum(1)
     keep = np.nonzero(nb == 0)[0]
@@ -827,8 +844,10 @@ def _clip_near(Q, N, C, T, near):
     newQ, newN, newC = [], [], []
     n0 = len(Q)
 
+    d = dist(Q)
+
     def cut(i, j):  # a point on each edge i -> j (vertex index arrays) at the near plane
-        zi, zj = -Q[i, 2], -Q[j, 2]
+        zi, zj = d[i], d[j]
         t = ((near - zi) / (zj - zi))[:, None]
         newQ.append(Q[i] + t * (Q[j] - Q[i]))
         nn = N[i] + t * (N[j] - N[i])
@@ -861,10 +880,12 @@ def _clip_near(Q, N, C, T, near):
 
 
 def render_camera(prep: Prepared, cam, W: int, H: int, hidden=None, edges: bool = True, labels: bool = False,
-                  overlay: Overlay | None = None, background=BACKGROUND) -> tuple[Image.Image, dict]:
+                  overlay: Overlay | None = None, background=BACKGROUND, section=None) -> tuple[Image.Image, dict]:
     """The parts as the camera (camera.Camera) sees them, W×H pixels, nothing drawn around them (no
     footer, no axes): what the viewer shows through the same camera. hidden: [(part, copy or None)]
-    not drawn. The report: as render's, and "parts": the share of the picture each visible part covers."""
+    not drawn. section: (axis 0-2, offset mm, flip) cuts the view as the viewer's Section does: the side the
+    axis points to stays (flip: the other), and where a part is cut open its inside is drawn as a hatched cap.
+    The report: as render's, and "parts": the share of the picture each visible part covers."""
     from .camera import project
 
     R = cam.basis()
@@ -885,7 +906,13 @@ def render_camera(prep: Prepared, cam, W: int, H: int, hidden=None, edges: bool 
     T = prep.T
     outside = (code[T[:, 0]] & code[T[:, 1]] & code[T[:, 2]]) != 0
     live = np.nonzero(~outside & ~_hidden_tris(prep, hidden))[0]
-    Qx, Nx, Cx, Tx, src = _clip_near(Q, prep.N, prep.C, T[live], near)
+    Qs, Ns, Cs, Ts = Q, prep.N, prep.C, T[live]
+    if section is not None:  # the cut: world coordinate `axis` against the offset, on the kept side
+        ax, off, flip = section
+        sgn = -1.0 if flip else 1.0
+        Qs, Ns, Cs, Ts, s0 = _clip_by(lambda q: sgn * ((q @ R)[:, ax] + eye[ax] - off), Qs, Ns, Cs, Ts, 0.0)
+        live = live[s0]
+    Qx, Nx, Cx, Tx, src = _clip_near(Qs, Ns, Cs, Ts, near)
     tid = live[src]  # the original triangle of each drawn one
     zx = np.maximum(-Qx[:, 2], near * 0.5)
     X = Ws / 2 + f * Qx[:, 0] / zx
@@ -896,7 +923,7 @@ def render_camera(prep: Prepared, cam, W: int, H: int, hidden=None, edges: bool 
     see = prep.alpha[tri_part] < 1
     solid = np.nonzero(~see)[0]
     zbuf, tbuf, b0, b1 = rasterize(X, Y, Zr, Tx[solid], Ws, Hs)
-    tbuf = np.where(tbuf >= 0, solid[np.maximum(tbuf, 0)], -1)
+    tbuf = np.where(tbuf >= 0, solid[np.maximum(tbuf, 0)], -1) if len(solid) else np.full_like(tbuf, -1)
     if see.any():
         clear = np.nonzero(see)[0]
         zg, tg, g0, g1 = rasterize(X, Y, Zr, Tx[clear], Ws, Hs)
@@ -937,6 +964,16 @@ def render_camera(prep: Prepared, cam, W: int, H: int, hidden=None, edges: bool 
     img = np.empty((Ws * Hs, 3))
     img[:] = background
     img[fg] = _lit_colors(prep.parts, tri_part[t], color, n, _view_dirs(np.nonzero(fg)[0], Ws, Hs, f), R[:, 2], shade, spec, rim, overlay)
+    cap = None
+    if section is not None:  # a back face seen through the cut is the cut itself: hatched, tinted by the part
+        a, b, c = Qx[Tx[:, 0]], Qx[Tx[:, 1]], Qx[Tx[:, 2]]
+        back = np.einsum("ij,ij->i", np.cross(b - a, c - a), -a) < 0
+        cap = np.zeros(Ws * Hs, dtype=bool)
+        cap[fg] = back[t]
+        pix = np.nonzero(cap)[0]
+        hatch = (((pix % Ws) + (pix // Ws)) // (5 * SS)) % 2
+        tint = 0.75 * np.array(CAP) + 0.25 * np.clip(tri_color[t][back[t]], 0, 1)
+        img[pix] = tint * (0.88 + 0.12 * hatch)[:, None]
 
     fkey = np.full(Ws * Hs, -1, dtype=np.int64)
     fkey[fg] = tri_part[t].astype(np.int64) * (1 << 32) + tri_face[t]
@@ -958,6 +995,9 @@ def render_camera(prep: Prepared, cam, W: int, H: int, hidden=None, edges: bool 
             with np.errstate(invalid="ignore"):
                 diff |= np.abs(D[a] - D[b]) > 0.03 * np.fmin(D[a], D[b])
             diff |= mk[a] & mk[b] & ((nimg[a] * nimg[b]).sum(-1) < math.cos(math.radians(35)))
+            if cap is not None:  # the cut's outline
+                cp = cap.reshape(Hs, Ws)
+                diff |= cp[a] != cp[b]
             line[a] |= diff
             line[b] |= diff
         if SS > 1:

@@ -1242,7 +1242,9 @@ function viewLink() {
   const hidden = parts?.hidden() ?? [];
   if (hidden.length) u.searchParams.set("hide", hidden.join(","));
   else u.searchParams.delete("hide");
-  return u.toString().replace(/%2C/g, ",").replace(/%2F/g, "/");
+  if (viewer.section) u.searchParams.set("section", sectionParam(viewer.section));
+  else u.searchParams.delete("section");
+  return u.toString().replace(/%2C/g, ",").replace(/%2F/g, "/").replace(/%3A/g, ":");
 }
 
 $("view-link").addEventListener("click", async () => {
@@ -1257,6 +1259,82 @@ $("view-link").addEventListener("click", async () => {
     prompt("This view (tule screenshot --cam=… takes the cam= part):", link);
   }
 });
+// ------------------------------------------------------------ the section (a cutaway plane)
+// ?section=y:120 (or y:120:flip) in a link, the Section button, S, or tule.section("y:120"): the view cut square to
+// an axis, keeping the side the axis points to; tule screenshot --section takes the same text.
+
+/** "y:120[:flip]" -> {axis, offset, flip}, or null. */
+function parseSection(text) {
+  const m = /^([xyz])(?::(-?[\d.]+(?:e-?\d+)?))?(?::(flip))?$/i.exec(String(text ?? "").trim());
+  if (!m) return null;
+  return { axis: m[1].toLowerCase(), offset: m[2] === undefined ? null : +m[2], flip: !!m[3] };
+}
+const sectionParam = (s) => `${s.axis}:${+s.offset.toPrecision(7)}${s.flip ? ":flip" : ""}`;
+let wantSection = parseSection(new URLSearchParams(location.search).get("section"));
+const secPanel = $("section-panel");
+const secSlider = $("section-offset");
+
+function showSection() {
+  const s = viewer?.section;
+  $("section-toggle").classList.toggle("on", !!s);
+  if (!s) return;
+  for (const b of secPanel.querySelectorAll("[data-axis]")) b.setAttribute("aria-pressed", String(b.dataset.axis === s.axis));
+  $("section-flip").setAttribute("aria-pressed", String(s.flip));
+  const range = viewer.sectionRange(s.axis);
+  if (range) secSlider.value = String(Math.round(((s.offset - range[0]) / (range[1] - range[0] || 1)) * 1000));
+  $("section-at").textContent = `${s.axis} = ${+s.offset.toFixed(1)} mm`;
+}
+
+/** Cut the view (a section {axis, offset, flip}; no offset: through the middle of the parts), or null: no cut. */
+function setSection(s) {
+  if (!viewer) return null;
+  if (s) {
+    const range = viewer.sectionRange(s.axis);
+    const offset = s.offset ?? (range ? (range[0] + range[1]) / 2 : 0);
+    viewer.setSection({ axis: s.axis, offset, flip: !!s.flip });
+  } else viewer.setSection(null);
+  showSection();
+  const u = new URL(location.href);
+  if (viewer.section) u.searchParams.set("section", sectionParam(viewer.section));
+  else u.searchParams.delete("section");
+  history.replaceState(null, "", u.toString().replace(/%3A/g, ":"));
+  return viewer.section;
+}
+
+function toggleSectionPanel(open = secPanel.hidden) {
+  secPanel.hidden = !open;
+  $("section-toggle").setAttribute("aria-expanded", String(open));
+}
+
+$("section-toggle").addEventListener("click", () => {
+  if (!viewer) return;
+  if (!viewer.section) setSection({ axis: "y", offset: null, flip: false });
+  toggleSectionPanel();
+});
+for (const b of secPanel.querySelectorAll("[data-axis]"))
+  b.addEventListener("click", () => setSection({ axis: b.dataset.axis, offset: viewer.section?.axis === b.dataset.axis ? viewer.section.offset : null, flip: viewer.section?.flip }));
+$("section-flip").addEventListener("click", () => viewer?.section && setSection({ ...viewer.section, flip: !viewer.section.flip }));
+$("section-off").addEventListener("click", () => {
+  setSection(null);
+  toggleSectionPanel(false);
+});
+secSlider.addEventListener("input", () => {
+  const s = viewer?.section;
+  const range = s && viewer.sectionRange(s.axis);
+  if (!range) return;
+  setSection({ ...s, offset: range[0] + (range[1] - range[0]) * (+secSlider.value / 1000) });
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!secPanel.hidden && !e.target.closest?.(".section-panel, #section-toggle")) toggleSectionPanel(false);
+});
+// a link's section: applied once the output is drawn (its extent is known)
+const sectionWhenDrawn = () => {
+  if (!wantSection || !viewer?.bounds || !(state.shown && state.drawn === state.shown)) return setTimeout(sectionWhenDrawn, 200);
+  setSection(wantSection);
+  wantSection = null;
+};
+if (wantSection) sectionWhenDrawn();
+
 // a moved camera is no longer the link's
 viewer?.controls.addEventListener("start", () => {
   const u = new URL(location.href);
@@ -1281,6 +1359,13 @@ window.tule = {
     return window.tule.getCamera();
   },
   hide: (names) => parts?.hide(names ?? []),
+  // a cutaway: "y:120", "z:900:flip", {axis, offset, flip}; null takes it away; no argument: the current one
+  section(s) {
+    if (s === undefined) return viewer?.section ?? null;
+    const sec = typeof s === "string" ? parseSection(s) : s;
+    if (s && !sec) throw new Error('a section is "y:120", "z:900:flip" or {axis: "x" | "y" | "z", offset: mm, flip: false}');
+    return setSection(sec);
+  },
   viewLink: () => (viewer ? viewLink() : null),
   ready: () =>
     new Promise((resolve) => {
@@ -1295,6 +1380,7 @@ window.tule = {
 document.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "f" || e.key === "F") viewer?.fit();
+  if (e.key === "s" || e.key === "S") setSection(viewer?.section ? null : { axis: "y", offset: null, flip: false });
 });
 
 // hover: the B-rep face under the pointer, its id and tags (f12 · load)

@@ -18,10 +18,42 @@ mesh = part.to_mesh(cell=0.3)                                    # a tule.Mesh (
 
 Bounds travel with the expression (unions grow them, intersections shrink them); TPMS fields
 and planes are unbounded until intersected with something bounded.
+
+Revolved and repeated parts, features that follow a wall, tubes, and big parts with fine detail:
+
+```python
+bell = sdf.spline([(0, 0), (60, 0), (60, 40), (25, 110), (0, 110)]).revolve()  # a 2D profile: u = radius, v = z
+nut = (sdf.rect(20, 8, radius=1) - sdf.circle(3)).extrude(5)                  # 2D booleans, then a 3D body
+bolts = sdf.cylinder(4, 12).at(250, 0, 0).repeat_polar(96)                    # 96 copies, one copy's expression
+row = sdf.sphere(3).repeat_linear((10, 0, 0), 20)
+wall = sdf.Wall([0, 300, 420, 900], [220, 220, 130, 420], samples=8)          # a revolved contour r(z)
+liner = wall.solid(0, 6)                                                      # 0 to 6 mm out along its normal
+cooled = liner - wall.channels(200, land=1.0, depth=[(0, 3), (420, 2), (900, 4)], offset=1.0)
+duct = sdf.tube([(0, 0, 0), (0, 0, 200), (150, 0, 300)], r=30, wall=3, bend=80)
+mesh = cooled.to_mesh(4, fine=[((-500, -8, -10), (500, 8, 910), 0.5)], rest=liner)
+```
+
+* 2D regions (``Region``): ``polygon``, ``spline`` (closed, or an open stroke with ``width``),
+  ``polyline(points, width)``, ``rect(w, h, radius=)``, ``circle``; booleans, ``offset``, ``shell``,
+  ``at``, ``rotate``, ``mirror``; ``revolve(degrees)`` about z (u is the radius) or ``extrude(h)``.
+  ``wedge(degrees)`` is a sector through the z axis (a cutaway: ``body - sdf.wedge(90)``).
+* Domain repetition: ``body.repeat_polar(n)`` (model the copy on +x) and ``body.repeat_linear(step, n)``
+  cost one copy's evaluation; ``overlap=True`` also checks the neighbours for copies that reach over.
+* ``Wall(z, r)``: coordinates on a revolved contour (``n`` normal offset, ``s`` length along it,
+  ``t`` distance around, ``theta``) and bodies in them: ``solid``, ``channels`` (width, or ``land``
+  so they narrow with the circumference at a throat), ``ribs``, ``bands``. Sizes are a number, a
+  station table ``[(z, value), …]`` or a function of the z expression. The contour is r over z
+  (one radius per height); ``n`` is the first-order normal distance (exact on straight segments).
+* ``tube(points, r, wall=, bend= | spline=True)``: a round tube along a 3D path, tapered when ``r``
+  has one radius per point, hollow and open-ended with ``wall``.
+* ``to_mesh(cell, fine=[(lo, hi, cell), …], rest=)``: banded meshing. Each box is meshed at its own
+  cell, the rest at ``cell`` (from ``rest`` when given: the part without the hidden detail), each a
+  closed piece; regions larger than one octree (4096 cells) are split the same way.
 """
 
 from __future__ import annotations
 
+import builtins
 import math
 from typing import Callable, Iterable, Sequence
 
@@ -686,35 +718,107 @@ class Implicit(Looks):
         return self._affine(R, c - R @ c)
 
     # meshing
-    def to_mesh(self, cell: float | None = None, bounds=None) -> "object":
+    def to_mesh(self, cell: float | None = None, bounds=None, fine=None, rest: "Implicit | None" = None) -> "object":
         """This body as a closed ``tule.Mesh`` (Fidget: JIT evaluation and dual contouring, sharp edges
         kept). ``cell`` (mm) is the smallest octree cell: detail under it is lost (default: a 128th of
-        the largest size). ``bounds`` (lo, hi) clips it; an unbounded body (a bare lattice) needs them."""
+        the largest size). ``bounds`` (lo, hi) clips it; an unbounded body (a bare lattice) needs them.
+
+        ``fine=[(lo, hi, cell), …]``: boxes meshed at their own (smaller) cell, the rest at ``cell``
+        (banded meshing: 1 mm channels at a cutaway plane of a 3 m part). Each box and the rest are
+        closed pieces that meet face to face; a region too large for one octree is split the same way.
+        ``rest``: another body meshed outside the fine boxes instead of this one (the same part without its
+        hidden detail, e.g. the wall without its cooling channels, so the coarse cells don't chew on them)."""
         from .mesh import Mesh
 
         b = _bounds(bounds) if bounds is not None else self.bounds
         if b is None:
             raise TuleError("this body is unbounded (a lattice or a plane on its own)", op="to_mesh",
                             hint="intersect it with a bounded body (body & sdf.gyroid(8, 1)) or give bounds=((x0, y0, z0), (x1, y1, z1))")
-        e = self.expr
-        if bounds is not None:  # clipped to the bounds asked for (a bare lattice, or a piece of a body)
-            e = max(e, box_between(*b).expr)
-        else:  # a surface that runs past the body's own bounds is closed just outside them, not left open
-            g = 1.5 * (float(cell) if cell else float(np.max(np.subtract(b[1], b[0]))) / 128)
-            e = max(e, box_between(tuple(np.subtract(b[0], g)), tuple(np.add(b[1], g))).expr)
         lo, hi = np.array(b[0], dtype=float), np.array(b[1], dtype=float)
         size = float((hi - lo).max())
         cell = float(cell) if cell else size / 128
         if cell <= 0:
             raise TuleError("cell must be > 0 mm", op="to_mesh")
-        center = (lo + hi) / 2
-        half = size / 2 + 2 * cell
-        depth = int(math.ceil(math.log2(2 * half / cell)))
+        e = self.expr
+        if rest is not None and not fine:
+            raise TuleError("rest= is what is meshed outside the fine= boxes: give fine= too", op="to_mesh")
+        closing = None
+        if bounds is not None:  # clipped to the bounds asked for (a bare lattice, or a piece of a body)
+            closing = box_between(*b).expr
+        else:  # a surface that runs past the body's own bounds is closed just outside them, not left open
+            g = 1.5 * cell
+            closing = box_between(tuple(lo - g), tuple(hi + g)).expr
+        e = max(e, closing)
+        e_rest = e if rest is None else max(self._other(rest, "to_mesh rest").expr, closing)
         fg = _fidget()
-        if depth > 12 or (fg is None or _has_grid(e)) and (2 * half / cell) ** 3 > 2.5e8:
-            raise TuleError(f"cells of {cell:g} mm across {size:.4g} mm are too many", op="to_mesh",
-                            hint=f"a larger cell (≥ {size / 2000:.2g} mm), or mesh pieces separately and join the meshes")
+        sampled = fg is None or _has_grid(e)
+        pieces = []  # (expr, lo, hi, cell)
+        taken = None
+        for f in fine or ():
+            try:
+                flo, fhi, fc = np.array(vec(f[0]), dtype=float), np.array(vec(f[1]), dtype=float), float(f[2])
+            except (TypeError, IndexError, ValueError):
+                raise TuleError("fine: a list of (lo, hi, cell) boxes", op="to_mesh",
+                                hint="fine=[((-2000, -15, -100), (2000, 15, 3500), 0.6)]") from None
+            flo, fhi = np.maximum(flo, lo), np.minimum(fhi, hi)
+            if np.any(fhi <= flo) or fc <= 0:
+                continue
+            fb = box_between(tuple(flo), tuple(fhi)).expr
+            pe = max(e, fb) if taken is None else max(e, fb, -taken)
+            pieces.append((pe, flo, fhi, fc))
+            taken = fb if taken is None else min(taken, fb)
+        pieces.append((e_rest if taken is None else max(e_rest, -taken), lo, hi, cell))
+        chunks = []
+        for pe, plo, phi, pc in pieces:
+            # an octree is at most 2^12 cells across (or 2.5e8 samples for marching cubes): split bigger regions
+            limit = 600.0 if sampled else 3800.0
+            n = np.maximum(1, np.ceil((phi - plo) / (pc * limit))).astype(int)
+            if (n > 1).any() and (not fine and bounds is None and n.prod() > 64 or n.prod() > 512):
+                raise TuleError(f"cells of {pc:g} mm across {float((phi - plo).max()):.4g} mm are too many", op="to_mesh",
+                                hint=f"a larger cell (≥ {float((phi - plo).max()) / 4000:.2g} mm), or fine= boxes only where the detail is")
+            edges = [np.linspace(plo[i], phi[i], n[i] + 1) for i in range(3)]
+            for i in range(n[0]):
+                for j in range(n[1]):
+                    for k in range(n[2]):
+                        clo = np.array([edges[0][i], edges[1][j], edges[2][k]])
+                        chi = np.array([edges[0][i + 1], edges[1][j + 1], edges[2][k + 1]])
+                        ce = pe if n.prod() == 1 else max(pe, box_between(tuple(clo), tuple(chi)).expr)
+                        chunks.append((ce, clo, chi, pc))
+        Ps, Ts, hows, off = [], [], [], 0
+        for ce, clo, chi, cc in chunks:
+            got = self._mesh_piece(ce, clo, chi, cc, fg)
+            if got is None:
+                continue
+            P, T, how = got
+            Ps.append(P)
+            Ts.append(T + off)
+            off += len(P)
+            hows.append(how)
+        if not Ps:
+            raise TuleError("the body has no surface inside its bounds", op="to_mesh",
+                            hint="is it empty, or all inside? check body.value(points); a finer cell for thin walls")
+        m = Mesh(np.vstack(Ps), np.vstack(Ts), name=self.name, color=self.color, welded=True)
+        how = hows[0] if len(hows) == 1 else (f"meshed in {len(hows)} closed pieces (cells "
+                                              f"{', '.join(sorted({f'{c[3]:g}' for c in chunks}, key=float))} mm), {hows[-1].split(' (')[0]}")
+        m.history = self.history + (how,)
+        for tag, fn in self._tags.items():
+            try:
+                m = m.tag(tag, fn)
+            except TuleError as err:
+                raise TuleError(f"tag {tag!r} selects nothing on the mesh", op="to_mesh",
+                                hint="check the predicate against mesh.faces (bounds, tol=)") from err
+        return m
+
+    def _mesh_piece(self, e, lo, hi, cell, fg):
+        """(points, triangles, how) of the closed surface of ``e`` in the box lo–hi, or None if empty there."""
+        from .mesh import Mesh
+
+        center = (lo + hi) / 2
+        half = float((hi - lo).max()) / 2 + 2 * cell
+        depth = builtins.max(1, int(math.ceil(math.log2(2 * half / cell))))
         if fg is not None and not _has_grid(e):
+            if depth > 12:
+                raise TuleError(f"cells of {cell:g} mm across {2 * half:.4g} mm are too many", op="to_mesh")
             vb, tb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth)
             P = np.frombuffer(vb, np.float32).reshape(-1, 3).astype(np.float64)
             T = np.frombuffer(tb, np.uint32).reshape(-1, 3).astype(np.int64)
@@ -726,22 +830,14 @@ class Implicit(Looks):
             P, T = _marching(e, lo - 2 * cell, hi + 2 * cell, cell)
             how = f"meshed by marching cubes (sampled field, cells {cell:.3g} mm: detail under a cell lost, edges rounded)"
         if not len(T):
-            raise TuleError("the body has no surface inside its bounds", op="to_mesh",
-                            hint="is it empty, or all inside? check body.value(points); a finer cell for thin walls")
+            return None
         t = P[T]
         if np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() < 0:
             T = T[:, ::-1]
-        m = Mesh(P, T, name=self.name, color=self.color, welded=True)
         if fg is not None and not _has_grid(e):
-            m = _clean(e, m, cell)
-        m.history = self.history + (how,)
-        for tag, fn in self._tags.items():
-            try:
-                m = m.tag(tag, fn)
-            except TuleError as err:
-                raise TuleError(f"tag {tag!r} selects nothing on the mesh", op="to_mesh",
-                                hint="check the predicate against mesh.faces (bounds, tol=)") from err
-        return m
+            m = _clean(e, Mesh(P, T, welded=True), cell)
+            P, T = m._P, m._T
+        return P, T, how
 
 
 def _clean(e: Expr, m, cell: float):
@@ -1024,3 +1120,559 @@ def field(fn: Callable, bounds=None) -> Implicit:
         raise TuleError(f"field(fn): fn returned a {type(e).__name__}", op="sdf.field",
                         hint="use sdf.sin, sdf.sqrt, sdf.min, … on x, y, z (not math.* or numpy)")
     return Implicit(e, bounds)
+
+
+# ---------------------------------------------------------------- 2D profiles, revolve, extrude
+
+
+def _step(t, at_zero: float = 0.5) -> Expr:
+    """1 where t > 0, 0 where t < 0, ``at_zero`` at 0 (then a ramp a micrometre wide): exact away from
+    it, and a constant over any interval that does not cross it, so Fidget still prunes."""
+    return clamp(_e(t) * 1e6 + at_zero, 0.0, 1.0)
+
+
+class Region:
+    """A 2D region in the plane: an expression over ``x`` (here: u) and ``y`` (v), negative inside,
+    with its 2D bounds. ``revolve()`` turns it about the z axis with u as the radius and v as the
+    height; ``extrude(h)`` sweeps it along z. Booleans, ``offset``, ``shell`` and moves work as on bodies."""
+
+    __slots__ = ("expr", "bounds")
+
+    def __init__(self, expr, bounds=None):
+        self.expr = _e(expr)
+        self.bounds = None if bounds is None else (tuple(map(float, bounds[0])), tuple(map(float, bounds[1])))
+
+    def __repr__(self) -> str:
+        b = f"{self.bounds[0]} to {self.bounds[1]}" if self.bounds else "unbounded"
+        return f"<Region: {_count(self.expr)} nodes, {b}>"
+
+    def value(self, points) -> np.ndarray:
+        """Signed distance at 2D points (n, 2)."""
+        P = np.asarray(points, dtype=float).reshape(-1, 2)
+        return evaluate(self.expr, np.column_stack([P, np.zeros(len(P))]))
+
+    def contains(self, points) -> np.ndarray:
+        return self.value(points) < 0
+
+    # booleans
+    def _join(self, others, kind: str, smooth: float) -> "Region":
+        rs = [self, *others]
+        for r in rs:
+            if not isinstance(r, Region):
+                raise TuleError(f"a 2D region and a {type(r).__name__} cannot be combined", op=f"region.{kind}",
+                                hint="revolve() or extrude() the region first, or make both 2D (sdf.polygon, sdf.rect)")
+        e, k = rs[0].expr, float(smooth)
+        for r in rs[1:]:
+            e = _smin(e, r.expr, k) if kind == "union" else -_smin(-e, r.expr if kind == "difference" else -r.expr, k)
+        bs = [r.bounds for r in rs]
+        if kind == "union":
+            b = None if any(v is None for v in bs) else (tuple(np.min([v[0] for v in bs], 0)), tuple(np.max([v[1] for v in bs], 0)))
+        elif kind == "difference":
+            b = rs[0].bounds
+        else:
+            known = [v for v in bs if v is not None]
+            b = (tuple(np.max([v[0] for v in known], 0)), tuple(np.min([v[1] for v in known], 0))) if known else None
+        return Region(e, b)
+
+    def union(self, *others, smooth: float = 0) -> "Region":
+        return self._join(others, "union", smooth)
+
+    def intersection(self, *others, smooth: float = 0) -> "Region":
+        return self._join(others, "intersection", smooth)
+
+    def difference(self, *others, smooth: float = 0) -> "Region":
+        return self._join(others, "difference", smooth)
+
+    __or__ = __add__ = lambda self, o: self.union(o)
+    __and__ = lambda self, o: self.intersection(o)
+    __sub__ = lambda self, o: self.difference(o)
+
+    def offset(self, d: float) -> "Region":
+        """Grown by ``d`` mm (shrunk if negative)."""
+        b = self.bounds
+        return Region(self.expr - d, None if b is None else (tuple(v - max(d, 0) for v in b[0]), tuple(v + max(d, 0) for v in b[1])))
+
+    def shell(self, thickness: float, inward: bool = True) -> "Region":
+        """A band ``thickness`` wide along the outline, inside it (or outside: ``inward=False``)."""
+        t = float(thickness)
+        if inward:
+            return Region(max(self.expr, -(self.expr + t)), self.bounds)
+        return Region(max(self.expr - t, -self.expr), self.offset(t).bounds)
+
+    def at(self, u: float = 0, v: float = 0) -> "Region":
+        b = self.bounds
+        return Region(_remap(self.expr, _X - u, _Y - v, _Z),
+                      None if b is None else ((b[0][0] + u, b[0][1] + v), (b[1][0] + u, b[1][1] + v)))
+
+    def rotate(self, degrees: float) -> "Region":
+        """Turned counterclockwise about the origin."""
+        c, s = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+        b = self.bounds
+        if b is not None:
+            q = np.array([[u, v] for u in (b[0][0], b[1][0]) for v in (b[0][1], b[1][1])]) @ np.array([[c, s], [-s, c]])
+            b = (tuple(q.min(0)), tuple(q.max(0)))
+        return Region(_remap(self.expr, c * _X + s * _Y, -s * _X + c * _Y, _Z), b)
+
+    def mirror(self) -> "Region":
+        """Mirrored across the v axis (u -> -u)."""
+        b = self.bounds
+        return Region(_remap(self.expr, -_X, _Y, _Z), None if b is None else ((-b[1][0], b[0][1]), (-b[0][0], b[1][1])))
+
+    # into 3D
+    def revolve(self, degrees: float = 360, start: float = 0) -> Implicit:
+        """The region turned about the z axis: u is the distance from the axis, v the height (a lathe
+        profile; only u >= 0 counts). ``degrees`` < 360: a wedge from ``start`` counterclockwise from +x."""
+        e = _remap(self.expr, length(_X, _Y), _Z, _Z)
+        if self.bounds is None:
+            b = None
+        else:
+            R = builtins_max(abs(self.bounds[0][0]), abs(self.bounds[1][0]))
+            b = (Vec(-R, -R, self.bounds[0][1]), Vec(R, R, self.bounds[1][1]))
+        body = Implicit(e, b, history=(f"revolved {degrees:g}°",))
+        if degrees < 360:
+            body = body & wedge(degrees, start)
+        return body
+
+    def extrude(self, h: float, center: bool = False) -> Implicit:
+        """The region swept along z from 0 to ``h`` (``center=True``: centered)."""
+        _pos("extrude", h=h)
+        z0 = -h / 2 if center else 0.0
+        d = self.expr
+        e = max(d, slab(_Z, z0, z0 + h))
+        b = None if self.bounds is None else (Vec(*self.bounds[0], z0), Vec(*self.bounds[1], z0 + h))
+        return Implicit(e, b)
+
+
+import builtins as _builtins  # noqa: E402
+
+builtins_max, builtins_min = _builtins.max, _builtins.min
+
+
+def wedge(degrees: float, start: float = 0) -> Implicit:
+    """The space between two half-planes through the z axis, from angle ``start`` turning
+    ``degrees`` counterclockwise (from +x). Unbounded: intersect it (a cutaway: ``body - wedge(90)``)."""
+    if not 0 < degrees < 360:
+        raise TuleError(f"wedge: degrees must be between 0 and 360, got {degrees:g}", op="sdf.wedge")
+    a0, a1 = math.radians(start), math.radians(start + degrees)
+    d0 = math.sin(a0) * _X - math.cos(a0) * _Y  # positive on the near side of the start plane
+    d1 = math.cos(a1) * _Y - math.sin(a1) * _X  # negative inside the end plane
+    e = max(d0, d1) if degrees <= 180 else min(d0, d1)
+    return Implicit(e)
+
+
+def circle(r: float) -> Region:
+    """A disc of radius ``r`` at the origin (2D)."""
+    _pos("circle", r=r)
+    return Region(length(_X, _Y) - r, ((-r, -r), (r, r)))
+
+
+def rect(w: float, h: float, center: bool = True, radius: float = 0) -> Region:
+    """A ``w`` x ``h`` rectangle (2D), centered on the origin (``center=False``: from it), with
+    corners rounded to ``radius``."""
+    _pos("rect", w=w, h=h)
+    r = float(radius)
+    if r < 0 or 2 * r > builtins_min(w, h):
+        raise TuleError(f"rect: radius {r:g} must be between 0 and half the smaller side", op="sdf.rect")
+    cu, cv = (0.0, 0.0) if center else (w / 2, h / 2)
+    qx, qy = abs(_X - cu) - (w / 2 - r), abs(_Y - cv) - (h / 2 - r)
+    e = length(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - r
+    return Region(e, ((cu - w / 2, cv - h / 2), (cu + w / 2, cv + h / 2)))
+
+
+def _points2(points, op: str, least: int) -> np.ndarray:
+    P = np.asarray(points, dtype=float)
+    if P.ndim != 2 or P.shape[1] != 2 or len(P) < least:
+        raise TuleError(f"{op}: give at least {least} points (u, v)", op=f"sdf.{op}",
+                        hint=f"sdf.{op}([(0, 0), (40, 0), (40, 10), (0, 30)])")
+    return P
+
+
+def _segments_d2(P: np.ndarray, closed: bool):
+    """Per segment: the squared distance from (x, y) to it, and its (a, b)."""
+    n = len(P)
+    out = []
+    for i in range(n if closed else n - 1):
+        a, b = P[i], P[(i + 1) % n]
+        e = b - a
+        L2 = float(e @ e)
+        if L2 == 0:
+            continue
+        wx, wy = _X - a[0], _Y - a[1]
+        t = clamp((wx * e[0] + wy * e[1]) / L2, 0.0, 1.0)
+        out.append(((wx - e[0] * t) ** 2 + (wy - e[1] * t) ** 2, a, b))
+    return out
+
+
+def polygon(points) -> Region:
+    """A closed polygon (2D) through ``points`` (u, v), either winding; its exact signed distance
+    (nearest edge, inside by crossings). A lathe profile: ``sdf.polygon([(0, 0), (40, 0), (30, 50), (0, 50)]).revolve()``."""
+    P = _points2(points, "polygon", 3)
+    if np.allclose(P[0], P[-1]):
+        P = P[:-1]
+    segs = _segments_d2(P, True)
+    d2 = min(*[s[0] for s in segs]) if len(segs) > 1 else segs[0][0]
+    sign = None
+    for _, a, b in segs:
+        if a[1] == b[1]:
+            continue  # a level edge never crosses a horizontal ray
+        e = b - a
+        s1, s2 = _step(_Y - a[1], 1.0), _step(b[1] - _Y, 0.0)  # y >= a.y, y < b.y: a vertex counts once
+        # x of the crossing vs the point, as a signed length: e × w over |e|
+        s3 = _step((e[0] * (_Y - a[1]) - e[1] * (_X - a[0])) / math.hypot(*e))
+        flip = s1 * s2 * s3 + (1 - s1) * (1 - s2) * (1 - s3)
+        f = 1 - 2 * flip
+        sign = f if sign is None else sign * f
+    return Region(sqrt(d2) * sign, (tuple(P.min(0)), tuple(P.max(0))))
+
+
+def _catmull(P: np.ndarray, closed: bool, samples: int) -> np.ndarray:
+    """Points along a centripetal Catmull–Rom spline through P, ``samples`` per span."""
+    n = len(P)
+    if closed:
+        Q = np.vstack([P[-1], P, P[0], P[1]])
+    else:
+        Q = np.vstack([2 * P[0] - P[1], P, 2 * P[-1] - P[-2]])
+    out = []
+    spans = n if closed else n - 1
+    for i in range(spans):
+        p0, p1, p2, p3 = Q[i], Q[i + 1], Q[i + 2], Q[i + 3]
+        t0 = 0.0
+        t1 = t0 + builtins_max(np.linalg.norm(p1 - p0), 1e-9) ** 0.5
+        t2 = t1 + builtins_max(np.linalg.norm(p2 - p1), 1e-9) ** 0.5
+        t3 = t2 + builtins_max(np.linalg.norm(p3 - p2), 1e-9) ** 0.5
+        for t in np.linspace(t1, t2, samples, endpoint=False):
+            a1 = (t1 - t) / (t1 - t0) * p0 + (t - t0) / (t1 - t0) * p1
+            a2 = (t2 - t) / (t2 - t1) * p1 + (t - t1) / (t2 - t1) * p2
+            a3 = (t3 - t) / (t3 - t2) * p2 + (t - t2) / (t3 - t2) * p3
+            b1 = (t2 - t) / (t2 - t0) * a1 + (t - t0) / (t2 - t0) * a2
+            b2 = (t3 - t) / (t3 - t1) * a2 + (t - t1) / (t3 - t1) * a3
+            out.append((t2 - t) / (t2 - t1) * b1 + (t - t1) / (t2 - t1) * b2)
+    if not closed:
+        out.append(P[-1])
+    return np.array(out)
+
+
+def spline(points, closed: bool = True, samples: int = 12, width: float | None = None) -> Region:
+    """A smooth curve (2D, centripetal Catmull–Rom) through ``points``: closed, the region it
+    encloses; open (``closed=False``), a stroke ``width`` wide along it. ``samples`` per span."""
+    P = _points2(points, "spline", 3 if closed else 2)
+    Q = _catmull(P, closed, int(samples))
+    return polygon(Q) if closed else polyline(Q, width if width is not None else 0)
+
+
+def polyline(points, width: float) -> Region:
+    """A stroke ``width`` wide (round ends and corners) along the open polyline ``points`` (2D)."""
+    P = _points2(points, "polyline", 2)
+    _pos("polyline", width=width)
+    segs = _segments_d2(P, False)
+    d2 = min(*[s[0] for s in segs]) if len(segs) > 1 else segs[0][0]
+    w = width / 2
+    return Region(sqrt(d2) - w, (tuple(P.min(0) - w), tuple(P.max(0) + w)))
+
+
+def revolve(region: Region, degrees: float = 360, start: float = 0) -> Implicit:
+    """``region.revolve(…)``: a 2D profile (u = radius, v = height) turned about the z axis."""
+    return region.revolve(degrees, start)
+
+
+def extrude(region: Region, h: float, center: bool = False) -> Implicit:
+    return region.extrude(h, center)
+
+
+# ---------------------------------------------------------------- domain repetition
+
+
+def _polar_expr(e: Expr, count: int, overlap: bool) -> Expr:
+    sector = 2 * math.pi / count
+    rho = length(_X, _Y)
+    a = atan2(_Y, _X)
+    k = floor(a / sector + 0.5)
+    a0 = a - k * sector  # in [-sector/2, sector/2]: the copy on +x
+    shifts = (0.0, -sector, sector) if overlap else (0.0,)
+    out = None
+    for s in shifts:
+        ai = a0 + s
+        f = _remap(e, rho * cos(ai), rho * sin(ai), _Z)
+        out = f if out is None else min(out, f)
+    return out
+
+
+def _repeat_polar(body: Implicit, count: int, overlap: bool = False) -> Implicit:
+    if not (isinstance(count, int) and count >= 1):
+        raise TuleError(f"repeat_polar: count must be a whole number >= 1, got {count!r}", op="repeat_polar")
+    if count == 1:
+        return body
+    b = None
+    if body.bounds is not None:
+        lo, hi = body.bounds
+        R = builtins_max(math.hypot(u, v) for u in (lo[0], hi[0]) for v in (lo[1], hi[1]))
+        b = (Vec(-R, -R, lo[2]), Vec(R, R, hi[2]))
+    return body._with(_polar_expr(body.expr, count, overlap), b,
+                      history=body.history + (f"{count} copies about z",))
+
+
+def _repeat_linear(body: Implicit, step: VecLike, count: int, overlap: bool = False) -> Implicit:
+    if not (isinstance(count, int) and count >= 1):
+        raise TuleError(f"repeat_linear: count must be a whole number >= 1, got {count!r}", op="repeat_linear")
+    d = np.array(vec(step), dtype=float)
+    L2 = float(d @ d)
+    if L2 == 0:
+        raise TuleError("repeat_linear: step must not be zero", op="repeat_linear")
+    if count == 1:
+        return body
+    t = (_X * d[0] + _Y * d[1] + _Z * d[2]) / L2
+    k = clamp(floor(t + 0.5), 0, count - 1)
+    out = None
+    for s in ((0, -1, 1) if overlap else (0,)):
+        ks = clamp(k + s, 0, count - 1) if s else k
+        f = _remap(body.expr, _X - ks * d[0], _Y - ks * d[1], _Z - ks * d[2])
+        out = f if out is None else min(out, f)
+    b = None
+    if body.bounds is not None:
+        lo, hi = np.array(body.bounds[0]), np.array(body.bounds[1])
+        end = d * (count - 1)
+        b = (Vec(*np.minimum(lo, lo + end)), Vec(*np.maximum(hi, hi + end)))
+    return body._with(out, b, history=body.history + (f"{count} copies along {tuple(round(v, 3) for v in d)}",))
+
+
+def repeat_polar(body: Implicit, count: int, overlap: bool = False) -> Implicit:
+    """``count`` copies of ``body`` turned evenly about the z axis, still one expression of the
+    same size (domain repetition): model the copy that sits on +x. The copies must each stay inside
+    their sector; ``overlap=True`` also checks the two neighbours (3x the work) for copies that reach over."""
+    return _repeat_polar(body, count, overlap)
+
+
+def repeat_linear(body: Implicit, step: VecLike, count: int, overlap: bool = False) -> Implicit:
+    """``count`` copies of ``body``, each ``step`` (x, y, z) further on, as one expression of the same
+    size. As ``repeat_polar``: each copy stays within half a step of its place unless ``overlap=True``."""
+    return _repeat_linear(body, step, count, overlap)
+
+
+Implicit.repeat_polar = lambda self, count, overlap=False: _repeat_polar(self, count, overlap)
+Implicit.repeat_linear = lambda self, step, count, overlap=False: _repeat_linear(self, step, count, overlap)
+Implicit.repeat_polar.__doc__ = repeat_polar.__doc__
+Implicit.repeat_linear.__doc__ = repeat_linear.__doc__
+
+
+# ---------------------------------------------------------------- wall coordinates on a revolved contour
+
+
+def _station(v, t: Expr, op: str) -> Expr:
+    """A number, a station table [(t, value), …] (piecewise linear), or a function of the Expr t."""
+    if callable(v):
+        return _e(v(t))
+    if isinstance(v, (int, float)):
+        return _e(float(v))
+    pts = np.asarray(v, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        raise TuleError(f"{op}: give a number, a table [(z, value), …] or a function of z", op=op)
+    return interp(t, pts[:, 0], pts[:, 1])
+
+
+class Wall:
+    """A revolved wall contour, its radius ``r(z)`` from the axis given at stations (z increasing:
+    a chamber, a throat, a nozzle). It gives coordinates that follow the wall:
+
+    * ``n``: signed distance from the contour along its normal, positive away from the axis;
+    * ``s``: length along the contour from its first station; ``theta``: angle about z (radians);
+    * ``t``: the distance around (``rho · angle``), for features of a given width.
+
+    and builds bodies in them: ``solid(inner, outer)`` (a liner, a jacket), ``channels(count, width,
+    depth, offset)`` (regenerative cooling channels that follow the contour and narrow at the throat
+    with it) and ``ribs(count, width, height)`` on the outside. Widths, depths and offsets are a
+    number, a station table ``[(z, value), …]`` or a function of the z expression."""
+
+    def __init__(self, z, r, samples: int = 0):
+        z, r = np.asarray(z, dtype=float), np.asarray(r, dtype=float)
+        if samples:  # smooth through the stations
+            Q = _catmull(np.column_stack([z, r]), False, int(samples))
+            z, r = Q[:, 0], Q[:, 1]
+        if len(z) < 2 or len(z) != len(r) or np.any(np.diff(z) <= 0):
+            raise TuleError("Wall(z, r): two or more stations, z increasing, a radius each", op="sdf.Wall",
+                            hint="sdf.Wall([0, 300, 420, 900], [220, 220, 130, 420])")
+        self.z, self.r = z, r
+        dz, dr = np.diff(z), np.diff(r)
+        seg_c = dz / np.hypot(dz, dr)  # cos of the wall's slope per segment
+        c = np.concatenate([[seg_c[0]], (seg_c[:-1] + seg_c[1:]) / 2, [seg_c[-1]]])
+        self._c = c
+        self.length = float(np.hypot(dz, dr).sum())
+        self._s = np.concatenate([[0.0], np.cumsum(np.hypot(dz, dr))])
+        self.rho = length(_X, _Y)
+        self.theta = atan2(_Y, _X)
+        self.radius = interp(_Z, z, r)
+        self.n = (self.rho - self.radius) * interp(_Z, z, c)
+        self.s = interp(_Z, z, self._s)
+        self.t = self.rho * self.theta
+
+    def __repr__(self) -> str:
+        return f"<Wall: {len(self.z)} stations, z {self.z[0]:g}–{self.z[-1]:g}, r {self.r.min():g}–{self.r.max():g} mm>"
+
+    def r_at(self, z) -> np.ndarray:
+        """The contour's radius at heights ``z`` (numbers)."""
+        return np.interp(z, self.z, self.r)
+
+    def _span(self, z):
+        z0, z1 = (self.z[0], self.z[-1]) if z is None else (float(z[0]), float(z[1]))
+        return z0, z1
+
+    def _box(self, z0, z1, out):
+        R = float(self.r.max() + out)
+        return (Vec(-R, -R, z0), Vec(R, R, z1))
+
+    def solid(self, inner=0.0, outer=1.0, z=None) -> Implicit:
+        """The wall between normal offsets ``inner`` and ``outer`` (mm; negative is toward the axis),
+        from ``z[0]`` to ``z[1]`` (default: the whole contour), cut square to the axis at the ends."""
+        z0, z1 = self._span(z)
+        lo, hi = _station(inner, _Z, "Wall.solid"), _station(outer, _Z, "Wall.solid")
+        e = max(lo - self.n, self.n - hi, slab(_Z, z0, z1))
+        out = builtins_max(_station_max(outer), 0.0) + 1.0
+        return Implicit(e, self._box(z0, z1, out), history=(f"wall {z0:g}–{z1:g}",))
+
+    def channels(self, count: int, width=None, depth=1.0, offset=1.0, z=None, land=None, phase: float = 0.0) -> Implicit:
+        """``count`` channels around the wall, each ``width`` wide (or ``land``: the rib left between
+        channels, so they widen and narrow with the circumference), from normal offset ``offset``
+        outward ``depth`` deep, running from ``z[0]`` to ``z[1]``. Subtract them from a ``solid``.
+        One expression whatever the count (domain repetition about z)."""
+        if not (isinstance(count, int) and count >= 1):
+            raise TuleError("channels: count must be a whole number >= 1", op="Wall.channels")
+        if (width is None) == (land is None):
+            raise TuleError("channels: give width= or land=, one of them", op="Wall.channels",
+                            hint="width=1.2 (mm), a table [(z, w), …], or land=1.0 (mm of rib between channels)")
+        z0, z1 = self._span(z)
+        off = _station(offset, _Z, "Wall.channels")
+        dep = _station(depth, _Z, "Wall.channels")
+        sector = 2 * math.pi / count
+        if land is not None:
+            mid = self.radius + off + dep / 2
+            w = mid * sector - _station(land, _Z, "Wall.channels")
+        else:
+            w = _station(width, _Z, "Wall.channels")
+        a = self.theta - math.radians(phase)
+        a0 = a - floor(a / sector + 0.5) * sector
+        t = self.rho * a0
+        e = max(abs(t) - w / 2, off - self.n, self.n - off - dep, slab(_Z, z0, z1))
+        out = _station_max(offset) + _station_max(depth) + 1.0
+        return Implicit(e, self._box(z0, z1, out), history=(f"{count} channels",))
+
+    def ribs(self, count: int, width, height, base=0.0, z=None, phase: float = 0.0) -> Implicit:
+        """``count`` ribs standing on the wall at normal offset ``base``, ``height`` tall and ``width``
+        wide (numbers, tables or functions of z), as one expression. Union them with a ``solid``."""
+        z0, z1 = self._span(z)
+        b, h, w = (_station(v, _Z, "Wall.ribs") for v in (base, height, width))
+        sector = 2 * math.pi / count
+        a = self.theta - math.radians(phase)
+        a0 = a - floor(a / sector + 0.5) * sector
+        e = max(abs(self.rho * a0) - w / 2, b - self.n, self.n - b - h, slab(_Z, z0, z1))
+        out = _station_max(base) + _station_max(height) + 1.0
+        return Implicit(e, self._box(z0, z1, out), history=(f"{count} ribs",))
+
+    def bands(self, at, width, height, base=0.0) -> Implicit:
+        """Hoops around the wall: at heights ``at`` (a list of z), ``width`` along z, ``height`` out
+        from normal offset ``base``."""
+        zs = [float(v) for v in at]
+        b, h = _station(base, _Z, "Wall.bands"), _station(height, _Z, "Wall.bands")
+        dz = min(*[abs(_Z - zc) for zc in zs]) if len(zs) > 1 else abs(_Z - zs[0])
+        e = max(dz - float(width) / 2, b - self.n, self.n - b - h)
+        out = _station_max(base) + _station_max(height) + 1.0
+        return Implicit(e, self._box(builtins_min(zs) - width, builtins_max(zs) + width, out), history=(f"{len(zs)} bands",))
+
+
+def _station_max(v) -> float:
+    if callable(v):
+        return 50.0  # unknown: a margin for the bounds
+    if isinstance(v, (int, float)):
+        return float(v)
+    return float(np.max(np.asarray(v, dtype=float)[:, 1]))
+
+
+# ---------------------------------------------------------------- tubes along 3D paths
+
+
+def _fillet_corners(P: np.ndarray, bend: float, samples: int = 8) -> np.ndarray:
+    """The polyline with each inner corner replaced by an arc of radius ``bend`` (pipe bends)."""
+    out = [P[0]]
+    for i in range(1, len(P) - 1):
+        a, b, c = P[i - 1], P[i], P[i + 1]
+        u, v = a - b, c - b
+        lu, lv = np.linalg.norm(u), np.linalg.norm(v)
+        if lu == 0 or lv == 0:
+            continue
+        u, v = u / lu, v / lv
+        cosang = float(np.clip(u @ v, -1, 1))
+        ang = math.acos(cosang)  # the angle between the legs
+        if ang > math.pi - 1e-3:
+            out.append(b)
+            continue
+        tlen = bend / math.tan(ang / 2)
+        tlen = builtins_min(tlen, 0.5 * lu, 0.5 * lv)
+        r = tlen * math.tan(ang / 2)
+        p0, p1 = b + u * tlen, b + v * tlen
+        bis = (u + v) / np.linalg.norm(u + v)
+        center = b + bis * (r / math.sin(ang / 2))
+        e0, e1 = p0 - center, p1 - center
+        turn = math.pi - ang
+        for k in range(samples + 1):
+            s = k / samples
+            # slerp between e0 and e1
+            w0 = math.sin((1 - s) * turn) / math.sin(turn)
+            w1 = math.sin(s * turn) / math.sin(turn)
+            out.append(center + w0 * e0 + w1 * e1)
+    out.append(P[-1])
+    return np.array(out)
+
+
+def tube(points, r, wall: float | None = None, spline: bool = False, bend: float | None = None,
+         samples: int = 8, ends: str = "flat") -> Implicit:
+    """A tube of radius ``r`` along a 3D path through ``points`` (ducts, manifolds, lines):
+    straight between them, or a smooth curve (``spline=True``, Catmull–Rom), or straight with
+    each corner bent to radius ``bend``. ``r`` may be one radius or one per point (tapers).
+    ``wall``: hollow, that thick, open at flat ends. ``ends="flat"`` or ``"round"``."""
+    P = np.asarray(points, dtype=float)
+    if P.ndim != 2 or P.shape[1] != 3 or len(P) < 2:
+        raise TuleError("tube: give two or more points (x, y, z)", op="sdf.tube",
+                        hint="sdf.tube([(0, 0, 0), (0, 0, 100), (80, 0, 160)], r=12, bend=40)")
+    radii = np.broadcast_to(np.asarray(r, dtype=float), (len(P),)).copy()
+    if np.any(radii <= 0):
+        raise TuleError("tube: r must be > 0", op="sdf.tube")
+    if ends not in ("flat", "round"):
+        raise TuleError(f"tube: ends is 'flat' or 'round', not {ends!r}", op="sdf.tube")
+    if spline or bend:
+        s_old = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+        Q = _catmull(P, False, int(samples)) if spline else _fillet_corners(P, float(bend), int(samples))
+        s_new = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(Q, axis=0), axis=1))])
+        radii = np.interp(s_new / builtins_max(s_new[-1], 1e-12) * s_old[-1], s_old, radii)
+        P = Q
+    keep = np.concatenate([[True], np.linalg.norm(np.diff(P, axis=0), axis=1) > 1e-9])
+    P, radii = P[keep], radii[keep]
+    if len(P) < 2:
+        raise TuleError("tube: the points coincide", op="sdf.tube")
+
+    def field(shrink: float, cap: bool) -> Expr:
+        out = None
+        last = len(P) - 2
+        for i in range(len(P) - 1):
+            a, b = P[i], P[i + 1]
+            ab = b - a
+            L2 = float(ab @ ab)
+            px, py, pz = _X - a[0], _Y - a[1], _Z - a[2]
+            tt = (px * ab[0] + py * ab[1] + pz * ab[2]) / L2
+            t = clamp(tt, 0.0, 1.0)
+            ra, rb = radii[i] - shrink, radii[i + 1] - shrink
+            rr = ra if ra == rb else ra + (rb - ra) * t
+            d = length(px - t * ab[0], py - t * ab[1], pz - t * ab[2]) - rr
+            if cap and i == 0:
+                d = max(d, -tt * math.sqrt(L2))  # flat at the start
+            if cap and i == last:
+                d = max(d, (tt - 1) * math.sqrt(L2))  # flat at the end
+            out = d if out is None else min(out, d)
+        return out
+
+    flat = ends == "flat"
+    e = field(0.0, flat)
+    if wall is not None:
+        _pos("tube", wall=wall)
+        if wall >= radii.min():
+            raise TuleError(f"tube: wall {wall:g} must be thinner than the radius ({radii.min():g})", op="sdf.tube")
+        e = max(e, -field(float(wall), False))
+    R = float(radii.max())
+    return Implicit(e, (Vec(*(P.min(0) - R)), Vec(*(P.max(0) + R))), history=(f"tube along {len(P)} points",))

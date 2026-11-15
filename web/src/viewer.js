@@ -19,10 +19,26 @@
 // A part may carry a placement (mesh.matrix, 16 numbers, row-major), and placed copies
 // (mesh.instances, N of them): drawn as one THREE.InstancedMesh, edges by an instanced
 // line shader, picked per copy (pick's `instance`); face styles apply to every copy.
+// setSection cuts the view with a plane (a cutaway): what is behind it is drawn, and where a closed part is cut
+// open its inside (back faces, seen through the cut) is drawn as a hatched cap, so walls and channels read as section.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { color as palette } from "./colors.js";
+
+// A section's caps: with a clipping plane on, a back face can only be seen through the cut (the parts are closed and
+// face outward), so it is drawn as the cut: hatched, tinted by the part's own color. dithering_fragment is the last
+// chunk of every lit and basic material, after tone mapping, so this is the color on screen.
+if (!THREE.ShaderChunk.dithering_fragment.includes("tule-section")) {
+  THREE.ShaderChunk.dithering_fragment += `
+#if NUM_CLIPPING_PLANES > 0 // tule-section
+  if (!gl_FrontFacing) {
+    float hatch = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 9.0));
+    vec3 cap = mix(vec3(0.83, 0.36, 0.25), clamp(diffuseColor.rgb, 0.0, 1.0), 0.25);
+    gl_FragColor = vec4(cap * (0.86 + 0.14 * hatch), 1.0);
+  }
+#endif`;
+}
 
 const GHOST_OPACITY = 0.12; // the other parts while one is highlighted
 const DIM = "--line-strong"; // faces an overlay does not mention (a palette.css variable)
@@ -73,7 +89,15 @@ export class Viewer {
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environmentIntensity = 0.95;
     // what parts with a material (metal, roughness) reflect: a studio, made on first use
-    this.studio = () => (this._studio ??= pmrem.fromScene(studioScene(), 0.0).texture);
+    this.studio = () => {
+      if (!this._studio) {
+        const planes = r.clippingPlanes; // a section must not cut the studio being rendered
+        r.clippingPlanes = [];
+        this._studio = pmrem.fromScene(studioScene(), 0.0).texture;
+        r.clippingPlanes = planes;
+      }
+      return this._studio;
+    };
 
     const cam = (this.camera = new THREE.PerspectiveCamera(30, 1, 0.01, 1000));
     cam.up.set(0, 0, 1);
@@ -137,6 +161,8 @@ export class Viewer {
     this.dirty = true;
     this.raycaster = new THREE.Raycaster();
     this.listeners = new Set(); // after each render (HTML labels follow the view)
+    this.section = null; // {axis: "x" | "y" | "z", offset: mm, flip: bool}: the cut (setSection), or none
+    this.sectionPlane = new THREE.Plane();
 
     new ResizeObserver(() => this.resize()).observe(el);
     this.resize();
@@ -883,6 +909,29 @@ export class Viewer {
   /** A picture through the camera (or through `orbit`, leaving the view as it is), exactly w×h pixels with
    * nothing shifted for panels and no floor grid (grid: true keeps it): what tule screenshot draws through the
    * same camera. */
+  /** Cut the view with a plane square to x, y or z at `offset` mm, keeping the side the axis points to (`flip`: the
+   * other side); null takes the cut away. Cut parts show hatched caps where they are cut open. */
+  setSection(section) {
+    if (section && !"xyz".includes(section.axis ?? "")) throw new Error('a section is {axis: "x" | "y" | "z", offset: mm, flip: false}');
+    this.section = section ? { axis: section.axis, offset: +section.offset || 0, flip: !!section.flip } : null;
+    const r = this.renderer;
+    if (!this.section) r.clippingPlanes = [];
+    else {
+      const n = new THREE.Vector3();
+      n[this.section.axis] = this.section.flip ? -1 : 1; // three.js keeps the plane's positive side
+      this.sectionPlane.set(n, -(this.section.flip ? -1 : 1) * this.section.offset);
+      r.clippingPlanes = [this.sectionPlane];
+    }
+    this.dirty = true;
+    return this.section;
+  }
+
+  /** Where a section along `axis` can go: the parts' extent along it, [lo, hi] mm (null before anything is drawn). */
+  sectionRange(axis) {
+    if (!this.bounds) return null;
+    return [this.bounds.min[axis], this.bounds.max[axis]];
+  }
+
   shot(w, h, orbit = null, { background = palette("--view-mid"), grid = false } = {}) {
     const r = this.renderer;
     const cam = this.camera;
@@ -930,7 +979,8 @@ export class Viewer {
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
     const solids = this.group.children.filter((p) => p.visible && p.children[0].visible).map((p) => p.children[0]);
-    const hit = this.raycaster.intersectObjects([...solids, ...this.arrows.children], true)[0];
+    const hits = this.raycaster.intersectObjects([...solids, ...this.arrows.children], true);
+    const hit = this.section ? hits.find((h) => this.sectionPlane.distanceToPoint(h.point) >= 0) : hits[0];
     if (!hit) return null;
     const arrow = hit.object.parent?.userData.arrow;
     if (arrow !== undefined) return { arrow };

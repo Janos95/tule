@@ -806,6 +806,7 @@ def _forward(args) -> list[str]:
     for h in args.hide or []:
         argv += [f"--hide={h}"]
     argv += [] if args.edges else ["--no-edges"]
+    argv += [f"--section={args.section}"] if args.section else []
     return argv
 
 
@@ -846,9 +847,10 @@ def cmd_screenshot(args):
         return _batch(args, prep, overlay, target, batch, __import__("time").time() - t0)
     spec = _camera_args(args)
     hidden = _hidden(prep, args.hide or [])
-    if spec or any(c is not None for _, c in hidden):
+    if spec or args.section or any(c is not None for _, c in hidden):
         img, rep, cam, hidden = _shoot(prep, overlay, {"view": args.view, "hide": args.hide or [], "edges": args.edges,
-                                                       "labels": args.labels, "size": [args.size, args.height], **spec})
+                                                       "labels": args.labels, "size": [args.size, args.height],
+                                                       **({"section": args.section} if args.section else {}), **spec})
         what = f"{img.width}×{img.height}, camera az {_g(cam.azimuth)} el {_g(cam.elevation)} distance {_g(cam.distance)} mm " \
                f"target {_vec(cam.target)} fov {_g(cam.fov)}"
     else:
@@ -874,7 +876,8 @@ def cmd_screenshot(args):
         os.replace(tmp, out)
     lines = [f"tule: wrote {out} ({what}): {target}"]
     if cam is not None:
-        lines.append(f"  viewer link: ?{_link(cam, args.hide)}  (the same camera in the browser; here: --cam={cam.param()})")
+        sec = f"&section={args.section}" if args.section else ""
+        lines.append(f"  viewer link: ?{_link(cam, args.hide)}{sec}  (the same camera in the browser; here: --cam={cam.param()})")
         lines.append(f"  in view: {_in_view(rep)}")
     lines += _face_report(args, parts, overlay, rep, f"this camera" if cam is not None else args.view)
     print("\n".join(lines), file=sys.stderr if args.o == "-" else sys.stdout)
@@ -970,8 +973,17 @@ def _shoot(prep, overlay, spec: dict):
         if spec.get("distance") is None and (dist is None or spec.get("fit") or sel is not None):
             cam = Camera(az, el, fit_distance(lo, hi, cam, W / H), tuple(target), fov)
         edges = spec.get("edges", True)
+        section = None
+        if spec.get("section"):
+            from .render import parse_section
+
+            ax, off, flip = parse_section(spec["section"])
+            if off is None:  # through the middle of what is drawn
+                plo, phi = bounds(prep, None, hidden)
+                off = float(plo[ax] + phi[ax]) / 2
+            section = (ax, off, flip)
         img, rep = render_camera(prep, cam, W, H, hidden, edges=edges is not False, labels=bool(spec.get("labels")),
-                                 overlay=overlay)
+                                 overlay=overlay, section=section)
     except ValueError as e:
         raise CliError(str(e)) from None
     return img, rep, cam, hidden
@@ -992,7 +1004,7 @@ def _read_cameras(path: str):
     if not isinstance(data, list) or not data or not all(isinstance(c, dict) for c in data) or not isinstance(defaults, dict):
         raise CliError(f"--cameras {path}: a list of cameras ({{\"azimuth\": 30, \"elevation\": 20, ...}}), "
                        f"or {{\"defaults\": {{...}}, \"cameras\": [...]}}")
-    known = set(CAMERA_KEYS) | {"name", "size", "hide", "edges", "labels", "view"}
+    known = set(CAMERA_KEYS) | {"name", "size", "hide", "edges", "labels", "view", "section"}
     for i, c in enumerate([defaults, *data]):
         bad = sorted(set(c) - known)
         if bad:
@@ -1463,6 +1475,8 @@ def add_commands(add):
     sp.add_argument("--target-part", help="camera: frame this part or group by name (heatshield, ship/flaps, tiles[17])")
     sp.add_argument("--cam", help="camera: az,el,distance,tx,ty,tz[,fov], the viewer link's cam= (Copy view link)")
     sp.add_argument("--hide", action="append", help="a part or group not drawn (repeat, or comma-separated)")
+    sp.add_argument("--section", help="a cutaway, as the viewer's Section: AXIS[:OFFSET][:flip], e.g. y:0 (keeps y >= 0; "
+                    "no offset: through the middle), z:1200:flip; where a part is cut open it shows a hatched cap")
     sp.add_argument("--edges", action=__import__("argparse").BooleanOptionalAction, default=True,
                     help="draw the CAD edges and outlines (default); --no-edges for many small parts or to compare with photos")
     sp.add_argument("--cameras", help="a JSON file (or - for stdin) of cameras, one picture each into the folder -o, the model "

@@ -56,6 +56,21 @@
               </button>
               <div id="download-menu" class="menu" role="menu" hidden></div>
             </div>
+            <div class="dl">
+              <button id="section-toggle" class="toggle" type="button" title="Section: cut the view with a plane to see inside (S)" aria-haspopup="dialog" aria-expanded="false">
+                <svg viewBox="0 0 16 16"><path d="M3.5 2.5h6l3 3v8h-9z" /><path d="M1.5 9h13" /></svg><span class="label">Section</span>
+              </button>
+              <div id="section-panel" class="menu section-panel" role="dialog" aria-label="Section" hidden>
+                <div class="section-axes" role="group" aria-label="Cut square to">
+                  <button type="button" data-axis="x" aria-pressed="false">X</button>
+                  <button type="button" data-axis="y" aria-pressed="true">Y</button>
+                  <button type="button" data-axis="z" aria-pressed="false">Z</button>
+                  <button id="section-flip" type="button" title="Keep the other side" aria-pressed="false">Flip</button>
+                </div>
+                <input id="section-offset" type="range" min="0" max="1000" step="1" value="500" aria-label="Where the plane cuts" />
+                <div class="section-foot"><span id="section-at"></span><button id="section-off" type="button">Off</button></div>
+              </div>
+            </div>
             <button id="view-link" class="icon" type="button" title="Copy view link: this camera and the hidden parts, for a link or tule screenshot --cam" aria-label="Copy view link">
               <svg viewBox="0 0 16 16"><path d="M2 5.5h2.5L6 3.5h4l1.5 2H14v7H2z" /><circle cx="8" cy="8.8" r="2.3" /></svg>
             </button>

@@ -112,6 +112,28 @@ def test_hidden_parts_and_copies_are_not_drawn():
     assert two["parts"]["ship/tiles"] == pytest.approx(nohull["parts"]["ship/tiles"] / 2, rel=0.05)
 
 
+def test_a_section_cuts_the_view_and_caps_what_it_cuts_open():
+    """A box cut at y = 0, seen from the front (-y): the near half is gone and the cut shows as a hatched cap."""
+    from tule_cli.render import CAP, parse_section
+
+    assert parse_section("y:0") == (1, 0.0, False) and parse_section("Z:-12.5:flip") == (2, -12.5, True)
+    assert parse_section("x") == (0, None, False)
+    with pytest.raises(ValueError, match="AXIS"):
+        parse_section("w:1")
+    prep = prepare([_box("block", (-50, -50, -50), (50, 50, 50), (0.2, 0.4, 0.8))])
+    cam = Camera(-90, 0, 600, (0, 0, 0), 30)
+    whole, _ = render_camera(prep, cam, 200, 150, edges=False)
+    cut, _ = render_camera(prep, cam, 200, 150, edges=False, section=(1, 0.0, False))
+    a, b = np.asarray(whole).astype(int), np.asarray(cut).astype(int)
+    mid = b[75, 100]
+    assert abs(mid[0] - (0.75 * CAP[0] + 0.25 * 0.2) * 255) < 30 and mid[0] > mid[2]  # the cap, not the blue face
+    assert a[75, 100][2] > a[75, 100][0]  # uncut: the blue front face
+    behind, _ = render_camera(prep, cam, 200, 150, edges=False, section=(1, 0.0, True))  # keeps y <= 0: the front face
+    assert np.asarray(behind).astype(int)[75, 100][2] > np.asarray(behind).astype(int)[75, 100][0]
+    gone, rep = render_camera(prep, cam, 200, 150, edges=False, section=(1, 80.0, False))  # past the block: nothing
+    assert rep["covered"] == 0
+
+
 @pytest.fixture
 def rocket(tmp_path, monkeypatch):
     from tule import Assembly, box, cylinder, outputs
