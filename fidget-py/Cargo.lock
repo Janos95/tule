@@ -261,7 +261,7 @@ dependencies = [
 [[package]]
 name = "fidget"
 version = "0.5.1"
-source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
+source = "git+https://github.com/Janos95/fidget?rev=ea6734721d85eca9b387b15561748fe7370415fc#ea6734721d85eca9b387b15561748fe7370415fc"
 dependencies = [
  "document-features",
  "fidget-core",
@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "fidget-core"
 version = "0.5.1"
-source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
+source = "git+https://github.com/Janos95/fidget?rev=ea6734721d85eca9b387b15561748fe7370415fc#ea6734721d85eca9b387b15561748fe7370415fc"
 dependencies = [
  "facet",
  "getrandom 0.2.17",
@@ -290,7 +290,7 @@ dependencies = [
 [[package]]
 name = "fidget-jit"
 version = "0.5.1"
-source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
+source = "git+https://github.com/Janos95/fidget?rev=ea6734721d85eca9b387b15561748fe7370415fc#ea6734721d85eca9b387b15561748fe7370415fc"
 dependencies = [
  "arrayvec",
  "dynasmrt",
@@ -303,7 +303,7 @@ dependencies = [
 [[package]]
 name = "fidget-mesh"
 version = "0.5.1"
-source = "git+https://github.com/Janos95/fidget?rev=72da0be108137cb33bed632896516bd651a607d3#72da0be108137cb33bed632896516bd651a607d3"
+source = "git+https://github.com/Janos95/fidget?rev=ea6734721d85eca9b387b15561748fe7370415fc#ea6734721d85eca9b387b15561748fe7370415fc"
 dependencies = [
  "arrayvec",
  "fidget-core",
