@@ -26,7 +26,7 @@ The project name comes from `-p`, else `$TULE_PROJECT`, else the last one used.
 
 **Several machines:** a project can run on several machines at once (Tule cloud, a GPU, one of the user's computers by name), each with its own copy of `/workspace`. A machine that ran the project before gets its own copy back; a new one starts from the latest save. When several run, `ssh`, `build`, `save` and `snapshot` need `--machine` (`cloud`, `gpu-<type>`, a computer's name; the ids are in `tule status`); `down` without it stops them all.
 
-**GPUs** run on RunPod and are paid from the user's RunPod balance: the user connects a RunPod API key in Tule's settings, then `--machine gpu-<type>` (connector: `machine` with action=start). Same image plus CUDA 12 and CuPy. Alternatively, the user's own RunPod connector can create a pod from `ghcr.io/janos95/tule-runtime:cuda` with the environment that `tule join -p bracket` prints; the pod joins the project.
+**GPUs** run on RunPod and are paid from the user's RunPod balance (ask before starting one): the user connects a RunPod API key in Tule's settings, then `--machine gpu-<type>` (connector: `machine` with action=start). Same image plus CUDA 12 and CuPy. Alternatively, the user's own RunPod connector can create a pod from `ghcr.io/janos95/tule-runtime:cuda` with the environment that `tule join -p bracket` prints; the pod joins the project.
 
 ## SSH
 
