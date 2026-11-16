@@ -45,7 +45,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-DEFAULT_URL = "https://tule.janosmeny.com"
+DEFAULT_URL = "https://tule.computer"
 CONFIG_DIR = os.path.expanduser(os.environ.get("TULE_CONFIG_DIR", "~/.config/tule"))
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 KEY = os.path.join(CONFIG_DIR, "id_ed25519")

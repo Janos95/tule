@@ -260,6 +260,7 @@ export async function mcp(req: Request, env: Env, userId: string): Promise<Respo
       if (typeof name !== "string" || !NAMES.has(name)) return rpcError(id, -32602, `Unknown tool: ${String(name)}`);
       const user = await accounts(env).user(userId);
       if (!user) return ok({ content: [{ type: "text", text: "This connection's account no longer exists; reconnect the Tule connector." }], isError: true });
+      if (user.guest) await accounts(env).seen(user.id); // a guest whose agent works here is still here
       const origin = env.PUBLIC_URL;
       const t0 = Date.now();
       let out: ops.Result | string;

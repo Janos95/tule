@@ -8,14 +8,14 @@ How it fits together: [DESIGN.md](DESIGN.md).
 
 ## Use it
 
-Add `https://tule.janosmeny.com/mcp` to your agent as a custom connector (Claude, ChatGPT) or as a remote MCP
+Add `https://tule.computer/mcp` to your agent as a custom connector (Claude, ChatGPT) or as a remote MCP
 server (Claude Code, Codex, Cursor). The agent then installs and signs in the `tule` CLI itself: the connector's
 `info` (what=connect) gives it the command.
 
 By hand:
 
 ```sh
-curl -fsSL https://tule.janosmeny.com/cli.sh | sh   # install the CLI, then approve the sign-in in the browser
+curl -fsSL https://tule.computer/cli.sh | sh   # install the CLI, then approve the sign-in in the browser
 tule new bracket && tule up -p bracket
 tule build -p bracket                    # runs the template's src/part.py on the machine
 tule open -p bracket                     # the viewer shows outputs/part

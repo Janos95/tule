@@ -9,7 +9,8 @@
   "rules": [{ "type": "Text", "globs": ["**/*.css"], "fallthrough": true }],
   "compatibility_date": "2026-10-30",
   "workers_dev": true,
-  "routes": [{ "pattern": "tule.janosmeny.com", "custom_domain": true }],
+  // tule.janosmeny.com: the old domain; its pages redirect to PUBLIC_URL, its API, connector and CLI calls still work
+  "routes": [{ "pattern": "tule.computer", "custom_domain": true }, { "pattern": "tule.janosmeny.com", "custom_domain": true }],
   // skills/*.md -> src/skills.gen.ts (the MCP server's guide tool)
   "build": { "command": "node gen-skills.mjs" },
   // web/dist (npm --prefix ../web run build): the viewer, /p/<project>. The
@@ -25,10 +26,12 @@
   // user's CPU machine time. Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
   // ENCRYPTION_KEY (32 bytes, base64; encrypts stored RunPod keys), DEV_TOKEN.
   "vars": {
-    "PUBLIC_URL": "https://tule.janosmeny.com",
+    "PUBLIC_URL": "https://tule.computer",
     "ALLOWED_EMAILS": "*",
     // ADMIN_EMAILS: people with admin rights (support access to every project, deleting accounts)
     "ADMIN_EMAILS": "janos.meny@googlemail.com",
+    // CONTACT_EMAIL: shown on /privacy and /terms (empty: the GitHub issues page)
+    "CONTACT_EMAIL": "",
     "CPU_HOURS_MONTH": "100",
     // guests (no sign-in): projects each, machine minutes a day each, guest
     // machines running at once site-wide, days kept after the last visit

@@ -156,6 +156,14 @@ export async function authRoutes(req: Request, env: Env, url: URL): Promise<Resp
     }
     return res;
   }
+  // try without an account: a guest session, then back to where the visitor was (connecting an app, usually)
+  if (url.pathname === "/auth/guest" && req.method === "POST") {
+    if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403);
+    const next = safeNext(String((await req.formData()).get("next") ?? ""));
+    const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
+    if ("error" in g) return page("Sign in instead", html`<p>${g.error}.</p><p><a class="button primary" href="${loginUrl(next)}">Sign in with Google</a></p>`, 429);
+    return new Response(null, { status: 303, headers: { Location: next, "Set-Cookie": setCookie(req, SESSION_COOKIE, g.session, 30 * 86400) } });
+  }
   if (url.pathname === "/auth/logout" && req.method === "POST") {
     const s = cookie(req, SESSION_COOKIE);
     if (s) await accounts(env).endSession(s);
@@ -258,7 +266,6 @@ export async function authorize(req: Request, env: Env, url: URL, user: User | n
   const oauth = env.OAUTH_PROVIDER;
   if (user?.id === SUPPORT_ID) return page("Not for the support account", "<p>The support account cannot connect apps.</p>", 403, user);
   if (req.method === "GET") {
-    if (!user) return new Response(null, { status: 302, headers: { Location: loginUrl(url.pathname + url.search) } });
     let request;
     try {
       request = await oauth.parseAuthRequest(req);
@@ -267,11 +274,26 @@ export async function authorize(req: Request, env: Env, url: URL, user: User | n
       return page("Cannot connect this app", `<p>${esc(err.message)}</p>`, 400);
     }
     const d = await oauth.describeConsent(request);
+    // signed out: sign in, or try it right away as a guest (nothing to sign up for; signing in later keeps the projects)
+    if (!user) {
+      const back = url.pathname + url.search;
+      return page(
+        `Connect ${d.clientName}`,
+        html`<p><b>${d.clientName}</b> wants to use Tule: an engineering computer for your agent, with CAD, simulation
+          and a live viewer.</p>
+          <div class="row">
+            <a class="button primary" href="${loginUrl(back)}">Sign in with Google</a>
+            <form method="post" action="/auth/guest" style="margin:0"><input type="hidden" name="next" value="${back}" /><button>Try without an account</button></form>
+          </div>
+          <p class="muted">Without an account your projects are kept for a day after you last use them; sign in any time to keep
+          them. By continuing you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`,
+      );
+    }
     const consent = await oauth.beginConsent(request);
     consent.headers.set("Content-Type", "text/html; charset=utf-8");
     // a guest allowing would connect the app to the guest, deleted after a day: signing in keeps the guest's projects
     const body = html`${user.guest
-        ? html`<p class="warn">You are signed in as a guest. Allowing connects ${d.clientName} to this guest, whose projects are deleted after a day: sign in to keep them (they come along).</p>`
+        ? html`<p class="muted">You are trying Tule without an account: projects are kept for a day after you last use them. Sign in any time to keep them (they come along).</p>`
         : html`<p>Signed in as <b>${user.email}</b>.</p>`}
       <p><b>${d.clientName}</b> wants to manage your Tule projects: create and delete projects, start and stop
       machines, manage your SSH keys and read your usage.</p>
@@ -281,7 +303,7 @@ export async function authorize(req: Request, env: Env, url: URL, user: User | n
       <form method="post" class="row">
         <input type="hidden" name="handle" value="${consent.handle}" />
         ${user.guest
-          ? html`<a class="button primary" href="${loginUrl(url.pathname + url.search)}">Sign in, then allow</a><button name="decision" value="approve">Allow as guest</button>`
+          ? html`<button class="primary" name="decision" value="approve">Allow</button><a class="button" href="${loginUrl(url.pathname + url.search)}">Sign in first</a>`
           : html`<button class="primary" name="decision" value="approve">Allow</button>`}
         <button name="decision" value="deny">Deny</button>
       </form>`;

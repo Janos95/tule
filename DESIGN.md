@@ -787,18 +787,22 @@ request `id`.
   identity) with a session cookie, so Tule can be tried without signing in.
   Everything is stored under the guest's user id exactly as for an account;
   the cookie is the only way back to it (and any CLI the guest logged in).
+- **Connecting an app without an account:** `/authorize` signed out offers
+  "Sign in with Google" or "Try without an account" (POST `/auth/guest` makes
+  a guest and returns to the consent page). The app is then connected to the
+  guest; directory reviewers need no credentials this way.
 - **Limits** (vars, the stricter defaults): `GUEST_PROJECTS` 1 project,
   `GUEST_MINUTES_DAY` 30 machine minutes a day (checked at start and every
   minute while running), `cpu-1` only with a 10-minute idle stop, no GPUs,
   `GUEST_MACHINES` 2 guest machines running at once site-wide, at most 5 new
   guests per IP address a day.
-- **Expiry:** each visit updates `last_seen` (at most hourly); an hourly sweep
+- **Expiry:** each visit or connector tool call updates `last_seen` (at most hourly); an hourly sweep
   in the Accounts object deletes guests not seen for `GUEST_DAYS` (1) with
   their projects (machines stopped, snapshots deleted).
 - **Signing in** from a guest session moves the guest's projects (renamed on a
   name clash), keys and usage to the account; snapshots stay where they are,
-  since they are stored by project id. Signing in itself stays invite-only
-  (`ALLOWED_EMAILS`).
+  since they are stored by project id. Who may sign in is `ALLOWED_EMAILS`
+  (`*`: anyone).
 
 ## Interfaces
 
@@ -808,7 +812,7 @@ over SSH, and skills route the agent between the two.
 ### MCP server (control plane)
 
 Hosted at `/mcp`, Streamable HTTP. Auth: MCP OAuth (the user signs in with
-Google and approves the agent), or a Tule API key as a Bearer header. Five
+Google, or continues as a guest, and approves the agent), or a Tule API key as a Bearer header. Five
 tools, so an agent's context isn't spent on a long list (every read in one
 read-only tool, so clients don't ask before reading):
 
@@ -1173,7 +1177,7 @@ tule/
 
 | Decision | Default |
 |---|---|
-| Domain | `tule.janosmeny.com` (a custom domain of the Worker; `tule.genau-mcp-relay.workers.dev` still answers) |
+| Domain | `tule.computer` (a custom domain of the Worker). The old `tule.janosmeny.com` redirects its pages there and still serves the API, connector and CLI for old installs; `tule.genau-mcp-relay.workers.dev` still answers |
 | Sign-in | Google (GitHub: not built) |
 | Default machine | `cpu-1` (1 vCPU / 6 GiB), also `cpu-2` (2 / 8) and `cpu-4` (4 vCPU / 12 GiB) |
 | Outbound network | open (an allowlist later) |

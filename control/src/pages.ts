@@ -76,6 +76,7 @@ body:has(.guestbar) main{padding-bottom:64px}
 .start .ex{margin-top:26px}.start .ex h2{font-size:var(--fs-body);margin:0}
 .start-lede{margin:0 0 20px;color:var(--muted);max-width:620px}
 .steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1.5fr 1fr 1.2fr;gap:12px;counter-reset:step}
+.foot{text-align:center;font-size:var(--fs-small);padding:0 16px 24px}.foot a{color:var(--muted)}.legal{max-width:680px}.legal ul{padding-left:20px}.legal li{margin:4px 0}
 .steps li{counter-increment:step;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);min-width:0}
 .steps li b::before{content:counter(step);display:inline-grid;place-items:center;width:22px;height:22px;margin-right:8px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:var(--fs-small)}
 .step-note{color:var(--muted);font-size:var(--fs-small)}form.inline{display:inline;margin:0}.steps .agentbtns{align-items:center;flex-wrap:wrap;white-space:normal}
@@ -102,7 +103,7 @@ export function layout(title: string, body: Html | string, user?: User | null, s
     : html`<nav><a class="button" href="/auth/login">Sign in</a></nav>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · Tule</title><link rel="icon" href="/favicon.svg"><style>${CSS}</style></head>
-<body><header><a class="brand" href="/">${LOGO}tule</a>${nav}</header>${strip}<main><h1>${esc(title)}</h1>${body}</main>${
+<body><header><a class="brand" href="/">${LOGO}tule</a>${nav}</header>${strip}<main><h1>${esc(title)}</h1>${body}</main><footer class="foot"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>${
     user?.guest ? `<div class="guestbar">Guest projects are deleted after a day.</div>` : ""
   }<script>${NEWP_JS}</script></body></html>`;
 }
@@ -142,7 +143,7 @@ export function landing(_origin: string, note = "", shown: Example[] = []): Resp
 .google{display:inline-flex;align-items:center;gap:10px;padding:10px 18px;font-size:var(--fs-body);border-radius:9px}</style></head>
 <body><div class="center"><div class="mark">${LOGO.replace(/width="22" height="22"/, 'width="40" height="40"')}tule</div>
 <a class="button google" href="/auth/login">${GOOGLE}Sign in with Google</a>${note ? `<p class="muted" style="max-width:360px;text-align:center">${esc(note)}</p>` : ""}
-<div style="width:100%;max-width:760px">${examples(shown)}</div></div></body></html>`,
+<div style="width:100%;max-width:760px">${examples(shown)}</div><footer class="foot"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer></div></body></html>`,
     { headers: { "Content-Type": "text/html; charset=utf-8" } },
   );
 }
@@ -459,4 +460,122 @@ export function adminPage(user: User, m: Metrics): Response {
     <section class="sect"><h2>Latest sign-ups</h2>${recent}</section>
     ${new Html(`<style>${ADMIN_CSS}</style><script>${ADMIN_JS}</script>`)}`;
   return page("Dashboard", body, 200, user);
+}
+
+// ------------------------------------------------------------ legal pages (/privacy, /terms)
+
+/** How to reach whoever runs this deployment: CONTACT_EMAIL, or the project's GitHub issues. */
+function contact(email: string): Html {
+  return email
+    ? html`<a href="mailto:${email}">${email}</a>`
+    : html`<a href="https://github.com/Janos95/tule/issues">github.com/Janos95/tule/issues</a>`;
+}
+
+const UPDATED = "16 November 2026";
+
+export function privacyPage(email: string, user?: User | null): Response {
+  return page(
+    "Privacy policy",
+    html`<div class="legal">
+      <p class="muted">Last updated ${UPDATED}.</p>
+      <p>Tule gives your AI agent an engineering computer: projects with a machine, saved files and a viewer. This page
+      says what Tule stores about you, why, and for how long. Tule does not sell data, does not show ads, and does not
+      use your projects to train models.</p>
+
+      <h2>What Tule stores</h2>
+      <ul>
+        <li><b>Your account.</b> When you sign in with Google: your Google account ID, email address and name. Guests
+        (no sign-in) have no identity, only a random ID.</li>
+        <li><b>Your projects.</b> The files in each project's <code>/workspace</code>, its git history and snapshots,
+        and the meshes and pictures the viewer shows.</li>
+        <li><b>Keys you add.</b> SSH public keys; API keys and connector tokens (stored as hashes, never in plain text);
+        your RunPod API key if you add one (encrypted).</li>
+        <li><b>Computers you add.</b> Their name and hardware (CPU, memory, GPU) as reported by <code>tule host</code>.</li>
+        <li><b>Usage.</b> How long your machines ran each day and month, and GPU cost, to apply limits and show you your
+        usage. Daily counts across all users (sign-ups, projects, machine time) for running the service.</li>
+        <li><b>Abuse limits.</b> The IP address of a guest's first visit, counted per day and deleted the next day.</li>
+        <li><b>Server logs.</b> Cloudflare keeps request logs for a short time for security and debugging.</li>
+      </ul>
+
+      <h2>What Tule does not collect</h2>
+      <p>Tule's connector (the MCP server used by Claude, ChatGPT and other agents) receives only the arguments of each
+      tool call, such as a project name or an action. It does not read your conversations, chat history, memories or
+      files outside your Tule projects. Tule does not use tracking cookies; the only cookies are your sign-in session
+      and a short-lived one while you sign in.</p>
+
+      <h2>Why</h2>
+      <p>Only to run Tule for you: to sign you in, keep your projects and run your machines, connect your agent, apply
+      fair-use limits, and fix problems. The operator may open a project only to help you with a problem you
+      report or to stop abuse; such access is logged.</p>
+
+      <h2>Who else processes it</h2>
+      <ul>
+        <li><b>Cloudflare</b> hosts Tule: the website, accounts database, project storage and CPU machines.</li>
+        <li><b>Google</b> signs you in (Tule receives only your ID, email and name).</li>
+        <li><b>RunPod</b> runs GPU machines, under your own RunPod account and key, when you start one.</li>
+        <li><b>Your own computers</b>, when you add one, run your projects' machines.</li>
+      </ul>
+      <p>Your agent's provider (for example Anthropic or OpenAI) sees what Tule's tools return to your agent, under
+      that provider's own privacy policy.</p>
+
+      <h2>View-only links</h2>
+      <p>If you share a project, anyone with the link can see a frozen copy of its outputs until you stop sharing.</p>
+
+      <h2>How long</h2>
+      <ul>
+        <li>Guest accounts and their projects are deleted a day after the last visit.</li>
+        <li>A project is deleted, with its files and snapshots, when you delete it.</li>
+        <li>Your account and everything in it are kept until you ask to delete it; deletion is done within 30 days.</li>
+      </ul>
+
+      <h2>Your choices</h2>
+      <p>You can copy your project files out at any time (your agent, SSH or <code>tule</code> CLI), revoke API keys
+      in Settings, and delete projects. To disconnect an app, remove the connector in that app. To get a copy of your data, correct it, or delete your account, contact ${contact(email)}.</p>
+
+      <h2>Contact</h2>
+      <p>${contact(email)}. If this policy changes, the date above changes.</p>
+    </div>`,
+    200,
+    user,
+  );
+}
+
+export function termsPage(email: string, user?: User | null): Response {
+  return page(
+    "Terms of use",
+    html`<div class="legal">
+      <p class="muted">Last updated ${UPDATED}.</p>
+      <p>By using Tule you agree to these terms. Tule is an early, free service run by an individual developer.</p>
+
+      <h2>The service</h2>
+      <p>Tule gives you projects with machines, saved files, a viewer and a connector for your AI agent. It may change,
+      be limited (for example machine hours per month) or stop. It is provided as is, without warranties of any kind.
+      Keep copies of anything important.</p>
+
+      <h2>Your account and agent</h2>
+      <p>You are responsible for your account, its keys, and what your agent does with them. Connecting an agent lets
+      it create and delete your projects and start and stop machines, as you allowed when you connected it.</p>
+
+      <h2>Your content</h2>
+      <p>What you make in Tule is yours. You give Tule only the permission it needs to store, process and show it for
+      you, and to show a project to people you share it with.</p>
+
+      <h2>Fair use</h2>
+      <p>Do not use Tule to break the law, attack other systems, mine cryptocurrency, send spam, get around limits, or
+      store content you have no right to. Tule may stop machines or close accounts that do.</p>
+
+      <h2>Costs</h2>
+      <p>Tule's own machines are free within their limits. GPU machines run on your RunPod account and RunPod bills
+      you for them; machines on your own computers use your hardware.</p>
+
+      <h2>Liability</h2>
+      <p>To the extent the law allows, Tule's operator is not liable for lost data, lost profits or indirect damages,
+      and designs made with Tule must be checked by you before anything is built from them.</p>
+
+      <h2>Privacy and contact</h2>
+      <p>See the <a href="/privacy">privacy policy</a>. Questions: ${contact(email)}.</p>
+    </div>`,
+    200,
+    user,
+  );
 }

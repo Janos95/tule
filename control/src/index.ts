@@ -42,7 +42,7 @@ import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl,
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
-import { adminPage, landing, page, projectsPage, settingsPage, type Example, type MachinesData, type MachineRow, type ProjectRow } from "./pages";
+import { adminPage, landing, page, privacyPage, projectsPage, termsPage, settingsPage, type Example, type MachinesData, type MachineRow, type ProjectRow } from "./pages";
 import { Host } from "./host";
 import { gitKey, lfsKey, meshKey, Project, snapshotKey } from "./project";
 import { stub } from "./rpc";
@@ -859,6 +859,8 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
 
   const user = await who(req, env);
+  if (path === "/privacy" && req.method === "GET") return privacyPage(env.CONTACT_EMAIL ?? "", user);
+  if (path === "/terms" && req.method === "GET") return termsPage(env.CONTACT_EMAIL ?? "", user);
   if (path === "/authorize") return authorize(req, env, url, user);
   if (path.startsWith("/api/")) {
     if (!user) return error("not signed in", 401, "run tule login (or send an API key as 'Authorization: Bearer tule_...')");
@@ -939,9 +941,17 @@ function oauth(env: Env): OAuthProvider<Env> {
   return provider;
 }
 
+/** Tule's earlier domain: its pages redirect to PUBLIC_URL; its API, connector, OAuth and install scripts keep
+    answering there, for CLIs and connectors set up before the move. */
+const OLD_HOSTS = ["tule.janosmeny.com"];
+const STAYS = /^\/(api\/|mcp|oauth\/|\.well-known\/|install\.sh$|cli\.sh$)/;
+
 export default {
   fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (!env.PUBLIC_URL) return Promise.resolve(error("PUBLIC_URL is not set", 500, "set it in wrangler.jsonc vars"));
+    const u = new URL(req.url);
+    if (OLD_HOSTS.includes(u.hostname) && (req.method === "GET" || req.method === "HEAD") && !req.headers.has("Upgrade") && !STAYS.test(u.pathname))
+      return Promise.resolve(new Response(null, { status: 301, headers: { Location: `${env.PUBLIC_URL}${u.pathname}${u.search}` } }));
     return oauth(env).fetch(req, env, ctx);
   },
 } satisfies ExportedHandler<Env>;
