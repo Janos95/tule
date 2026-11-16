@@ -74,13 +74,16 @@ body:has(.guestbar) main{padding-bottom:64px}
 .start{background:var(--panel);border-bottom:1px solid var(--line)}
 .start>div{max-width:860px;margin:0 auto;padding:28px 16px 30px}.start h2{font-size:var(--fs-title);margin:0 0 6px}
 .start .ex{margin-top:26px}.start .ex h2{font-size:var(--fs-body);margin:0}
-.start-lede{margin:0 0 20px;color:var(--muted);max-width:620px}
-.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1.5fr 1fr 1.2fr;gap:12px;counter-reset:step}
+.stepcard{border:1px solid var(--line);border-radius:12px;background:var(--bg);margin-top:14px;overflow:hidden}
+.steps{list-style:none;margin:0;padding:0;display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scroll-behavior:smooth;scrollbar-width:none;counter-reset:step;overscroll-behavior-x:contain}
+.steps::-webkit-scrollbar{display:none}
 .foot{text-align:center;font-size:var(--fs-small);padding:0 16px 24px}.foot a{color:var(--muted)}.legal{max-width:680px}.legal ul{padding-left:20px}.legal li{margin:4px 0}
-.steps li{counter-increment:step;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);min-width:0}
+.steps li{counter-increment:step;flex:0 0 100%;scroll-snap-align:start;display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:20px 22px 8px;min-width:0}
+.stepnav{display:flex;align-items:center;justify-content:center;gap:10px;padding:6px 0 12px}.stepdots{display:flex;gap:8px}
+.stepdot{width:8px;height:8px;padding:0;border:0;border-radius:50%;background:var(--line)}.stepdot.on{background:var(--accent)}
+.stepgo{border:0;background:none;padding:0 8px;font-size:20px;line-height:1;color:var(--muted)}.stepgo:hover{color:var(--text)}.stepgo:disabled{opacity:.3;cursor:default}
 .steps li b::before{content:counter(step);display:inline-grid;place-items:center;width:22px;height:22px;margin-right:8px;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:var(--fs-small)}
 .step-note{color:var(--muted);font-size:var(--fs-small)}form.inline{display:inline;margin:0}.steps .agentbtns{align-items:center;flex-wrap:wrap;white-space:normal}
-@media (max-width:720px){.steps{grid-template-columns:1fr}}
 .agenthint{order:9;flex-basis:100%;margin:0;font-size:var(--fs-small);color:var(--muted)}.agenthint b{font-weight:500;color:var(--text)}
 .agentbtns{display:inline-flex;gap:6px;white-space:nowrap}.item-action .agenthint{text-align:right;margin-top:6px}
 .copyfield{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:5px 10px;border:1px solid var(--line-strong);border-radius:7px;background:var(--bg);color:var(--text);font:13px var(--mono);cursor:pointer}
@@ -112,6 +115,7 @@ export function layout(title: string, body: Html | string, user?: User | null, s
 const NEWP_JS = `document.addEventListener("click",(e)=>{const g=e.target.closest?.("[data-chatgpt]");if(g){navigator.clipboard.writeText(g.dataset.chatgpt);const h=g.closest(".start,.item")?.querySelector(".agenthint");if(h)h.hidden=false}});
 document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)});
 document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
+document.querySelectorAll(".stepcard").forEach((c)=>{const t=c.querySelector(".steps"),d=[...c.querySelectorAll(".stepdot")],g=c.querySelectorAll(".stepgo");let cur=0,to=0;const show=(i)=>{cur=i;d.forEach((x,j)=>x.classList.toggle("on",j===i));g[0].disabled=i===0;g[1].disabled=i===d.length-1};const go=(i)=>{i=Math.max(0,Math.min(d.length-1,i));show(i);to=Date.now()+600;t.scrollTo({left:i*t.clientWidth})};d.forEach((x,j)=>x.onclick=()=>go(j));g.forEach((x)=>x.onclick=()=>go(cur+Number(x.dataset.d)));t.addEventListener("scroll",()=>{if(Date.now()>to)show(Math.round(t.scrollLeft/t.clientWidth))},{passive:true});show(0)});
 document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
 
 export function page(title: string, body: Html | string, status = 200, user?: User | null, strip: Html | string = ""): Response {
@@ -297,8 +301,8 @@ const agentHint = html`<p class="agenthint" hidden>Address copied. In ChatGPT, c
 /** Shown until the account's agent first uses the connector (without an agent nothing happens here), with the example projects. */
 const agentStart = (user: User, origin: string, shown: Example[]) =>
   html`<div class="start"><div>
-    <h2>Give your AI agent an engineering computer</h2>
-    <p class="start-lede">It designs and tests parts there, ready to print or cut. You see them here in 3D.</p>
+    <h2>An engineering computer for your agent</h2>
+    <div class="stepcard">
     <ol class="steps">
       <li><b>Add Tule to your agent</b><span class="agentbtns">${addToClaude(origin, true)}${addToChatGPT(origin)}</span>
         <span class="step-note">Claude Code, Codex, Cursor or another agent: add this as a remote MCP server</span>${copyField(`${origin}/mcp`)}${agentHint}</li>
@@ -308,7 +312,9 @@ const agentStart = (user: User, origin: string, shown: Example[]) =>
           ? html`<a class="button small" href="/auth/login">Sign in to add them</a>`
           : html`<span class="agentbtns"><form method="post" action="/settings/hosts/new" class="inline"><input type="hidden" name="back" value="projects"><button class="small">Connect a computer</button></form><a class="button small" href="/settings">Add cloud GPUs</a></span>`
       }</li>
-    </ol>${examples(shown)}</div></div>`;
+    </ol>
+    <div class="stepnav"><button type="button" class="stepgo" data-d="-1" aria-label="Previous step">‹</button><span class="stepdots">${[1, 2, 3].map((n) => html`<button type="button" class="stepdot${n === 1 ? " on" : ""}" data-i="${n - 1}" aria-label="Step ${n}"></button>`)}</span><button type="button" class="stepgo" data-d="1" aria-label="Next step">›</button></div>
+    </div>${examples(shown)}</div></div>`;
 
 /** How to connect an agent. The connector is all a user needs: the agent sets up the CLI itself (info what=connect).
     Settings also shows the CLI command, for working on a machine by hand. */
