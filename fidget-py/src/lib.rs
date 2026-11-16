@@ -129,14 +129,15 @@ fn eval<'py>(py: Python<'py>, ops: Vec<Op>, xyz: &[u8], grad: bool) -> PyResult<
 
 /// Meshes the surface (value 0, inside negative) in the cube `center ± half`, at an octree of
 /// `depth` levels (2^depth cells across), by Fidget's manifold dual contouring (sharp edges kept).
-/// Returns (vertices: n*3 f32 bytes, triangles: m*3 u32 bytes).
+/// Returns (vertices: n*3 f32 bytes, triangles: m*3 u32 bytes, normals: n*3 f32 bytes): the
+/// normals are the field's unit gradient at each vertex (zero where it has no direction).
 #[pyfunction]
 fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: u8)
-    -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+    -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
     if !(half > 0.0) || depth == 0 || depth > 12 {
         return Err(PyValueError::new_err("half > 0 and 1 <= depth <= 12"));
     }
-    let (verts, tris) = py.detach(|| -> PyResult<(Vec<f32>, Vec<u8>)> {
+    let (verts, tris, normals) = py.detach(|| -> PyResult<(Vec<f32>, Vec<u8>, Vec<f32>)> {
         let (ctx, root) = build(&ops)?;
         let shape = JitShape::new(&ctx, root).map_err(err)?;
         let bound = shape.try_into().map_err(|_| PyValueError::new_err("the expression has variables"))?;
@@ -147,19 +148,46 @@ fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: 
         let octree = Octree::build(&bound, &settings).ok_or_else(|| PyValueError::new_err("meshing was cancelled"))?;
         let m = octree.walk_dual();
         let verts: Vec<f32> = m.vertices.iter().flat_map(|v| [v.x, v.y, v.z]).collect();
+        let normals: Vec<f32> = m.normals.iter().flat_map(|v| [v.x, v.y, v.z]).collect();
         let tris: Vec<u8> = m.triangles.iter()
             .flat_map(|t| [t.x as u32, t.y as u32, t.z as u32])
             .flat_map(|i| i.to_le_bytes())
             .collect();
-        Ok((verts, tris))
+        Ok((verts, tris, normals))
     })?;
-    Ok((PyBytes::new(py, &bytes_of(&verts)), PyBytes::new(py, &tris)))
+    Ok((PyBytes::new(py, &bytes_of(&verts)), PyBytes::new(py, &tris), PyBytes::new(py, &bytes_of(&normals))))
+}
+
+/// The field's unit gradient at each point (`xyz`: n*3 f32 bytes; returns n*3 f32 bytes): the
+/// surface normals of a body. Where the derivative vanishes or isn't finite (a distance's
+/// derivative on a sharp edge), central differences over `step` stand in; zero where that vanishes too.
+#[pyfunction]
+fn normals<'py>(py: Python<'py>, ops: Vec<Op>, xyz: &[u8], step: f32) -> PyResult<Bound<'py, PyBytes>> {
+    let p = floats(xyz);
+    if p.len() % 3 != 0 {
+        return Err(PyValueError::new_err("xyz must hold n*3 floats"));
+    }
+    let out = py.detach(|| -> PyResult<Vec<f32>> {
+        let (ctx, root) = build(&ops)?;
+        let shape = JitShape::new(&ctx, root).map_err(err)?;
+        let bound = shape.try_into().map_err(|_| PyValueError::new_err("the expression has variables"))?;
+        let points: Vec<_> = p.chunks(3).map(|c| nalgebra::Vector3::new(c[0], c[1], c[2])).collect();
+        Ok(fidget::mesh::normals(&bound, &points, step)
+            .into_iter()
+            .flat_map(|g| {
+                let n = g.try_normalize(0.0).unwrap_or_default();
+                [n.x, n.y, n.z]
+            })
+            .collect())
+    })?;
+    Ok(PyBytes::new(py, &bytes_of(&out)))
 }
 
 #[pymodule]
 fn tule_fidget(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eval, m)?)?;
     m.add_function(wrap_pyfunction!(mesh, m)?)?;
+    m.add_function(wrap_pyfunction!(normals, m)?)?;
     m.add("FIDGET_VERSION", "0.5.1")?;
     Ok(())
 }

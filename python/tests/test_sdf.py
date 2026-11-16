@@ -240,21 +240,22 @@ def test_banded_meshing_fine_boxes_and_rest():
 
 
 def _folded(body, m):
+    """Share of the surface area whose triangles face against the field's gradient."""
     P, T = m.points, m._T
     A, B, C = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
     n = np.cross(B - A, C - A)
     g = sdf.evaluate(body.expr, (A + B + C) / 3, grad=True)[:, 1:]
-    return ((np.einsum("ij,ij->i", n, g) < 0) & (np.linalg.norm(n, axis=1) > 0)).mean()
+    area = np.linalg.norm(n, axis=1)
+    return area[np.einsum("ij,ij->i", n, g) < 0].sum() / area.sum()
 
 
-def test_folds_beside_sharp_edges_are_flipped_away():
-    # dual contouring folds triangles where its cells merge, most beside sharp edges; the cleanup cuts
-    # those quads along their other diagonal (about 0.6 % of triangles folded before, here 0.004 %)
-    body = sdf.box(120, 80, 60) | sdf.sphere(45).at(60, 0, 30)
-    m = body.to_mesh(2.0)
-    assert m.is_closed and _folded(body, m) < 1e-3
-    cyl = sdf.cylinder(40, 90)
-    assert _folded(cyl, cyl.to_mesh(2.0)) < 1e-3
+def test_meshes_barely_fold_where_cell_sizes_change():
+    # dual contouring's octree merges cells on smooth stretches; Fidget triangulates each edge's polygon
+    # so it doesn't fold where a merged cell meets smaller ones (about 1.5 % of the area folded before)
+    for body in (sdf.box(120, 80, 60) | sdf.sphere(45).at(60, 0, 30), sdf.cylinder(40, 90).rotate(x=17),
+                 sdf.torus(120, 30).rotate(x=11)):
+        m = body.to_mesh(2.0)
+        assert m.is_closed and _folded(body, m) < 1e-3
 
 
 def test_meshed_bodies_carry_the_fields_normals(tmp_path):

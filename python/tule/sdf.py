@@ -797,17 +797,18 @@ class Implicit(Looks):
             got = self._mesh_piece(ce, clo, chi, cc, fg)
             if got is None:
                 continue
-            P, T, how = got
+            P, T, N, how = got
             Ps.append(P)
-            Ns.append(_field_normals(ce, P, cc))
+            Ns.append(N)
             Ts.append(T + off)
             off += len(P)
             hows.append(how)
         if not Ps:
             raise TuleError("the body has no surface inside its bounds", op="to_mesh",
                             hint="is it empty, or all inside? check body.value(points); a finer cell for thin walls")
-        # the field's own gradient as the vertex normals: exact shading, where normals averaged from the
-        # triangles wobble with dual contouring's vertex placement (drawing still splits them at creases)
+        # the field's own gradient as the vertex normals (Fidget's, from the meshing): exact shading, where
+        # normals averaged from the triangles wobble with dual contouring's vertex placement (drawing still
+        # splits them at creases)
         m = Mesh(np.vstack(Ps), np.vstack(Ts), normals=np.vstack(Ns), name=self.name, color=self.color, welded=True)
         how = hows[0] if len(hows) == 1 else (f"meshed in {len(hows)} closed pieces (cells "
                                               f"{', '.join(sorted({f'{c[3]:g}' for c in chunks}, key=float))} mm), {hows[-1].split(' (')[0]}")
@@ -821,172 +822,48 @@ class Implicit(Looks):
         return m
 
     def _mesh_piece(self, e, lo, hi, cell, fg):
-        """(points, triangles, how) of the closed surface of ``e`` in the box lo–hi, or None if empty there."""
-        from .mesh import Mesh
-
+        """(points, triangles, normals, how) of the closed surface of ``e`` in the box lo–hi, or None if
+        empty there."""
         center = (lo + hi) / 2
         half = float((hi - lo).max()) / 2 + 2 * cell
         depth = builtins.max(1, int(math.ceil(math.log2(2 * half / cell))))
         if fg is not None and not _has_grid(e):
             if depth > 12:
                 raise TuleError(f"cells of {cell:g} mm across {2 * half:.4g} mm are too many", op="to_mesh")
-            vb, tb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth)
+            vb, tb, nb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth)
             P = np.frombuffer(vb, np.float32).reshape(-1, 3).astype(np.float64)
             T = np.frombuffer(tb, np.uint32).reshape(-1, 3).astype(np.int64)
+            N = np.frombuffer(nb, np.float32).reshape(-1, 3).copy()
             got = 2 * half / 2 ** depth
             how = f"meshed by Fidget (dual contouring, cells {got:.3g} mm: detail under a cell lost)"
         else:
             if fg is None:
                 _note_numpy("the tule_fidget module is not installed")
             P, T = _marching(e, lo - 2 * cell, hi + 2 * cell, cell)
+            N = _field_normals(e, P, cell)
             how = f"meshed by marching cubes (sampled field, cells {cell:.3g} mm: detail under a cell lost, edges rounded)"
         if not len(T):
             return None
         t = P[T]
         if np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() < 0:
             T = T[:, ::-1]
-        if fg is not None and not _has_grid(e):
-            m = _clean(e, Mesh(P, T, welded=True), cell)
-            P, T = m._P, m._T
-        return P, T, how
+        return P, T, N, how
 
 
 def _field_normals(e: Expr, P: np.ndarray, cell: float) -> np.ndarray:
     """Unit gradients of the field at the points (float32): the surface normals of an implicit body.
-    Where the derivative is undefined or vanishes (sqrt at 0: on a polygon's edge, or length(max(a, 0),
-    max(b, 0)) on the surface), central differences of the value over a twentieth of a cell stand in."""
-    g = evaluate(e, P, grad=True)[:, 1:] if len(P) else np.zeros((0, 3))
-    bad = ~np.isfinite(g).all(axis=1) | ~(np.abs(g).max(axis=1, initial=0) > 1e-9)
-    if bad.any():
-        Q, h = P[bad], 0.05 * cell
-        g[bad] = np.stack([(evaluate(e, Q + h * d) - evaluate(e, Q - h * d)) / (2 * h) for d in np.eye(3)], 1)
+    Fidget's, where the derivative is undefined or vanishes (a distance on a sharp edge, or exactly on a
+    polygon's side) from central differences over a twentieth of a cell; zero where the field has no
+    direction. Sampled fields (and without Fidget): central differences everywhere."""
+    if not len(P):
+        return np.zeros((0, 3), np.float32)
+    fg = _fidget()
+    if fg is not None and not _has_grid(e):
+        raw = fg.normals(_ops(e), np.ascontiguousarray(P, np.float32).tobytes(), float(0.05 * cell))
+        return np.frombuffer(raw, np.float32).reshape(-1, 3).copy()
+    g = evaluate(e, P, grad=True)[:, 1:]
     n = np.linalg.norm(g, axis=1, keepdims=True)
     return np.nan_to_num(g / np.maximum(n, 1e-12)).astype(np.float32)
-
-
-def _flip_folds(e: Expr, P: np.ndarray, T: np.ndarray, rounds: int = 6) -> np.ndarray:
-    """Folded triangles (normal against the field's gradient) fixed by flipping an edge they share
-    with a neighbour: the quad is cut along its other diagonal. No vertex moves, so it is safe beside a
-    sharp edge, where dual contouring folds the most and moving vertices would round the edge off.
-    A flip is kept only when it leaves fewer folded triangles and no duplicate edge."""
-    T = T.copy()
-    n = len(P)
-
-    def tri_n(TT):
-        v = np.cross(P[TT[:, 1]] - P[TT[:, 0]], P[TT[:, 2]] - P[TT[:, 0]])
-        a = np.linalg.norm(v, axis=1)
-        return v / np.maximum(a, 1e-300)[:, None], a
-
-    def folded(TT):
-        N, a = tri_n(TT)
-        g = evaluate(e, P[TT].mean(1), grad=True)[:, 1:]
-        return (np.einsum("ij,ij->i", N, g) < 0) & (a > 0)
-
-    for _ in range(rounds):
-        bad = folded(T)
-        if not bad.any():
-            break
-        E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
-        tid = np.tile(np.arange(len(T)), 3)
-        opp = np.concatenate([T[:, 2], T[:, 0], T[:, 1]])
-        lo, hi = np.minimum(E[:, 0], E[:, 1]), np.maximum(E[:, 0], E[:, 1])
-        key = lo * n + hi
-        order = np.argsort(key, kind="stable")
-        ks = key[order]
-        same = ks[1:] == ks[:-1]
-        a, b = order[:-1][same], order[1:][same]  # the two half-edges of an interior edge
-        t1, t2 = tid[a], tid[b]
-        c = (bad[t1] | bad[t2]) & (t1 != t2)
-        a, b, t1, t2 = a[c], b[c], t1[c], t2[c]
-        if not len(a):
-            break
-        u, v, p, q = E[a, 0], E[a, 1], opp[a], opp[b]  # t1 = (u, v, p), t2 = (v, u, q)
-        new1, new2 = np.stack([u, q, p], 1), np.stack([v, p, q], 1)
-        nk = np.minimum(p, q) * n + np.maximum(p, q)
-        f1, f2 = folded(new1), folded(new2)
-        _, a1 = tri_n(new1)
-        _, a2 = tri_n(new2)
-        gain = (bad[t1].astype(int) + bad[t2]) - (f1.astype(int) + f2)
-        ok = (gain > 0) & (p != q) & ~np.isin(nk, ks) & (a1 > 0) & (a2 > 0)
-        idx = np.flatnonzero(ok)
-        idx = idx[np.argsort(-gain[idx], kind="stable")]
-        used = np.zeros(len(T), bool)
-        taken = set()
-        flips = 0
-        for i in idx:  # few: folds are a small share of the triangles
-            if used[t1[i]] or used[t2[i]] or nk[i] in taken:
-                continue
-            T[t1[i]], T[t2[i]] = new1[i], new2[i]
-            used[t1[i]] = used[t2[i]] = True
-            taken.add(nk[i])
-            flips += 1
-        if not flips:
-            break
-    return T
-
-
-def _clean(e: Expr, m, cell: float):
-    """Dual contouring's leftovers fixed: coincident vertices welded, and the small
-    flaps folded back over their neighbours (normal against the field's gradient) untangled: their
-    vertices moved to their neighbours' mean, then back onto the surface along the gradient."""
-    from scipy.sparse import coo_matrix
-
-    from .mesh import Mesh, tri_normals, weld
-
-    # coincident vertices merged and the triangles that collapse with them dropped (not manifold3d's
-    # simplify: even at a tiny tolerance it collapses edges along a thin rim and bites into it)
-    P, T, _ = weld(m._P, m._T, 1e-6 * cell)
-    P = P.copy()
-    # back-to-back triangle pairs on the same three vertices (a flat flap hanging off an edge): they
-    # enclose nothing, so dropping both leaves the solid as it was
-    key = np.sort(T, axis=1)
-    _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
-    T = T[cnt[inv.reshape(-1)] == 1]
-    used, T = np.unique(T, return_inverse=True)
-    P, T = P[used], T.reshape(-1, 3)
-    T = _flip_folds(e, P, T)  # folds beside sharp edges, which the smoothing below must leave alone
-    n = len(P)
-    i = np.concatenate([T[:, 0], T[:, 1], T[:, 2], T[:, 1], T[:, 2], T[:, 0]])
-    j = np.concatenate([T[:, 1], T[:, 2], T[:, 0], T[:, 0], T[:, 1], T[:, 2]])
-    W = coo_matrix((np.ones(len(i)), (i, j)), shape=(n, n)).tocsr()
-    W.data[:] = 1.0
-    deg = np.maximum(np.asarray(W.sum(1)).ravel(), 1)
-    def unit(g):
-        return g / np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
-
-    # a vertex within a cell of a sharp edge (a chine, a trailing edge) stays where Fidget put it:
-    # the gradient turns there, and averaging would round the edge off. Six probes a cell away, once
-    # (vertices move by at most half a cell below, which does not move them off or onto an edge)
-    gv = unit(evaluate(e, P, grad=True)[:, 1:])
-    smooth = np.ones(len(P), bool)
-    for d in np.vstack([np.eye(3), -np.eye(3)]) * cell:
-        smooth &= np.einsum("ij,ij->i", gv, unit(evaluate(e, P + d, grad=True)[:, 1:])) > 0.9
-    flat = smooth[T].all(1)
-    for it in range(8):
-        N, A = tri_normals(P, T)
-        g = evaluate(e, P[T].mean(1), grad=True)[:, 1:]
-        if it:
-            gv = unit(evaluate(e, P, grad=True)[:, 1:])
-        # a flap: its normal against the gradient at its middle and at every corner (inside a knife
-        # edge the middle alone can read the far side)
-        against = (np.einsum("ij,ij->i", N, g) < 0) & (np.einsum("tkj,tj->tk", gv[T], N) < 0).all(1)
-        bad = against & (A > 1e-12 * cell * cell) & flat
-        if not bad.any():
-            break
-        v = np.unique(T[bad])
-        v = np.unique(np.concatenate([v, W[v].indices]))  # and their neighbours
-        v = v[smooth[v]]
-        P[v] = (W[v] @ P) / deg[v][:, None]
-        for _ in range(3):  # Newton steps back to the surface, at most half a cell each
-            fg = evaluate(e, P[v], grad=True)
-            gg = fg[:, 1:]
-            g2 = (gg * gg).sum(1)
-            step = np.nan_to_num((fg[:, 0] / np.maximum(g2, 1e-12))[:, None] * gg, nan=0.0, posinf=0.0, neginf=0.0)
-            ln = np.linalg.norm(step, axis=1)
-            step[g2 < 0.04] = 0.0
-            step *= np.minimum(1.0, 0.5 * cell / np.maximum(ln, 1e-12))[:, None]
-            P[v] -= step
-    return Mesh(P, T, name=m.name, color=m.color, welded=True)
 
 
 def _marching(e: Expr, lo, hi, cell: float):
