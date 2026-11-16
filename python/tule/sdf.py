@@ -784,20 +784,23 @@ class Implicit(Looks):
                         chi = np.array([edges[0][i + 1], edges[1][j + 1], edges[2][k + 1]])
                         ce = pe if n.prod() == 1 else max(pe, box_between(tuple(clo), tuple(chi)).expr)
                         chunks.append((ce, clo, chi, pc))
-        Ps, Ts, hows, off = [], [], [], 0
+        Ps, Ts, Ns, hows, off = [], [], [], [], 0
         for ce, clo, chi, cc in chunks:
             got = self._mesh_piece(ce, clo, chi, cc, fg)
             if got is None:
                 continue
             P, T, how = got
             Ps.append(P)
+            Ns.append(_field_normals(ce, P, cc))
             Ts.append(T + off)
             off += len(P)
             hows.append(how)
         if not Ps:
             raise TuleError("the body has no surface inside its bounds", op="to_mesh",
                             hint="is it empty, or all inside? check body.value(points); a finer cell for thin walls")
-        m = Mesh(np.vstack(Ps), np.vstack(Ts), name=self.name, color=self.color, welded=True)
+        # the field's own gradient as the vertex normals: exact shading, where normals averaged from the
+        # triangles wobble with dual contouring's vertex placement (drawing still splits them at creases)
+        m = Mesh(np.vstack(Ps), np.vstack(Ts), normals=np.vstack(Ns), name=self.name, color=self.color, welded=True)
         how = hows[0] if len(hows) == 1 else (f"meshed in {len(hows)} closed pieces (cells "
                                               f"{', '.join(sorted({f'{c[3]:g}' for c in chunks}, key=float))} mm), {hows[-1].split(' (')[0]}")
         m.history = self.history + (how,)
@@ -840,6 +843,80 @@ class Implicit(Looks):
         return P, T, how
 
 
+def _field_normals(e: Expr, P: np.ndarray, cell: float) -> np.ndarray:
+    """Unit gradients of the field at the points (float32): the surface normals of an implicit body.
+    Where the derivative is undefined (sqrt at 0, as in length(max(a, 0), max(b, 0)) on the surface),
+    central differences of the value over a twentieth of a cell stand in."""
+    g = evaluate(e, P, grad=True)[:, 1:] if len(P) else np.zeros((0, 3))
+    bad = ~np.isfinite(g).all(axis=1)
+    if bad.any():
+        Q, h = P[bad], 0.05 * cell
+        g[bad] = np.stack([(evaluate(e, Q + h * d) - evaluate(e, Q - h * d)) / (2 * h) for d in np.eye(3)], 1)
+    n = np.linalg.norm(g, axis=1, keepdims=True)
+    return np.nan_to_num(g / np.maximum(n, 1e-12)).astype(np.float32)
+
+
+def _flip_folds(e: Expr, P: np.ndarray, T: np.ndarray, rounds: int = 6) -> np.ndarray:
+    """Folded triangles (normal against the field's gradient) fixed by flipping an edge they share
+    with a neighbour: the quad is cut along its other diagonal. No vertex moves, so it is safe beside a
+    sharp edge, where dual contouring folds the most and moving vertices would round the edge off.
+    A flip is kept only when it leaves fewer folded triangles and no duplicate edge."""
+    T = T.copy()
+    n = len(P)
+
+    def tri_n(TT):
+        v = np.cross(P[TT[:, 1]] - P[TT[:, 0]], P[TT[:, 2]] - P[TT[:, 0]])
+        a = np.linalg.norm(v, axis=1)
+        return v / np.maximum(a, 1e-300)[:, None], a
+
+    def folded(TT):
+        N, a = tri_n(TT)
+        g = evaluate(e, P[TT].mean(1), grad=True)[:, 1:]
+        return (np.einsum("ij,ij->i", N, g) < 0) & (a > 0)
+
+    for _ in range(rounds):
+        bad = folded(T)
+        if not bad.any():
+            break
+        E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+        tid = np.tile(np.arange(len(T)), 3)
+        opp = np.concatenate([T[:, 2], T[:, 0], T[:, 1]])
+        lo, hi = np.minimum(E[:, 0], E[:, 1]), np.maximum(E[:, 0], E[:, 1])
+        key = lo * n + hi
+        order = np.argsort(key, kind="stable")
+        ks = key[order]
+        same = ks[1:] == ks[:-1]
+        a, b = order[:-1][same], order[1:][same]  # the two half-edges of an interior edge
+        t1, t2 = tid[a], tid[b]
+        c = (bad[t1] | bad[t2]) & (t1 != t2)
+        a, b, t1, t2 = a[c], b[c], t1[c], t2[c]
+        if not len(a):
+            break
+        u, v, p, q = E[a, 0], E[a, 1], opp[a], opp[b]  # t1 = (u, v, p), t2 = (v, u, q)
+        new1, new2 = np.stack([u, q, p], 1), np.stack([v, p, q], 1)
+        nk = np.minimum(p, q) * n + np.maximum(p, q)
+        f1, f2 = folded(new1), folded(new2)
+        _, a1 = tri_n(new1)
+        _, a2 = tri_n(new2)
+        gain = (bad[t1].astype(int) + bad[t2]) - (f1.astype(int) + f2)
+        ok = (gain > 0) & (p != q) & ~np.isin(nk, ks) & (a1 > 0) & (a2 > 0)
+        idx = np.flatnonzero(ok)
+        idx = idx[np.argsort(-gain[idx], kind="stable")]
+        used = np.zeros(len(T), bool)
+        taken = set()
+        flips = 0
+        for i in idx:  # few: folds are a small share of the triangles
+            if used[t1[i]] or used[t2[i]] or nk[i] in taken:
+                continue
+            T[t1[i]], T[t2[i]] = new1[i], new2[i]
+            used[t1[i]] = used[t2[i]] = True
+            taken.add(nk[i])
+            flips += 1
+        if not flips:
+            break
+    return T
+
+
 def _clean(e: Expr, m, cell: float):
     """Dual contouring's leftovers fixed: coincident vertices welded, and the small
     flaps folded back over their neighbours (normal against the field's gradient) untangled: their
@@ -859,6 +936,7 @@ def _clean(e: Expr, m, cell: float):
     T = T[cnt[inv.reshape(-1)] == 1]
     used, T = np.unique(T, return_inverse=True)
     P, T = P[used], T.reshape(-1, 3)
+    T = _flip_folds(e, P, T)  # folds beside sharp edges, which the smoothing below must leave alone
     n = len(P)
     i = np.concatenate([T[:, 0], T[:, 1], T[:, 2], T[:, 1], T[:, 2], T[:, 0]])
     j = np.concatenate([T[:, 1], T[:, 2], T[:, 0], T[:, 0], T[:, 1], T[:, 2]])

@@ -165,9 +165,12 @@ def feature_edges(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, ang
     return P[e[draw]]
 
 
-def shaded(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, angle: float = CREASE):
+def shaded(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, angle: float = CREASE, normals=None):
     """For drawing: vertices split at creases and region borders, with smooth normals elsewhere:
-    (positions (n, 3), normals (n, 3), triangles (m, 3)) with the same triangle order."""
+    (positions (n, 3), normals (n, 3), triangles (m, 3)) with the same triangle order. ``normals``: exact
+    normals per vertex (an implicit body's gradient), used at every corner whose triangle they agree
+    with (within ``angle``) and at slivers; corners at a crease, where one normal cannot serve both
+    sides, keep the averaged one."""
     P = np.asarray(P, dtype=np.float64)
     T = np.asarray(T, dtype=np.int64)
     if not len(T):
@@ -194,6 +197,14 @@ def shaded(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, angle: flo
     acc /= np.maximum(np.linalg.norm(acc, axis=1), 1e-300)[:, None]
     corner_n = np.empty((len(corner_v), 3))
     corner_n[order] = acc
+    if normals is not None and len(normals) == len(P):
+        Nv = np.asarray(normals, dtype=np.float64)[corner_v]
+        agree = np.einsum("ij,ij->i", Nv, np.repeat(N, 3, axis=0)) > math.cos(math.radians(angle))
+        # slivers (dual contouring leaves many, a hair wide): their facet normal is noise, so they take
+        # the exact one too rather than a flat normal of their own
+        L2 = np.max([((P[T[:, a]] - P[T[:, b]]) ** 2).sum(1) for a, b in ((0, 1), (1, 2), (2, 0))], axis=0)
+        agree |= np.repeat(2 * A < 0.02 * L2, 3)
+        corner_n[agree] = Nv[agree]
     # one vertex per (vertex, normal): corners with the same smoothed normal share it
     q = np.round(corner_n * 4096).astype(np.int64)
     key = np.stack([corner_v, q[:, 0], q[:, 1], q[:, 2]], 1)
@@ -223,9 +234,10 @@ _PLY_TYPES = {"char": "i1", "int8": "i1", "uchar": "u1", "uint8": "u1", "short":
               "float": "f4", "float32": "f4", "double": "f8", "float64": "f8"}
 
 
-def write_ply(path: str, P, T, F=None, meta: dict | None = None) -> str:
-    """Binary PLY: shared float32 vertices, triangles with a ``region`` per face, and ``meta`` (name,
-    color, tags, history) as one JSON comment line in the header: one self-contained file."""
+def write_ply(path: str, P, T, F=None, meta: dict | None = None, N=None) -> str:
+    """Binary PLY: shared float32 vertices (with normals ``N`` when given), triangles with a ``region``
+    per face, and ``meta`` (name, color, tags, history) as one JSON comment line in the header: one
+    self-contained file."""
     import json
 
     from .io import write_atomic
@@ -235,8 +247,11 @@ def write_ply(path: str, P, T, F=None, meta: dict | None = None) -> str:
     head = ["ply", "format binary_little_endian 1.0", "comment made by tule"]
     if meta:
         head.append("comment tule " + json.dumps(meta, separators=(",", ":")))
-    head += [f"element vertex {len(P)}", "property float x", "property float y", "property float z",
-             f"element face {len(T)}", "property list uchar int vertex_indices"]
+    head += [f"element vertex {len(P)}", "property float x", "property float y", "property float z"]
+    if N is not None:
+        head += ["property float nx", "property float ny", "property float nz"]
+        P = np.ascontiguousarray(np.hstack([P, np.asarray(N, dtype="<f4").reshape(-1, 3)]))
+    head += [f"element face {len(T)}", "property list uchar int vertex_indices"]
     face = [("n", "u1"), ("v", "<i4", (3,))]
     if F is not None:
         head.append("property int region")
@@ -250,8 +265,8 @@ def write_ply(path: str, P, T, F=None, meta: dict | None = None) -> str:
 
 
 def read_ply(path: str):
-    """(points, triangles, regions or None, meta dict) from a PLY, binary or ASCII; polygons are
-    split into fans; extra properties (normals, colors) are skipped."""
+    """(points, triangles, regions or None, meta dict, normals or None) from a PLY, binary or ASCII;
+    polygons are split into fans; other extra properties (colors) are skipped."""
     import json
 
     with open(path, "rb") as f:
@@ -278,7 +293,7 @@ def read_ply(path: str):
             elements[-1][2].append(("list", w[2], w[3], w[4]) if w[1] == "list" else (w[1], w[2]))
     if fmt == "binary_big_endian":
         raise TuleError("big-endian PLY", op="Mesh.load", hint="save it as binary little-endian or ASCII PLY")
-    P, T, F = np.zeros((0, 3)), np.zeros((0, 3), np.int64), None
+    P, T, F, N = np.zeros((0, 3)), np.zeros((0, 3), np.int64), None, None
     tokens = iter(body.split()) if fmt == "ascii" else None
     pos = 0
     for name, n, props in elements:
@@ -305,12 +320,14 @@ def read_ply(path: str):
             cols = _ply_ascii(tokens, n, props)
         if name == "vertex":
             P = np.stack([np.asarray(cols[k], dtype=np.float64) for k in "xyz"], 1)
+            if all(k in cols for k in ("nx", "ny", "nz")):
+                N = np.stack([np.asarray(cols[k], dtype=np.float32) for k in ("nx", "ny", "nz")], 1)
         elif name == "face":
             faces = cols.get("vertex_indices", cols.get("vertex_index"))
             T, keep = _fans(faces)
             if "region" in cols:
                 F = np.asarray(cols["region"], dtype=np.int64)[keep]
-    return P, T, F, meta
+    return P, T, F, meta, N
 
 
 def _fans(faces):
@@ -618,13 +635,20 @@ class Mesh(Looks):
     @property
     def normals(self) -> np.ndarray:
         """A normal per vertex (float32): the surface's (from a B-rep), else area-weighted from the triangles."""
-        if self._N is None or len(self._N) != len(self._P):
+        if self._N is not None and len(self._N) == len(self._P):
+            return self._N
+        if "n" not in self._cache:
             n, a = self._tri()
             N = np.zeros_like(self._P)
             for c in range(3):
                 np.add.at(N, self._T[:, c], n * a[:, None])
-            self._N = _f32(N / np.maximum(np.linalg.norm(N, axis=1), 1e-300)[:, None])
-        return self._N
+            self._cache["n"] = _f32(N / np.maximum(np.linalg.norm(N, axis=1), 1e-300)[:, None])
+        return self._cache["n"]
+
+    @property
+    def _exact_normals(self):
+        """The normals it was made with (a B-rep's surfaces, an implicit body's gradient), else None."""
+        return self._N if self._N is not None and len(self._N) == len(self._P) else None
 
     @property
     def face_ids(self) -> np.ndarray:
@@ -749,6 +773,8 @@ class Mesh(Looks):
 
     # ------------------------------------------------------------ naming, tags, selections
     def _derive(self, P=None, T=None, F=None, tags=None, history=None, name=..., color=..., N=None, edges=None, welded=None):
+        if N is None and P is None:  # same points: the same normals
+            N = self._exact_normals
         return Mesh(self._P if P is None else P, self._T if T is None else T,
                     face_ids=self._F if F is None and P is None and T is None else F,
                     normals=N, edges=edges, tags=self._tags if tags is None else tags,
@@ -853,8 +879,8 @@ class Mesh(Looks):
         flip = np.linalg.det(M[:3, :3]) < 0
         T = self._T[:, ::-1] if flip else self._T
         N = None
-        if self._N is not None and not flip and abs(abs(np.linalg.det(M[:3, :3])) - 1) < 1e-9:
-            N = _f32(self._N @ M[:3, :3].T)
+        if self._exact_normals is not None and not flip and abs(abs(np.linalg.det(M[:3, :3])) - 1) < 1e-9:
+            N = _f32(self._exact_normals @ M[:3, :3].T)
         out = Mesh(P, T, face_ids=self._F, normals=N, tags=self._tags, name=self.name, color=self.color,
                    edges=[] if self._no_edges else None, history=self.history, welded=self._welded_flag)
         return out
@@ -989,11 +1015,14 @@ class Mesh(Looks):
         an STL Tule wrote keeps its regions."""
         path = os.fspath(path)
         ext = os.path.splitext(path)[1].lower()
-        F, meta = None, {}
+        F, meta, N = None, {}, None
         if ext == ".ply":
-            P, T, F, meta = read_ply(path)
-            P, T, keep = weld(P, T, 0.0)
+            P0, T0, F, meta, N0 = read_ply(path)
+            P, T, keep = weld(P0, T0, 0.0)
             F = F[keep] if F is not None else None
+            if N0 is not None and len(T):  # each welded vertex keeps the normal of one of its copies
+                N = np.zeros((len(P), 3), np.float32)
+                N[T.reshape(-1)] = N0[T0[keep].reshape(-1)]
         elif ext == ".stl":
             tri, attr, head = read_stl(path)
             P0, T0 = tri.reshape(-1, 3), np.arange(3 * len(tri)).reshape(-1, 3)
@@ -1006,7 +1035,7 @@ class Mesh(Looks):
         else:
             raise TuleError(f"cannot read {ext or path!r} as a mesh", op="Mesh.load", hint="PLY, OBJ or STL; STEP: import_step")
         base = os.path.splitext(os.path.basename(path))[0]
-        return Mesh(P, T, face_ids=F, tags=meta.get("tags"), name=name or meta.get("name") or base, color=meta.get("color"),
+        return Mesh(P, T, face_ids=F, normals=N, tags=meta.get("tags"), name=name or meta.get("name") or base, color=meta.get("color"),
                     material=meta.get("material"), edges=[] if meta.get("edges") == "none" else None,
                     history=tuple(meta.get("history", ())) or (f"read from {os.path.basename(path)}",), welded=True)
 
@@ -1027,7 +1056,7 @@ class Mesh(Looks):
     def export_ply(self, path: str) -> str:
         """Write a binary PLY: shared vertices, a region per triangle, and the name, color, tags and
         history in its header (what ``Mesh.load`` reads back; Tule's own format for meshes)."""
-        return write_ply(os.fspath(path), self._P, self._T, self.face_ids, self._meta())
+        return write_ply(os.fspath(path), self._P, self._T, self.face_ids, self._meta(), self._exact_normals)
 
     def export_stl(self, path: str) -> str:
         """Write a binary STL for a slicer (regions in the attribute words; no name, color or tags:

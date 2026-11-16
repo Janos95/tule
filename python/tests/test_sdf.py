@@ -237,3 +237,45 @@ def test_banded_meshing_fine_boxes_and_rest():
     assert len(band) > 2000
     with pytest.raises(TuleError, match="fine"):
         liner.to_mesh(4, rest=liner)
+
+
+def _folded(body, m):
+    P, T = m.points, m._T
+    A, B, C = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+    n = np.cross(B - A, C - A)
+    g = sdf.evaluate(body.expr, (A + B + C) / 3, grad=True)[:, 1:]
+    return ((np.einsum("ij,ij->i", n, g) < 0) & (np.linalg.norm(n, axis=1) > 0)).mean()
+
+
+def test_folds_beside_sharp_edges_are_flipped_away():
+    # dual contouring folds triangles where its cells merge, most beside sharp edges; the cleanup cuts
+    # those quads along their other diagonal (about 0.6 % of triangles folded before, here 0.004 %)
+    body = sdf.box(120, 80, 60) | sdf.sphere(45).at(60, 0, 30)
+    m = body.to_mesh(2.0)
+    assert m.is_closed and _folded(body, m) < 1e-3
+    cyl = sdf.cylinder(40, 90)
+    assert _folded(cyl, cyl.to_mesh(2.0)) < 1e-3
+
+
+def test_meshed_bodies_carry_the_fields_normals(tmp_path):
+    from tule.mesh import shaded
+    m = sdf.cylinder(30, 50).to_mesh(1.5)
+    N = m._exact_normals
+    assert N is not None and N.shape == m.points.shape
+    side = np.abs(m.points[:, 2] - 25) < 20
+    radial = m.points[side, :2] / np.linalg.norm(m.points[side, :2], axis=1, keepdims=True)
+    assert np.einsum("ij,ij->i", N[side, :2], radial).min() > 0.999  # exact, not averaged from facets
+    m.export_ply(tmp_path / "c.ply")
+    back = Mesh.load(tmp_path / "c.ply")
+    assert back._exact_normals is not None and len(back._exact_normals) == len(back.points)
+    moved = m.at(10, 0, 0).rotate(x=90)  # rotated with the mesh: the side's normals stay radial about the new axis
+    side_n = moved._exact_normals[side]
+    assert np.allclose(side_n[:, 1], 0, atol=1e-3) and np.allclose(np.linalg.norm(side_n, axis=1), 1, atol=1e-5)
+    # shading uses them on smooth surfaces and keeps the flat normal across the rim's crease
+    V, Ns, I = shaded(m.points, m._T, None, normals=N)
+    top = np.abs(V[:, 2] - 50) < 1e-6
+    rim_side = (np.abs(V[:, 2] - 50) < 1e-6) & (np.linalg.norm(V[:, :2], axis=1) > 29.5)
+    assert np.allclose(Ns[top & ~rim_side, 2], 1, atol=1e-3)
+    wall = (V[:, 2] > 3) & (V[:, 2] < 47)  # two cells clear of the rims, where dual contouring tilts real facets
+    radial = V[wall, :2] / np.linalg.norm(V[wall, :2], axis=1, keepdims=True)
+    assert np.einsum("ij,ij->i", Ns[wall, :2], radial).min() > 0.999

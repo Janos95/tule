@@ -219,7 +219,7 @@ def items_to_parts(items, color: str | None = None, name: str | None = None, mat
                 continue
             P, T, keep = item._weld_arrays()
             F = item.face_ids[keep].astype(np.int64)
-            V, N, I = shaded(P, T, F)
+            V, N, I = shaded(P, T, F, normals=item._exact_normals if item._welded_flag else None)  # exact normals: an implicit body's gradient
             tags: dict[int, list[str]] = {}
             for t, regions in item._tags.items():
                 for i in regions:
