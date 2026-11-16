@@ -21,7 +21,7 @@ codegen-units = 4
 
 # Fidget 0.5.1 plus our fixes for NaN gradients at sqrt(0) (exact distance fields meshed with
 # coincident vertices, zero-area triangles and folds) and NaN vertices from zero gradients, and
-# (tule-folds-normals) vertex normals from the field, no folds where octree cell sizes change, and
+# vertex normals from the field, no folds where octree cell sizes change, and
 # exact boxes that keep their edges.
 # Offered upstream from the fork's manifold-fixes branch; back to crates.io once released.
 [patch.crates-io]

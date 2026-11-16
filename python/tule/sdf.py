@@ -830,7 +830,7 @@ class Implicit(Looks):
         if fg is not None and not _has_grid(e):
             if depth > 12:
                 raise TuleError(f"cells of {cell:g} mm across {2 * half:.4g} mm are too many", op="to_mesh")
-            vb, tb, nb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth)
+            vb, tb, nb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth, normals=True)
             P = np.frombuffer(vb, np.float32).reshape(-1, 3).astype(np.float64)
             T = np.frombuffer(tb, np.uint32).reshape(-1, 3).astype(np.int64)
             N = np.frombuffer(nb, np.float32).reshape(-1, 3).copy()

@@ -12,7 +12,7 @@ use fidget::render::ThreadPool;
 use fidget::shape::EzShape;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyTuple};
 
 type Op = (String, i64, i64, f64);
 
@@ -129,11 +129,13 @@ fn eval<'py>(py: Python<'py>, ops: Vec<Op>, xyz: &[u8], grad: bool) -> PyResult<
 
 /// Meshes the surface (value 0, inside negative) in the cube `center ± half`, at an octree of
 /// `depth` levels (2^depth cells across), by Fidget's manifold dual contouring (sharp edges kept).
-/// Returns (vertices: n*3 f32 bytes, triangles: m*3 u32 bytes, normals: n*3 f32 bytes): the
-/// normals are the field's unit gradient at each vertex (zero where it has no direction).
+/// Returns (vertices: n*3 f32 bytes, triangles: m*3 u32 bytes), and with `normals=True` also
+/// normals: n*3 f32 bytes, the field's unit gradient at each vertex (zero where it has no direction).
 #[pyfunction]
-fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: u8)
-    -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyBytes>, Bound<'py, PyBytes>)> {
+#[pyo3(signature = (ops, center, half, depth, normals=false))]
+fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: u8, normals: bool)
+    -> PyResult<Bound<'py, PyTuple>> {
+    let want_normals = normals;
     if !(half > 0.0) || depth == 0 || depth > 12 {
         return Err(PyValueError::new_err("half > 0 and 1 <= depth <= 12"));
     }
@@ -155,7 +157,12 @@ fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: 
             .collect();
         Ok((verts, tris, normals))
     })?;
-    Ok((PyBytes::new(py, &bytes_of(&verts)), PyBytes::new(py, &tris), PyBytes::new(py, &bytes_of(&normals))))
+    let (v, t) = (PyBytes::new(py, &bytes_of(&verts)), PyBytes::new(py, &tris));
+    if want_normals {
+        PyTuple::new(py, [v, t, PyBytes::new(py, &bytes_of(&normals))])
+    } else {
+        PyTuple::new(py, [v, t])
+    }
 }
 
 /// The field's unit gradient at each point (`xyz`: n*3 f32 bytes; returns n*3 f32 bytes): the
