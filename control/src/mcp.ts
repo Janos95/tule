@@ -17,14 +17,14 @@ const LEGACY = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const META_VERSION = "io.modelcontextprotocol/protocolVersion";
 const SERVER_INFO = { name: "tule", title: "Tule", version: "0.1.0" };
 
-export const INSTRUCTIONS = `Tule runs the user's engineering projects on machines: Linux with OpenCascade, the \`tule\` Python modeling API (immutable shapes, tags that survive operations) and topology optimization. These tools manage the control plane only: info reads everything (projects, a project's machines, outputs, autosaves, how to connect, the user's computers and GPUs, keys); project, machine and keys change things. Machines: cpu-1 = 1 vCPU/6 GiB, cpu-2, cpu-4; GPUs on the user's RunPod account; the user's own computers. A project can be loaded on several machines at once, each with its own copy of /workspace. The work happens on a machine over SSH with the tule CLI (info what=connect says how): src/<name>.py makes /workspace/outputs/<name>/ and \`tule build\` runs the scripts whose inputs changed (nothing runs by itself). The user watches outputs live in the viewer (STEP/STL in 3D, tables, Vega-Lite charts, Markdown); check them with \`tule screenshot\`. Each copy is autosaved continuously; \`tule save\` (or project action=save) commits it to the project's git history and merges what other machines saved. Nothing outside /workspace persists. Read guide("index") first, then the topic you need.`;
+export const INSTRUCTIONS = `Tule runs the user's engineering projects on machines: Linux with OpenCascade, the \`tule\` Python modeling API (immutable shapes, tags that survive operations) and topology optimization. These tools manage the control plane only: info reads everything (projects, a project's machines, outputs, autosaves, how to connect, the user's computers and GPUs, keys); project, machine and keys change things. Machines: cpu-1 = 1 vCPU/6 GiB, cpu-2, cpu-4; GPUs on the user's RunPod account; the user's own computers. A project can be loaded on several machines at once, each with its own copy of /workspace. The work happens on a machine over SSH with the tule CLI (info what=connect says how): src/<name>.py makes /workspace/outputs/<name>/ and \`tule build\` runs the scripts whose inputs changed (nothing runs by itself). The user watches outputs live in the viewer (STEP/STL in 3D, tables, Vega-Lite charts, Markdown); check them with \`tule screenshot\`. Each copy is autosaved continuously; \`tule save\` (or project action=save) commits it to the project's git history and merges what other machines saved. Nothing outside /workspace persists. Read guide("index") first, then the topic you need. Ask the user before anything that costs them money (GPU machines on their RunPod account) or cannot be undone (deleting a project, forgetting a machine's copy).`;
 
 type Tool = { name: string; description: string; inputSchema: Record<string, unknown>; annotations: Record<string, unknown> };
 const str = (description: string) => ({ type: "string", description });
 const choice = (values: string[], description: string) => ({ type: "string", enum: values, description });
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const PROJECT = str("project name, e.g. camera-bracket");
-const MACHINE_ID = str("which machine's copy (an id from info what=project: cloud, gpu-<type>, a computer's name, joined); needed only when several run");
+const MACHINE_ID = str("which machine's copy (cloud, gpu-<type>, a computer's name, joined); needed only when several run");
 // every hint stated (directories require all of them): reads are read-only; the rest may delete
 const hints = (title: string, readOnly: boolean, destructive: boolean, idempotent: boolean) =>
   ({ title, readOnlyHint: readOnly, destructiveHint: destructive, idempotentHint: idempotent, openWorldHint: false });
@@ -37,7 +37,7 @@ const KEY_ACTIONS = ["add_ssh", "remove_ssh", "create_api", "revoke_api"] as con
 export const TOOLS: Tool[] = [
   {
     name: "guide",
-    description: "Tule's instructions for agents by topic. Start with 'index'.",
+    description: "Tule's documentation for agents, by topic; 'index' lists the topics.",
     inputSchema: obj({ topic: str(`one of: ${Object.keys(SKILLS).join(", ") || "index"}`) }),
     annotations: hints("Read Tule's guide", true, false, true),
   },
@@ -67,8 +67,8 @@ export const TOOLS: Tool[] = [
       "Change a project. action=",
       "create (name): a new /workspace from the template (AGENTS.md, tule.toml, src/part.py, git).",
       "rename (project, to).",
-      "delete (project, confirm = the name again): stops its machines and deletes every copy of /workspace, its saves and autosaves. Cannot be undone; confirm with the user first.",
-      "save (project, message, machine): commit a machine's /workspace, merge what other machines saved and push it as the latest save. On a merge conflict nothing is saved: the answer lists the files; resolve them on that machine and save again.",
+      "delete (project, confirm = the name again): stops its machines and deletes every copy of /workspace, its saves and autosaves. It cannot be undone.",
+      "save (project, message, machine): commit a machine's /workspace, merge what other machines saved and push it as the latest save. On a merge conflict nothing is saved and the answer lists the conflicting files.",
       "join (project): a join token for a machine started elsewhere (e.g. a pod made with the user's own RunPod connector): run the Tule image with these environment variables and it joins the project.",
     ].join(" "),
     inputSchema: obj({
@@ -86,23 +86,23 @@ export const TOOLS: Tool[] = [
     name: "machine",
     description: [
       "Run a project on machines. action=",
-      "start (project, machine): load the project on a machine and wait until its /workspace is ready (a machine it ran on before gets its own copy back; a new one starts from the latest save). Other machines keep running. cpu-1 (default, 1 vCPU / 6 GiB), cpu-2 (2 / 8), cpu-4 (4 / 12), or a GPU on the user's RunPod account: gpu-rtx4090, gpu-l40s, gpu-a100, gpu-h100, ... (info what=resources has prices; GPU time costs the user money, so ask first), or one of the user's own computers by name. The project has one Tule cloud machine: another cpu size resizes it.",
+      "start (project, machine): load the project on a machine and wait until its /workspace is ready (a machine it ran on before gets its own copy back; a new one starts from the latest save). Other machines keep running. cpu-1 (default, 1 vCPU / 6 GiB), cpu-2 (2 / 8), cpu-4 (4 / 12), or a GPU on the user's RunPod account: gpu-rtx4090, gpu-l40s, gpu-a100, gpu-h100, ... (billed per hour to the user's RunPod account), or one of the user's own computers by name. The project has one Tule cloud machine: another cpu size resizes it.",
       "stop (project, machine = one id, default all): autosave and stop. Unsaved work stays in that machine's copy.",
-      "forget (project, machine): drop a stopped machine's copy of /workspace with its unsaved work. Confirm with the user first.",
+      "forget (project, machine): drop a stopped machine's copy of /workspace with its unsaved work; it cannot be undone.",
       "snapshot (project, machine): autosave now (it must be running).",
       "restore (project, id, machine = restore into this one, default the one that made it): make /workspace match an autosave; the current state is autosaved first, so this can be undone.",
     ].join(" "),
     inputSchema: obj({
       action: choice([...MACHINE_ACTIONS], "what to do"),
       project: PROJECT,
-      machine: str("start: cpu-1, cpu-2, cpu-4, gpu-<type> or a computer's name; otherwise a machine's id from info what=project"),
-      id: str("restore: a snapshot id from info what=snapshots"),
+      machine: str("start: cpu-1, cpu-2, cpu-4, gpu-<type> or a computer's name; otherwise a machine's id"),
+      id: str("restore: a snapshot id"),
     }, ["action", "project"]),
     annotations: hints("Start, stop or restore a machine", false, true, false),
   },
   {
     name: "keys",
-    description: "Change the user's keys (info what=keys lists them). action= add_ssh (key = the public key line, name): an SSH key for every project's machine. remove_ssh (id). create_api (name = what it is for): a Tule API key, shown once, e.g. for CI (the CLI gets its own with `tule login`). revoke_api (id).",
+    description: "Change the user's keys. action= add_ssh (key = the public key line, name): an SSH key for every project's machine. remove_ssh (id). create_api (name = what it is for): a Tule API key, shown once, e.g. for CI (the CLI gets its own with `tule login`). revoke_api (id).",
     inputSchema: obj({
       action: choice([...KEY_ACTIONS], "what to do"),
       key: str("add_ssh: the public key line (ssh-ed25519 ...)"),
