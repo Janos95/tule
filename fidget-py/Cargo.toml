@@ -25,7 +25,7 @@ codegen-units = 4
 # exact boxes that keep their edges.
 # Offered upstream from the fork's manifold-fixes branch; back to crates.io once released.
 [patch.crates-io]
-fidget = { git = "https://github.com/Janos95/fidget", rev = "ea6734721d85eca9b387b15561748fe7370415fc" }
-fidget-core = { git = "https://github.com/Janos95/fidget", rev = "ea6734721d85eca9b387b15561748fe7370415fc" }
-fidget-jit = { git = "https://github.com/Janos95/fidget", rev = "ea6734721d85eca9b387b15561748fe7370415fc" }
-fidget-mesh = { git = "https://github.com/Janos95/fidget", rev = "ea6734721d85eca9b387b15561748fe7370415fc" }
+fidget = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }
+fidget-core = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }
+fidget-jit = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }
+fidget-mesh = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }

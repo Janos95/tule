@@ -258,6 +258,17 @@ def test_meshes_barely_fold_where_cell_sizes_change():
         assert m.is_closed and _folded(body, m) < 1e-3
 
 
+def test_faces_at_round_numbers_mesh_without_slivers():
+    # a face at z = 2300 on a grid of 2 mm cells would lie on the cells' corners, where its values are zero
+    # up to rounding, of either sign: the mesh would fold into the face in triangles with no area
+    body = sdf.polygon([(0, 2300), (92, 2300), (92, 2378), (0, 2378)]).revolve().at(460, 120, 0)
+    m = body.to_mesh(2.0)
+    P, T = m.points, m._T
+    area = np.linalg.norm(np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]]), axis=1)
+    assert m.is_closed and area.min() > 1e-6
+    assert len(np.unique(P.round(6), axis=0)) == len(P)
+
+
 def test_meshed_bodies_carry_the_fields_normals(tmp_path):
     from tule.mesh import shaded
     m = sdf.cylinder(30, 50).to_mesh(1.5)

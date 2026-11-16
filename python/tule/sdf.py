@@ -824,9 +824,13 @@ class Implicit(Looks):
     def _mesh_piece(self, e, lo, hi, cell, fg):
         """(points, triangles, normals, how) of the closed surface of ``e`` in the box lo–hi, or None if
         empty there."""
-        center = (lo + hi) / 2
         half = float((hi - lo).max()) / 2 + 2 * cell
         depth = builtins.max(1, int(math.ceil(math.log2(2 * half / cell))))
+        got = 2 * half / 2 ** depth
+        # the cells' corners off round numbers (_GRID_SHIFT): a face that lies exactly on the corners' plane
+        # (z = 2300 on a grid of 2 mm cells) has values there that are zero up to rounding, of either sign,
+        # and the mesh folds into that plane in triangles with no area
+        center = (lo + hi) / 2 + _GRID_SHIFT * got
         if fg is not None and not _has_grid(e):
             if depth > 12:
                 raise TuleError(f"cells of {cell:g} mm across {2 * half:.4g} mm are too many", op="to_mesh")
@@ -834,12 +838,11 @@ class Implicit(Looks):
             P = np.frombuffer(vb, np.float32).reshape(-1, 3).astype(np.float64)
             T = np.frombuffer(tb, np.uint32).reshape(-1, 3).astype(np.int64)
             N = np.frombuffer(nb, np.float32).reshape(-1, 3).copy()
-            got = 2 * half / 2 ** depth
             how = f"meshed by Fidget (dual contouring, cells {got:.3g} mm: detail under a cell lost)"
         else:
             if fg is None:
                 _note_numpy("the tule_fidget module is not installed")
-            P, T = _marching(e, lo - 2 * cell, hi + 2 * cell, cell)
+            P, T = _marching(e, lo - 2 * cell + _GRID_SHIFT * cell, hi + 2 * cell, cell)
             N = _field_normals(e, P, cell)
             how = f"meshed by marching cubes (sampled field, cells {cell:.3g} mm: detail under a cell lost, edges rounded)"
         if not len(T):
@@ -848,6 +851,11 @@ class Implicit(Looks):
         if np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() < 0:
             T = T[:, ::-1]
         return P, T, N, how
+
+
+# where the meshing grid's corners sit, in cells from the box's centre: irrational fractions, so no round
+# number in a model (a face at z = 2300, an axis at x = 0) falls on them
+_GRID_SHIFT = np.array([math.sqrt(2) - 1, math.sqrt(3) - 1, math.sqrt(5) - 2]) / 2
 
 
 def _field_normals(e: Expr, P: np.ndarray, cell: float) -> np.ndarray:
