@@ -116,6 +116,7 @@ const NEWP_JS = `document.addEventListener("click",(e)=>{const g=e.target.closes
 document.addEventListener("click",(e)=>{const b=e.target.closest?.("[data-copy]");if(!b)return;navigator.clipboard.writeText(b.dataset.copy);b.classList.add("copied");setTimeout(()=>b.classList.remove("copied"),1500)});
 document.addEventListener("click",(e)=>{const s=e.target.closest?.(".newp summary");if(s){e.preventDefault();s.parentElement.open=true;s.parentElement.querySelector("input")?.focus()}});
 document.querySelectorAll(".stepcard").forEach((c)=>{const t=c.querySelector(".steps"),d=[...c.querySelectorAll(".stepdot")],g=c.querySelectorAll(".stepgo");let cur=0,to=0;const show=(i)=>{cur=i;d.forEach((x,j)=>x.classList.toggle("on",j===i));g[0].disabled=i===0;g[1].disabled=i===d.length-1};const go=(i)=>{i=Math.max(0,Math.min(d.length-1,i));show(i);to=Date.now()+600;t.scrollTo({left:i*t.clientWidth})};d.forEach((x,j)=>x.onclick=()=>go(j));g.forEach((x)=>x.onclick=()=>go(cur+Number(x.dataset.d)));t.addEventListener("scroll",()=>{if(Date.now()>to)show(Math.round(t.scrollLeft/t.clientWidth))},{passive:true});show(0)});
+document.addEventListener("click",(e)=>{const a=e.target.closest?.("a,button");if(!a)return;const k=a.href?.includes("claude.ai/customize")?"add_claude":a.dataset.chatgpt?"add_chatgpt":a.dataset.copy?.endsWith("/mcp")?"copy_mcp":"";if(k)navigator.sendBeacon("/e?k="+k)});
 document.addEventListener("keydown",(e)=>{const d=e.key==="Escape"&&e.target.closest?.(".newp");if(d){e.target.value="";d.open=false;d.querySelector("summary").focus()}})`;
 
 export function page(title: string, body: Html | string, status = 200, user?: User | null, strip: Html | string = ""): Response {
@@ -459,8 +460,22 @@ export function adminPage(user: User, m: Metrics): Response {
     : html`<p class="hint">No compute this month yet.</p>`;
   const recent = html`<div class="tablewrap"><table class="t"><tr><th>Account</th><th>Signed up</th><th>Agent</th><th class="r">Projects</th><th>Last active</th></tr>
       ${m.recent.map((r) => html`<tr><td>${r.email}</td><td>${fmtDay(r.created)}</td><td>${yes(r.agent)}</td><td class="r">${String(r.projects)}</td><td>${last(r.last)}</td></tr>`)}</table></div>`;
+  const f = m.funnel;
+  const steps: [string, number][] = [
+    ["Opened a shared link", f.shareViews],
+    ["Clicked Make your own", f.shareClicks],
+    ["Saw the welcome steps", f.welcomeViews],
+    ["Clicked Add to Claude / ChatGPT, or copied the address", f.addClaude + f.addChatgpt + f.copyMcp],
+    ["Reached the connect page", f.connectViews],
+    ["Allowed the connection", f.connectAllows],
+    ["Agent used Tule", f.agents],
+  ];
+  const funnel = html`<div class="tablewrap"><table class="t"><tr><th>Step (last 7 days)</th><th class="r">Count</th><th class="r">Of previous</th></tr>
+      ${steps.map(([label, v], i) => html`<tr><td>${label}</td><td class="r">${String(v)}</td><td class="r">${i && steps[i - 1][1] ? `${Math.round((v / steps[i - 1][1]) * 100)}%` : "–"}</td></tr>`)}</table></div>
+    <p class="hint">Add to Claude ${String(f.addClaude)} · Add to ChatGPT ${String(f.addChatgpt)} · copied the address ${String(f.copyMcp)} · tried without an account on the connect page ${String(f.connectGuests)}. People can also enter at any step (a connector added by hand skips the clicks), so a step can be larger than the one before.</p>`;
   const since = m.since ? `Daily counts since ${fmtDay(m.since)}. ` : "";
   const body = html`<p class="hint">${since}Leaves out the dev and support accounts and yours.</p>${tiles}
+    <section class="sect"><h2>From link to connected agent</h2>${funnel}</section>
     <section class="sect"><h2>Last 30 days</h2>${charts}</section>
     <section class="sect"><h2>Most compute this month</h2>${top}</section>
     <section class="sect"><h2>Latest sign-ups</h2>${recent}</section>

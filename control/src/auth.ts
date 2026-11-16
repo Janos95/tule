@@ -161,6 +161,7 @@ export async function authRoutes(req: Request, env: Env, url: URL): Promise<Resp
     if (!sameOrigin(req, url)) return page("Refused", "<p>That form did not come from Tule.</p>", 403);
     const next = safeNext(String((await req.formData()).get("next") ?? ""));
     const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
+    if (!("error" in g)) await track(env, null, "connect_guests");
     if ("error" in g) return page("Sign in instead", html`<p>${g.error}.</p><p><a class="button primary" href="${loginUrl(next)}">Sign in with Google</a></p>`, 429);
     return new Response(null, { status: 303, headers: { Location: next, "Set-Cookie": setCookie(req, SESSION_COOKIE, g.session, 30 * 86400) } });
   }
@@ -184,6 +185,12 @@ export function role(user: User | null, env: Env): "admin" | "support" | null {
   if (user.id === SUPPORT_ID) return "support";
   const admins = (env.ADMIN_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   return admins.includes(user.email.toLowerCase()) ? "admin" : null;
+}
+
+/** Adds to a daily funnel count (accounts.count), except for the dev, support and admin accounts. */
+export async function track(env: Env, user: User | null, key: string): Promise<void> {
+  if (user && (user.id === "u_dev" || user.id === SUPPORT_ID || role(user, env))) return;
+  await accounts(env).count(key);
 }
 
 /** Forms post only from our own pages. */
@@ -274,6 +281,7 @@ export async function authorize(req: Request, env: Env, url: URL, user: User | n
       return page("Cannot connect this app", `<p>${esc(err.message)}</p>`, 400);
     }
     const d = await oauth.describeConsent(request);
+    await track(env, user, "connect_views");
     // signed out: sign in, or try it right away as a guest (nothing to sign up for; signing in later keeps the projects)
     if (!user) {
       const back = url.pathname + url.search;
@@ -317,6 +325,7 @@ export async function authorize(req: Request, env: Env, url: URL, user: User | n
     return new Response(null, { status: 302, headers: denied.headers });
   }
   const approved = await oauth.approveConsent(req, handle, { scope: ["tule"] });
+  await track(env, user, "connect_allows");
   const { redirectTo } = await oauth.completeAuthorization({
     request: approved.request,
     userId: user.id,

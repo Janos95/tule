@@ -38,7 +38,7 @@
 // MCP: /mcp, behind the OAuth provider (tokens from /authorize, or an API key).
 import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Accounts, SUPPORT_COPY_DAYS, SUPPORT_ID, type ProjectRef, type User } from "./accounts";
-import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, who } from "./auth";
+import { accounts, authorize, authRoutes, deviceApi, devicePage, role, loginUrl, sameOrigin, SESSION_COOKIE, setCookie, track, who } from "./auth";
 import { devMode, devRoutes, RELOAD_SCRIPT } from "./dev";
 import { mcp } from "./mcp";
 import * as ops from "./ops";
@@ -859,6 +859,12 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
 
   const user = await who(req, env);
+  // the funnel's clicks on the welcome steps (pages.ts sends them with sendBeacon)
+  if (path === "/e" && req.method === "POST") {
+    const k = url.searchParams.get("k") ?? "";
+    if (sameOrigin(req, url) && ["add_claude", "add_chatgpt", "copy_mcp"].includes(k)) await track(env, user, k);
+    return new Response(null, { status: 204 });
+  }
   if (path === "/privacy" && req.method === "GET") return privacyPage(env.CONTACT_EMAIL ?? "", user);
   if (path === "/terms" && req.method === "GET") return termsPage(env.CONTACT_EMAIL ?? "", user);
   if (path === "/authorize") return authorize(req, env, url, user);
@@ -871,12 +877,16 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
   if (path === "/") {
     if (url.searchParams.get("from") === "share") await accounts(env).count("share_clicks"); // "Make your own" on a view-only link
-    if (user) return projectsPage(user, await projectRows(env, user), origin, { shown: showcase(env), machines: await machinesData(env, user) });
+    if (user) {
+      if (!user.agent) await track(env, user, "welcome_views"); // the welcome steps are on the page until an agent connects
+      return projectsPage(user, await projectRows(env, user), origin, { shown: showcase(env), machines: await machinesData(env, user) });
+    }
     // a first visit: a guest account, so Tule can be tried without signing in. Only for a browser opening the page
     // (Sec-Fetch-Mode: navigate): scanners and scripts get the sign-in page, not an account each
     if (req.headers.get("Sec-Fetch-Mode") !== "navigate") return landing(origin, "", showcase(env));
     const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
     if ("error" in g) return landing(origin, g.error, showcase(env));
+    await track(env, null, "welcome_views");
     const res = projectsPage(g.user, [], origin, { shown: showcase(env), machines: await machinesData(env, g.user) });
     res.headers.append("Set-Cookie", setCookie(req, SESSION_COOKIE, g.session, 30 * 86400));
     return res;
