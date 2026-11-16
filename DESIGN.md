@@ -785,6 +785,9 @@ request `id`.
 
 - A first visit to `/` without a session makes a **guest** user (no Google
   identity) with a session cookie, so Tule can be tried without signing in.
+  Only a browser opening the page (`Sec-Fetch-Mode: navigate`) gets one:
+  scanners and scripts get the sign-in page (a new domain drew ~150 crawler
+  guests on its first day).
   Everything is stored under the guest's user id exactly as for an account;
   the cookie is the only way back to it (and any CLI the guest logged in).
 - **Connecting an app without an account:** `/authorize` signed out offers

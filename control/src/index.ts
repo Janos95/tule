@@ -872,7 +872,9 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (path === "/") {
     if (url.searchParams.get("from") === "share") await accounts(env).count("share_clicks"); // "Make your own" on a view-only link
     if (user) return projectsPage(user, await projectRows(env, user), origin, { shown: showcase(env), machines: await machinesData(env, user) });
-    // a first visit: a guest account, so Tule can be tried without signing in
+    // a first visit: a guest account, so Tule can be tried without signing in. Only for a browser opening the page
+    // (Sec-Fetch-Mode: navigate): scanners and scripts get the sign-in page, not an account each
+    if (req.headers.get("Sec-Fetch-Mode") !== "navigate") return landing(origin, "", showcase(env));
     const g = await accounts(env).createGuest(req.headers.get("CF-Connecting-IP") ?? "local");
     if ("error" in g) return landing(origin, g.error, showcase(env));
     const res = projectsPage(g.user, [], origin, { shown: showcase(env), machines: await machinesData(env, g.user) });
