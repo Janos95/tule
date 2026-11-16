@@ -276,6 +276,29 @@ def test_meshed_bodies_carry_the_fields_normals(tmp_path):
     top = np.abs(V[:, 2] - 50) < 1e-6
     rim_side = (np.abs(V[:, 2] - 50) < 1e-6) & (np.linalg.norm(V[:, :2], axis=1) > 29.5)
     assert np.allclose(Ns[top & ~rim_side, 2], 1, atol=1e-3)
-    wall = (V[:, 2] > 3) & (V[:, 2] < 47)  # two cells clear of the rims, where dual contouring tilts real facets
+    A = np.linalg.norm(np.cross(V[I[:, 1]] - V[I[:, 0]], V[I[:, 2]] - V[I[:, 0]]), axis=1)
+    seen = np.zeros(len(V), bool)
+    seen[I[A > 0.05 * np.median(A)].reshape(-1)] = True  # slivers (no area, nothing to see) keep their own normal
+    wall = seen & (V[:, 2] > 3) & (V[:, 2] < 47)  # two cells clear of the rims, where dual contouring tilts real facets
     radial = V[wall, :2] / np.linalg.norm(V[wall, :2], axis=1, keepdims=True)
     assert np.einsum("ij,ij->i", Ns[wall, :2], radial).min() > 0.999
+
+
+def test_normals_after_simplify():
+    c = sdf.cylinder(30, 50)
+    m = c.to_mesh(1.5).simplify(0.05)
+    assert m._exact_normals is None  # the points moved
+    N = c.normals(m.points)
+    side = np.abs(m.points[:, 2] - 25) < 20
+    radial = m.points[side, :2] / np.linalg.norm(m.points[side, :2], axis=1, keepdims=True)
+    assert np.isfinite(N).all() and np.einsum("ij,ij->i", N[side, :2], radial).min() > 0.999
+    assert Mesh(m.points, m.indices, normals=N)._exact_normals is not None
+
+
+def test_normals_on_a_polygon_lathe_never_vanish():
+    # a polygon's distance is sqrt(d²): exactly on an edge its derivative is 0, not the normal
+    body = sdf.polygon([(0, 0), (40, 0), (40, 30), (25, 50), (0, 50)]).revolve()
+    P = np.array([[40.0, 0, 10], [0, -40.0, 20], [28.0, 0, 0]])
+    N = body.normals(P)
+    assert np.allclose(N[0], [1, 0, 0], atol=1e-3) and np.allclose(N[1], [0, -1, 0], atol=1e-3)
+    assert np.allclose(N[2], [0, 0, -1], atol=1e-3)

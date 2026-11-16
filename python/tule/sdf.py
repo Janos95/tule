@@ -605,6 +605,14 @@ class Implicit(Looks):
         """The field's gradient (n, 3) at points (the outward normal on the surface)."""
         return evaluate(self.expr, points, grad=True)[:, 1:]
 
+    def normals(self, points, step: float = 0.05) -> np.ndarray:
+        """Unit outward normals (n, 3, float32) at points on or near the surface: the gradient, with
+        central differences ``step`` mm wide where it is undefined. For a mesh changed after to_mesh
+        (simplified, refined): ``Mesh(m.points, m.indices, normals=body.normals(m.points))`` keeps the
+        exact shading."""
+        P = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        return _field_normals(self.expr, P, step / 0.05)
+
     def contains(self, points) -> np.ndarray:
         return self.value(points) < 0
 
@@ -845,10 +853,10 @@ class Implicit(Looks):
 
 def _field_normals(e: Expr, P: np.ndarray, cell: float) -> np.ndarray:
     """Unit gradients of the field at the points (float32): the surface normals of an implicit body.
-    Where the derivative is undefined (sqrt at 0, as in length(max(a, 0), max(b, 0)) on the surface),
-    central differences of the value over a twentieth of a cell stand in."""
+    Where the derivative is undefined or vanishes (sqrt at 0: on a polygon's edge, or length(max(a, 0),
+    max(b, 0)) on the surface), central differences of the value over a twentieth of a cell stand in."""
     g = evaluate(e, P, grad=True)[:, 1:] if len(P) else np.zeros((0, 3))
-    bad = ~np.isfinite(g).all(axis=1)
+    bad = ~np.isfinite(g).all(axis=1) | ~(np.abs(g).max(axis=1, initial=0) > 1e-9)
     if bad.any():
         Q, h = P[bad], 0.05 * cell
         g[bad] = np.stack([(evaluate(e, Q + h * d) - evaluate(e, Q - h * d)) / (2 * h) for d in np.eye(3)], 1)

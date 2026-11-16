@@ -20,3 +20,4 @@ m = cooled.to_mesh(4, fine=[((-500, -8, -10), (500, 8, 910), 0.5)], rest=liner) 
 - `sdf.tube(points, r, wall=, bend= or spline=True, ends="flat")`: ducts, manifolds, lines; `r` per point tapers.
 - Fine detail on a big part: `to_mesh(cell, fine=[(lo, hi, cell), …], rest=body_without_the_detail)` meshes boxes at their own cell (closed pieces that meet face to face). A section through the band shows the detail: the viewer's **Section** button (or `?section=y:0`), `tule screenshot --section y:0`.
 
+- Shading: `to_mesh` stores the field's exact normals and the viewer uses them. A mesh changed afterwards (`simplify`) loses them: `m = m.simplify(0.1).refine(10 * cell)` (long slivers streak), then `Mesh(m.points, m.indices, normals=body.normals(m.points))`. For outlines meant to be smooth, `sdf.spline(...).revolve()` rather than a polygon, whose corners show.

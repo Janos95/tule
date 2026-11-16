@@ -168,9 +168,9 @@ def feature_edges(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, ang
 def shaded(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, angle: float = CREASE, normals=None):
     """For drawing: vertices split at creases and region borders, with smooth normals elsewhere:
     (positions (n, 3), normals (n, 3), triangles (m, 3)) with the same triangle order. ``normals``: exact
-    normals per vertex (an implicit body's gradient), used at every corner whose triangle they agree
-    with (within ``angle``) and at slivers; corners at a crease, where one normal cannot serve both
-    sides, keep the averaged one."""
+    normals per vertex (an implicit body's gradient), used at every corner whose smoothed normal they
+    agree with (within ``angle``) and on every triangle whose three agree with each other; corners at a crease, where one normal cannot serve both sides, keep the
+    averaged one."""
     P = np.asarray(P, dtype=np.float64)
     T = np.asarray(T, dtype=np.int64)
     if not len(T):
@@ -199,11 +199,15 @@ def shaded(P: np.ndarray, T: np.ndarray, F: np.ndarray | None = None, angle: flo
     corner_n[order] = acc
     if normals is not None and len(normals) == len(P):
         Nv = np.asarray(normals, dtype=np.float64)[corner_v]
-        agree = np.einsum("ij,ij->i", Nv, np.repeat(N, 3, axis=0)) > math.cos(math.radians(angle))
-        # slivers (dual contouring leaves many, a hair wide): their facet normal is noise, so they take
-        # the exact one too rather than a flat normal of their own
-        L2 = np.max([((P[T[:, a]] - P[T[:, b]]) ** 2).sum(1) for a, b in ((0, 1), (1, 2), (2, 0))], axis=0)
-        agree |= np.repeat(2 * A < 0.02 * L2, 3)
+        # against the corner's smoothed normal, not its own facet: a simplified mesh's long facets tilt
+        # away from the surface, and a test per facet would switch neighbouring corners back and forth
+        cos = math.cos(math.radians(angle))
+        agree = np.einsum("ij,ij->i", Nv, corner_n) > cos
+        # a triangle whose three exact normals agree lies on smooth surface whatever its own facet says:
+        # simplify's long slivers along a cylinder's rulings have a facet normal pointing anywhere
+        Nt = Nv.reshape(-1, 3, 3)
+        smooth = np.min([np.einsum("ij,ij->i", Nt[:, a], Nt[:, b]) for a, b in ((0, 1), (1, 2), (2, 0))], axis=0) > cos
+        agree |= np.repeat(smooth, 3)
         corner_n[agree] = Nv[agree]
     # one vertex per (vertex, normal): corners with the same smoothed normal share it
     q = np.round(corner_n * 4096).astype(np.int64)
