@@ -49,6 +49,8 @@ async function finish() {
   if (dev) html = html.replace("</body>", `${RELOAD}</body>`);
   await fs.writeFile(path.join(dist, "index.html"), html);
   for (const f of ["favicon.svg", "logo-light.svg"]) await fs.copyFile(path.join(web, "src", f), path.join(dist, f));
+  // /demo/: the walkthrough video for directory reviewers (docs/directory/LISTING.md)
+  await fs.cp(path.join(web, "src", "demo"), path.join(dist, "demo"), { recursive: true });
   if (dev) await fs.writeFile(path.join(dist, "assets-dev", "version.txt"), String(Date.now()));
   await installer();
   console.log(`web/dist/${v}`);

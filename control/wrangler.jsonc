@@ -32,6 +32,8 @@
     "ADMIN_EMAILS": "janos.meny@googlemail.com",
     // CONTACT_EMAIL: shown on /privacy and /terms (empty: the GitHub issues page)
     "CONTACT_EMAIL": "",
+    // OPENAI_APPS_CHALLENGE: the domain-verification token the OpenAI plugin portal shows, served at /.well-known/openai-apps-challenge
+    "OPENAI_APPS_CHALLENGE": "",
     "CPU_HOURS_MONTH": "100",
     // guests (no sign-in): projects each, machine minutes a day each, guest
     // machines running at once site-wide, days kept after the last visit

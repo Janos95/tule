@@ -865,6 +865,11 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (sameOrigin(req, url) && ["add_claude", "add_chatgpt", "copy_mcp"].includes(k)) await track(env, user, k);
     return new Response(null, { status: 204 });
   }
+  // OpenAI's plugin directory proves we own the domain by fetching this token (plain text)
+  if (path === "/.well-known/openai-apps-challenge") {
+    const token = env.OPENAI_APPS_CHALLENGE ?? "";
+    return token ? new Response(token, { headers: { "content-type": "text/plain" } }) : new Response("Not found", { status: 404 });
+  }
   if (path === "/privacy" && req.method === "GET") return privacyPage(env.CONTACT_EMAIL ?? "", user);
   if (path === "/terms" && req.method === "GET") return termsPage(env.CONTACT_EMAIL ?? "", user);
   if (path === "/authorize") return authorize(req, env, url, user);

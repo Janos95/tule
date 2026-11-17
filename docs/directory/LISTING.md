@@ -92,13 +92,10 @@ Negative (should not call Tule):
 2. "Write a poem about bicycles."
 3. "Convert 3 inches to millimetres."
 
-## Still needed before submitting
+## Status
 
-- [ ] Decide the domain (the ChatGPT listing is bound to the origin).
-- [ ] Set CONTACT_EMAIL, deploy, and check `/privacy` and `/terms` live.
-- [ ] Claude: claude.ai/directory/manage (paid plan). Run each tool once via a
-      custom connector first (the portal asks you to confirm that).
-- [ ] ChatGPT: verify your identity (individual) in the OpenAI Platform
-      dashboard; host the domain challenge at `/.well-known/openai-apps-challenge`
-      (send me the token and I'll add the route); record a short demo video
-      (`demo_recording_url`); write release notes ("First release").
+- Claude: submitted 16 November 2026 (claude.ai/directory/manage).
+- ChatGPT: the plugin package is `openai-plugin/` (zip it as `tule-openai-plugin.zip`
+  and upload at platform.openai.com/plugins). Needs a verified developer identity.
+  Domain challenge: set `OPENAI_APPS_CHALLENGE` in `control/wrangler.jsonc` and deploy.
+  Demo video: `https://tule.computer/demo/tule-chatgpt-demo.mp4` (web/src/demo).

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tule",
+  "version": "1.0.0",
+  "description": "An engineering computer for your AI agent: CAD with OpenCascade, simulation and 3D-print plates on cloud machines, with a live 3D viewer.",
+  "author": {
+    "name": "Janos Meny",
+    "url": "https://tule.computer"
+  },
+  "homepage": "https://tule.computer",
+  "repository": "https://github.com/Janos95/tule",
+  "keywords": [
+    "cad",
+    "3d printing",
+    "engineering",
+    "simulation",
+    "opencascade"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Tule",
+        "shortDescription": "CAD and engineering for agents",
+        "longDescription": "Tule gives your AI agent its own engineering computer. Each project is a Linux machine with OpenCascade, Tule's Python modeling API, meshers, FEA and topology optimization installed. A web viewer shows what the agent builds, live.\n\nAsk for a part, such as \"a wall hook for my bike, 3D printable\". Your agent creates a Tule project, writes the model in Python, renders and checks it itself, and sends you a viewer link. You can rotate the model, open sections and download a print-ready 3MF plate for Bambu Studio, OrcaSlicer or PrusaSlicer. Projects are saved in git, so you can come back and iterate.\n\nWith this plugin your agent can:\n- create, rename, save and delete projects;\n- start and stop machines: Tule cloud CPUs, GPUs on your own RunPod account, or your own computer;\n- list each project's outputs with viewer links, and restore earlier autosaves;\n- manage SSH and API keys for working on the machine.\n\nThe modeling itself runs on the machine through the tule CLI or SSH, which the plugin sets up. It works best in Codex and other agents that can run commands; in a ChatGPT conversation the plugin manages projects and machines and shows results.\n\nYou can try it without an account. Sign in with Google to keep your projects. GPU machines are billed by RunPod to your own RunPod account; Tule never charges you.",
+        "developerName": "Janos Meny",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Create and manage CAD projects",
+          "Start and stop cloud machines",
+          "Show models in a live 3D viewer",
+          "Export 3D-print plates"
+        ],
+        "websiteURL": "https://tule.computer",
+        "supportURL": "https://github.com/Janos95/tule/issues",
+        "privacyPolicyURL": "https://tule.computer/privacy",
+        "termsOfServiceURL": "https://tule.computer/terms",
+        "defaultPrompt": [
+          "Make me a 3D-printable wall hook for a road bike.",
+          "Show my Tule projects and what each one has built.",
+          "Start a 4-core machine for my bracket project."
+        ],
+        "brandColor": "#e0a45a",
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "List projects",
+              "prompt": "What Tule projects do I have?",
+              "tools_triggered": "info",
+              "expected_behavior": "Lists the user's projects with machine state and viewer links, or says there are none yet for a new account."
+            },
+            {
+              "description": "Create a project",
+              "prompt": "Create a Tule project called hook.",
+              "tools_triggered": "project",
+              "expected_behavior": "Creates the project 'hook' and returns its viewer link."
+            },
+            {
+              "description": "Start a machine",
+              "prompt": "Start a machine for my hook project.",
+              "tools_triggered": "machine",
+              "expected_behavior": "Starts a cpu-1 machine for 'hook', waits until /workspace is ready and reports it running."
+            },
+            {
+              "description": "Read the modeling guide",
+              "prompt": "How do I model a part with Tule?",
+              "tools_triggered": "guide",
+              "expected_behavior": "Reads the guide index, then the modeling topic, and explains Tule's modeling workflow."
+            },
+            {
+              "description": "Stop and delete",
+              "prompt": "Stop hook's machine, then delete the hook project.",
+              "tools_triggered": "machine, project",
+              "expected_behavior": "Stops hook's machine (autosaving it), then deletes the project 'hook', which the user asked for explicitly."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Unrelated request: weather",
+              "prompt": "What's the weather in Berlin?"
+            },
+            {
+              "description": "Unrelated request: writing",
+              "prompt": "Write a poem about bicycles."
+            },
+            {
+              "description": "Unit conversion needs no engineering computer",
+              "prompt": "Convert 3 inches to millimetres."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "Tule sells nothing and processes no payments. GPU machines run on the user's own RunPod account and RunPod bills them directly.",
+        "demo_recording_url": "https://tule.computer/demo/tule-chatgpt-demo.mp4"
+      },
+      "publication": {
+        "release_notes": "First release: projects, machines (Tule cloud CPUs, the user's RunPod GPUs or own computers), outputs with viewer links, autosaves and keys."
+      }
+    }
+  }
+}
