@@ -298,7 +298,7 @@ def test_meshed_bodies_carry_the_fields_normals(tmp_path):
 
 def test_normals_after_simplify():
     c = sdf.cylinder(30, 50)
-    m = c.to_mesh(1.5).simplify(0.05)
+    m = c.to_mesh(1.5).simplify(0.05).refine(5)  # (a ruled side simplifies to rim-to-rim triangles)
     assert m._exact_normals is None  # the points moved
     N = c.normals(m.points)
     side = np.abs(m.points[:, 2] - 25) < 20
@@ -314,3 +314,141 @@ def test_normals_on_a_polygon_lathe_never_vanish():
     N = body.normals(P)
     assert np.allclose(N[0], [1, 0, 0], atol=1e-3) and np.allclose(N[1], [0, -1, 0], atol=1e-3)
     assert np.allclose(N[2], [0, 0, -1], atol=1e-3)
+
+
+def _corner_deviation(m):
+    """Largest angle (degrees) between a corner's normal and its triangle's facet, over triangles with area."""
+    from tule.mesh import tri_normals
+    P, T = m.points, m._T
+    Fn, A = tri_normals(P, T)
+    ok = A > 0.05 * np.median(A)
+    d = np.einsum("ijk,ik->ij", m.normals[T].astype(float), Fn)[ok]
+    return np.degrees(np.arccos(np.clip(d, -1, 1)))
+
+
+def test_shade_splits_normals_at_creases(tmp_path):
+    # a vertex on a crease has the field's normal of one side; the other side's triangles shaded toward it
+    # (dark spikes off every crease in a renderer). shade gives each side its own vertex and normal.
+    body = sdf.cylinder(30, 50) | sdf.box(70, 20, 20).at(-35, -10, 15)  # 90° rims, concave union creases
+    m = body.to_mesh(1.5)
+    assert np.percentile(_corner_deviation(m), 99.5) > 60  # one normal per vertex: half the rim is wrong
+    s = body.shade(m)
+    dev = _corner_deviation(s)
+    assert np.percentile(dev, 99.5) < 25 and len(s.points) > len(m.points)
+    assert s.triangles == m.triangles and s.is_closed and s.volume == pytest.approx(m.volume, rel=1e-9)
+    # smooth surfaces keep the field's exact normals (one vertex each, no split)
+    side = (np.abs(s.points[:, 2] - 25) < 8) & (np.linalg.norm(s.points[:, :2], axis=1) > 29.5) & (s.points[:, 1] > 15)
+    radial = s.points[side, :2] / np.linalg.norm(s.points[side, :2], axis=1, keepdims=True)
+    assert side.sum() > 20 and np.einsum("ij,ij->i", s.normals[side, :2], radial).min() > 0.999
+    # a PLY keeps the split (copies of a vertex with different normals stay apart when read back)
+    s.export_ply(tmp_path / "s.ply")
+    back = Mesh.load(tmp_path / "s.ply")
+    assert len(back.points) == len(s.points) and back.is_closed
+    assert np.percentile(_corner_deviation(back), 99.5) < 25
+
+
+def test_shade_keeps_gentle_curvature_smooth():
+    # a torus has no creases: nothing is split, and every normal is the field's
+    body = sdf.torus(40, 12)
+    m = body.to_mesh(1.0).simplify(0.05)
+    s = body.shade(m)
+    assert len(s.points) == len(m.points)
+    assert np.allclose(s.normals, body.normals(s.points), atol=1e-4)
+
+
+def test_meshes_have_no_folds_and_crease_vertices_on_their_creases():
+    # dual contouring folds triangles over (dents on smooth surfaces, notches at creases) and leaves crease
+    # vertices a little off the crease (ragged teeth); to_mesh relaxes the folds out and moves those onto it
+    for body in (sdf.torus(120, 30).rotate(x=11), sdf.box(120, 80, 60) | sdf.sphere(45).at(60, 0, 30),
+                 sdf.cylinder(30, 50) | sdf.cylinder(12, 80).rotate(x=90).at(0, 40, 25)):
+        m = body.to_mesh(2.0)
+        # (what is left: a few slivers flat in a face along a concave crease, under a mm² in all)
+        assert m.is_closed and _folded(body, m) < 5e-5
+    # straddling triangles: a triangle across a crease has its centre well inside or outside the body
+    body = sdf.polygon([(0, 0), (60, 0), (60, 20), (40, 45), (0, 45)]).revolve().rotate(x=13, y=7)
+    m = body.to_mesh(2.0)
+    C = m.points[m._T].mean(1)
+    assert np.percentile(np.abs(body.value(C)), 99.9) < 0.05 * 2.0
+
+
+def test_a_gentle_kink_is_an_edge_and_shades_as_one():
+    # a cone meeting a slightly steeper one (9.5°, as under the chamber's lower ring): dual contouring puts
+    # vertices on the kink, but the fold relax used to drag them off it (its planes didn't pin a gentle
+    # kink), so triangles crossed it and smooth shading smeared it into a ragged band as wide as each one
+    prof = [(0, 0), (60, 0), (56, 10), (58.5, 21), (63, 32), (55, 36), (0, 36)]
+    body = sdf.polygon(prof).revolve()
+    zk = 21.0
+    m = body.to_mesh(1.0)
+    P, T = m.points, m._T
+    C = P[T].mean(1)
+    zt = P[T][:, :, 2]
+    near = (np.abs(np.linalg.norm(C[:, :2], axis=1) - 58.5) < 3) & (np.abs(C[:, 2] - zk) < 3)
+    assert near.sum() > 500 and not (near & (zt.min(1) < zk - 0.1) & (zt.max(1) > zk + 0.1)).any()
+    # an edge chain along it, so shade can split it there (asked to, under its default 15°): each side's
+    # triangles then keep their own normals (not the mean of both)
+    s = body.shade(m, angle=5)
+    P, T, N = s.points, s._T, s.normals.astype(float)
+    C = P[T].mean(1)
+    k = np.abs(C[:, 2] - zk) < 3
+    err = []
+    for j in range(3):
+        G = body.normals(P[T[k, j]] + 0.25 * (C[k] - P[T[k, j]]))
+        err.append(np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", N[T[k, j]], G), -1, 1))))
+    assert np.percentile(np.max(err, 0), 90) < 2
+
+
+def test_band_seams_meet_on_the_surface():
+    # a fine band and the coarse rest are meshed as closed pieces: their outlines on the shared plane are
+    # moved onto the body's own outline, and the pieces joined (a union) into one closed solid: no inner
+    # caps, no crack between the two outlines, the seam on the surface
+    body = sdf.cylinder(40, 60).rotate(x=8)
+    m = body.to_mesh(2.0, fine=[((-60, -60, 25), (60, 60, 35), 0.4)])
+    assert m.is_closed and "joined into one solid" in m.history[-1]
+    assert len(m.pieces()) == 1 and abs(m.volume / (math.pi * 40**2 * 60) - 1) < 2e-3
+    from tule.mesh import tri_normals
+    P, T = m.points, m._T
+    Fn, A = tri_normals(P, T)
+    for z in (25.0, 35.0):
+        on = np.abs(P[:, 2] - z) < 1e-6
+        assert on.sum() > 100 and np.abs(body.value(P[on])).max() < 1e-4
+        # the caps where the pieces met are gone: what is left on the plane is the sliver between the two
+        # outlines' chords (hundredths of a mm wide), on the surface
+        cap = (np.abs(P[T, 2] - z) < 1e-6).all(1) & (np.abs(Fn[:, 2]) > 0.99)
+        assert A[cap].sum() < 0.005 * math.pi * 40**2
+        assert np.abs(body.value(P[T[cap]].mean(1))).max() < 0.2
+
+
+def test_banded_pieces_join_without_bridging_the_band_detail():
+    # the coarse rest (no channels) and the fine band (channels) are joined into one closed solid; a rest
+    # vertex dual contouring placed past the band's face would fill part of a channel once joined
+    w = sdf.Wall([0, 300], [100, 100])
+    liner = w.solid(0, 5)
+    body = liner - w.channels(40, width=3, depth=2, offset=1.5, z=(10, 290))
+    m = body.to_mesh(4, fine=[((-200, -6, -10), (200, 6, 310), 0.5)], rest=liner)
+    assert m.is_closed and "joined into one solid" in m.history[-1]
+    # one solid: its other shells are the channels' ends inside the band, sealed by the rest (voids)
+    shells = m.pieces()
+    assert shells[0].volume > 0 and all(p.volume < 0 for p in shells[1:])
+    P, T = m.points, m._T
+    C = P[T].mean(1)
+    size = np.linalg.norm(P[T] - np.roll(P[T], 1, axis=1), axis=2).max(1)
+    inside = (np.abs(C[:, 1]) < 5.5) & (C[:, 2] > 12) & (C[:, 2] < 288)
+    # in the band the surface is the body's (channels and all): no triangle across a channel
+    assert inside.sum() > 2000 and (np.abs(body.value(C[inside])) < 0.1 * size[inside] + 0.02).all()
+    # shading uses the field the mesh is of (the rest's outside the band): to_mesh's tidy is kept
+    s = body.shade(m)
+    assert len(s.indices) == len(T) and np.allclose(np.unique(s.points, axis=0), np.unique(P, axis=0))
+
+
+def test_tol_is_a_distance_whatever_the_octree():
+    # Fidget merges cells where the surface stays within tol (mm): a body meshed inside larger bounds
+    # (a larger octree, same cell) merges about as much; a smaller tol keeps more triangles, all near it
+    body = sdf.torus(30, 9).rotate(x=17)
+    a = body.to_mesh(0.5, tol=0.05, bounds=((-45, -45, -45), (45, 45, 45)))
+    b = body.to_mesh(0.5, tol=0.05, bounds=((-90, -90, -90), (90, 90, 90)))
+    assert a.triangles == pytest.approx(b.triangles, rel=0.15)
+    fine = body.to_mesh(0.5, tol=0.005, bounds=((-45, -45, -45), (45, 45, 45)))
+    assert fine.triangles > 1.5 * a.triangles
+    for m, tol in ((a, 0.05), (fine, 0.005)):
+        C = m.points[m._T].mean(1)
+        assert np.abs(body.value(C)).mean() < tol

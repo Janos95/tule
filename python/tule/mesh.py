@@ -1019,14 +1019,23 @@ class Mesh(Looks):
         an STL Tule wrote keeps its regions."""
         path = os.fspath(path)
         ext = os.path.splitext(path)[1].lower()
-        F, meta, N = None, {}, None
+        F, meta, N, split = None, {}, None, False
         if ext == ".ply":
             P0, T0, F, meta, N0 = read_ply(path)
-            P, T, keep = weld(P0, T0, 0.0)
+            if N0 is not None and len(T0):
+                # copies of a vertex with different normals (split at a crease for shading) stay apart
+                key = np.hstack([np.asarray(P0, np.float32), np.asarray(N0, np.float32)])
+                _, first, lab = np.unique(key, axis=0, return_index=True, return_inverse=True)
+                F2 = lab.reshape(-1)[T0]
+                keep = np.flatnonzero((F2[:, 0] != F2[:, 1]) & (F2[:, 1] != F2[:, 2]) & (F2[:, 0] != F2[:, 2]))
+                used, inv = np.unique(F2[keep], return_inverse=True)
+                P, T = np.asarray(P0, np.float64)[first[used]], inv.reshape(-1, 3)
+                N = np.asarray(N0, np.float32)[first[used]]
+                split = len(np.unique(P, axis=0)) < len(P)
+            else:
+                P, T, keep = weld(P0, T0, 0.0)
+                split = False
             F = F[keep] if F is not None else None
-            if N0 is not None and len(T):  # each welded vertex keeps the normal of one of its copies
-                N = np.zeros((len(P), 3), np.float32)
-                N[T.reshape(-1)] = N0[T0[keep].reshape(-1)]
         elif ext == ".stl":
             tri, attr, head = read_stl(path)
             P0, T0 = tri.reshape(-1, 3), np.arange(3 * len(tri)).reshape(-1, 3)
@@ -1041,7 +1050,8 @@ class Mesh(Looks):
         base = os.path.splitext(os.path.basename(path))[0]
         return Mesh(P, T, face_ids=F, normals=N, tags=meta.get("tags"), name=name or meta.get("name") or base, color=meta.get("color"),
                     material=meta.get("material"), edges=[] if meta.get("edges") == "none" else None,
-                    history=tuple(meta.get("history", ())) or (f"read from {os.path.basename(path)}",), welded=True)
+                    history=tuple(meta.get("history", ())) or (f"read from {os.path.basename(path)}",),
+                    welded=not (ext == ".ply" and split))
 
     def _meta(self) -> dict:
         from .io import color_hex, parse_rgba

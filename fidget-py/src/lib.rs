@@ -131,13 +131,18 @@ fn eval<'py>(py: Python<'py>, ops: Vec<Op>, xyz: &[u8], grad: bool) -> PyResult<
 /// `depth` levels (2^depth cells across), by Fidget's manifold dual contouring (sharp edges kept).
 /// Returns (vertices: n*3 f32 bytes, triangles: m*3 u32 bytes), and with `normals=True` also
 /// normals: n*3 f32 bytes, the field's unit gradient at each vertex (zero where it has no direction).
+/// `tol` (model units): cells merge where the merged vertex stays within it of the cells' surface
+/// samples (root of the summed squared plane distances); None for Fidget's relative rule.
 #[pyfunction]
-#[pyo3(signature = (ops, center, half, depth, normals=false))]
-fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: u8, normals: bool)
+#[pyo3(signature = (ops, center, half, depth, normals=false, tol=None))]
+fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: u8, normals: bool, tol: Option<f32>)
     -> PyResult<Bound<'py, PyTuple>> {
     let want_normals = normals;
     if !(half > 0.0) || depth == 0 || depth > 12 {
         return Err(PyValueError::new_err("half > 0 and 1 <= depth <= 12"));
+    }
+    if tol.is_some_and(|t| !(t >= 0.0)) {
+        return Err(PyValueError::new_err("tol >= 0"));
     }
     let (verts, tris, normals) = py.detach(|| -> PyResult<(Vec<f32>, Vec<u8>, Vec<f32>)> {
         let (ctx, root) = build(&ops)?;
@@ -146,7 +151,7 @@ fn mesh<'py>(py: Python<'py>, ops: Vec<Op>, center: [f32; 3], half: f32, depth: 
         // Fidget applies this to the octree's [-1, 1] cube to get model coordinates (despite its name)
         let world_to_model = nalgebra::Translation3::new(center[0], center[1], center[2]).to_homogeneous()
             * nalgebra::Matrix4::new_scaling(half);
-        let settings = Settings { depth, world_to_model, threads: Some(&ThreadPool::Global), ..Default::default() };
+        let settings = Settings { depth, world_to_model, threads: Some(&ThreadPool::Global), max_err: tol, ..Default::default() };
         let octree = Octree::build(&bound, &settings).ok_or_else(|| PyValueError::new_err("meshing was cancelled"))?;
         let m = octree.walk_dual();
         let verts: Vec<f32> = m.vertices.iter().flat_map(|v| [v.x, v.y, v.z]).collect();
@@ -196,5 +201,6 @@ fn tule_fidget(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mesh, m)?)?;
     m.add_function(wrap_pyfunction!(normals, m)?)?;
     m.add("FIDGET_VERSION", "0.5.1")?;
+    m.add("MESH_TOL", true)?; // mesh(tol=...) is supported
     Ok(())
 }

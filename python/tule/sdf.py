@@ -278,11 +278,28 @@ def _count(root: Expr) -> int:
 
 
 def _has_grid(root: Expr) -> bool:
+    hit = _OPS_CACHE.get(id(root))
+    if hit is not None and hit[0] is root:
+        return any(o[0] == "grid" for o in hit[1])
     return any(n.op == "grid" for n in _nodes(root))
+
+
+_OPS_CACHE: dict = {}  # id(root) -> (root, ops): the last few, held so the ids stay theirs
 
 
 def _ops(root: Expr) -> list[tuple]:
     """The node list the Fidget bindings take: (op, a, b, value)."""
+    hit = _OPS_CACHE.get(id(root))
+    if hit is not None and hit[0] is root:
+        return hit[1]
+    out = _ops_of(root)
+    if len(_OPS_CACHE) >= 8:
+        _OPS_CACHE.pop(next(iter(_OPS_CACHE)))
+    _OPS_CACHE[id(root)] = (root, out)
+    return out
+
+
+def _ops_of(root: Expr) -> list[tuple]:
     order = _nodes(root)
     index = {id(n): i for i, n in enumerate(order)}
     out = []
@@ -363,12 +380,29 @@ def _np_eval(root: Expr, P: np.ndarray) -> np.ndarray:
     return out
 
 
+_THREAD_POINTS = 1 << 16  # points per thread, at least: below that one call is quicker than starting threads
+
+
+def _fg_points(fn, ops, P, *args) -> bytes:
+    """``fn(ops, xyz bytes, *args)`` (a Fidget binding that answers per point, in order) on points (n, 3),
+    split over threads for many points: the bindings let go of the GIL, so the pieces run at once."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    P = np.ascontiguousarray(P, dtype=np.float32)
+    k = builtins.min(os.cpu_count() or 1, 16, len(P) // _THREAD_POINTS)
+    if k <= 1:
+        return fn(ops, P.tobytes(), *args)
+    with ThreadPoolExecutor(k) as ex:
+        return b"".join(ex.map(lambda Q: fn(ops, Q.tobytes(), *args), np.array_split(P, k)))
+
+
 def evaluate(root: Expr, points, grad: bool = False) -> np.ndarray:
     """Values (n,), or values and gradients (n, 4), at points (n, 3)."""
     P = np.ascontiguousarray(np.asarray(points, dtype=np.float64).reshape(-1, 3))
     fg = _fidget()
     if fg is not None and not _has_grid(root):
-        raw = fg.eval(_ops(root), P.astype(np.float32).tobytes(), grad)
+        raw = _fg_points(fg.eval, _ops(root), P, grad)
         return np.frombuffer(raw, np.float32).astype(np.float64).reshape((-1, 4) if grad else (-1,))
     if fg is None:
         _note_numpy("the tule_fidget module is not installed")
@@ -613,6 +647,41 @@ class Implicit(Looks):
         P = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         return _field_normals(self.expr, P, step / 0.05)
 
+    def shade(self, mesh, angle: float = 15.0, tidy: bool = True):
+        """``mesh`` (of this body, e.g. after ``simplify``/``refine``) with normals for rendering: the field's,
+        and its vertices split along the body's creases (edges sharper than ``angle`` degrees), each side
+        with its own normal, so smooth shading keeps creases crisp. A single normal per vertex at a crease
+        belongs to one side only and the other side's triangles shade toward it (dark spikes off every
+        crease). Gentler kinks (a polyline profile standing for a curve) are left to shade smoothly across
+        the triangles beside them (their vertices are on the kink: to_mesh's tidy keeps them there).
+        ``tidy``: folded triangles (simplify leaves a few) are relaxed out first, on the surface (a mesh
+        straight from ``to_mesh`` is tidied there already, piece by piece at its own cell).
+        The result keeps the triangles (and regions); it has more vertices (``Mesh.is_closed`` still holds)."""
+        from .mesh import Mesh
+
+        P, T = mesh.points, mesh._T
+        # the field the mesh was made from, if it is to_mesh's own (with rest=: the rest's outside the fine boxes)
+        ex = getattr(mesh, "_sdf_expr", None)
+        ex = self.expr if ex is None else ex
+        size = float(np.linalg.norm(P.max(0) - P.min(0))) if len(P) else 1.0
+        cell = builtins.max(size / 2000, 1e-6)  # the field's finite-difference scale where it has no gradient
+        if tidy and len(T) and getattr(mesh, "_sdf_expr", None) is None:
+            fold = _folded(ex, P, T, _field_normals(ex, P, cell).astype(np.float64))
+            if fold.any():
+                from .mesh import edge_table
+                E, _, _ = edge_table(T)
+                # each vertex's own scale: its edges' mean length (pieces meshed at different cells)
+                L = np.linalg.norm(P[E[:, 0]] - P[E[:, 1]], axis=1)
+                edge = np.bincount(E.reshape(-1), np.repeat(L, 2), len(P)) / np.maximum(np.bincount(E.reshape(-1), minlength=len(P)), 1)
+                edge = np.minimum(edge, 2 * float(np.median(L)))  # not a big flat triangle's size
+                P = _tidy(ex, P, T, edge)
+        N = _field_normals(ex, P, cell)
+        P2, T2, N2 = _shade(ex, P, T, N, cell, angle)
+        out = Mesh(P2, T2, face_ids=mesh.face_ids, normals=N2, tags=mesh._tags, name=mesh.name, color=mesh.color,
+                   history=mesh.history + (f"normals split at creases over {angle:g}°",), welded=False,
+                   edges=mesh._edges)
+        return out
+
     def contains(self, points) -> np.ndarray:
         return self.value(points) < 0
 
@@ -726,7 +795,8 @@ class Implicit(Looks):
         return self._affine(R, c - R @ c)
 
     # meshing
-    def to_mesh(self, cell: float | None = None, bounds=None, fine=None, rest: "Implicit | None" = None) -> "object":
+    def to_mesh(self, cell: float | None = None, bounds=None, fine=None, rest: "Implicit | None" = None,
+                tol: float | None = None) -> "object":
         """This body as a closed ``tule.Mesh`` (Fidget: JIT evaluation and dual contouring, sharp edges
         kept). ``cell`` (mm) is the smallest octree cell: detail under it is lost (default: a 128th of
         the largest size). ``bounds`` (lo, hi) clips it; an unbounded body (a bare lattice) needs them.
@@ -735,7 +805,12 @@ class Implicit(Looks):
         (banded meshing: 1 mm channels at a cutaway plane of a 3 m part). Each box and the rest are
         closed pieces that meet face to face; a region too large for one octree is split the same way.
         ``rest``: another body meshed outside the fine boxes instead of this one (the same part without its
-        hidden detail, e.g. the wall without its cooling channels, so the coarse cells don't chew on them)."""
+        hidden detail, e.g. the wall without its cooling channels, so the coarse cells don't chew on them).
+        The pieces are joined into one closed solid (a manifold3d union along the shared planes).
+
+        ``tol`` (mm): octree cells merge into larger triangles where the surface stays within it (default a
+        quarter of ``cell``). The same in every chunk of a region, however large; a fine box scales it with
+        its cell (a box at a tenth of the cell keeps a tenth of the tolerance)."""
         from .mesh import Mesh
 
         b = _bounds(bounds) if bounds is not None else self.bounds
@@ -747,6 +822,8 @@ class Implicit(Looks):
         cell = float(cell) if cell else size / 128
         if cell <= 0:
             raise TuleError("cell must be > 0 mm", op="to_mesh")
+        if tol is not None and not tol >= 0:
+            raise TuleError("tol must be >= 0 mm", op="to_mesh")
         e = self.expr
         if rest is not None and not fine:
             raise TuleError("rest= is what is meshed outside the fine= boxes: give fine= too", op="to_mesh")
@@ -760,8 +837,8 @@ class Implicit(Looks):
         e_rest = e if rest is None else max(self._other(rest, "to_mesh rest").expr, closing)
         fg = _fidget()
         sampled = fg is None or _has_grid(e)
-        pieces = []  # (expr, lo, hi, cell)
-        taken = None
+        pieces = []  # (expr, lo, hi, cell, boxes of the pieces before it)
+        taken, boxes = None, []
         for f in fine or ():
             try:
                 flo, fhi, fc = np.array(vec(f[0]), dtype=float), np.array(vec(f[1]), dtype=float), float(f[2])
@@ -773,11 +850,15 @@ class Implicit(Looks):
                 continue
             fb = box_between(tuple(flo), tuple(fhi)).expr
             pe = max(e, fb) if taken is None else max(e, fb, -taken)
-            pieces.append((pe, flo, fhi, fc))
+            pieces.append((pe, flo, fhi, fc, list(boxes)))
             taken = fb if taken is None else min(taken, fb)
-        pieces.append((e_rest if taken is None else max(e_rest, -taken), lo, hi, cell))
-        chunks = []
-        for pe, plo, phi, pc in pieces:
+            boxes.append((flo, fhi))
+        pieces.append((e_rest if taken is None else max(e_rest, -taken), lo, hi, cell, list(boxes)))
+        # the field the mesh is of: the body's in the fine boxes, ``rest``'s outside them (the rest without
+        # the body's hidden detail D outside the boxes: rest - (D & boxes), D = rest - body)
+        e_mesh = e if rest is None or taken is None else max(e_rest, min(e, -e_rest, -taken))
+        chunks, outside = [], []
+        for pe, plo, phi, pc, excl in pieces:
             # an octree is at most 2^12 cells across (or 2.5e8 samples for marching cubes): split bigger regions
             limit = 600.0 if sampled else 3800.0
             n = np.maximum(1, np.ceil((phi - plo) / (pc * limit))).astype(int)
@@ -792,16 +873,20 @@ class Implicit(Looks):
                         chi = np.array([edges[0][i + 1], edges[1][j + 1], edges[2][k + 1]])
                         ce = pe if n.prod() == 1 else max(pe, box_between(tuple(clo), tuple(chi)).expr)
                         chunks.append((ce, clo, chi, pc))
-        Ps, Ts, Ns, hows, off = [], [], [], [], 0
-        for ce, clo, chi, cc in chunks:
-            got = self._mesh_piece(ce, clo, chi, cc, fg)
+                        outside.append(excl)
+        Ps, Ts, Ns, hows, off, sizes = [], [], [], [], 0, []
+        for (ce, clo, chi, cc), excl in zip(chunks, outside):
+            got = self._mesh_piece(ce, clo, chi, cc, fg, (0.25 * cell if tol is None else tol) * cc / cell)
             if got is None:
                 continue
             P, T, N, how = got
+            if len(chunks) > 1:
+                _keep_in_place(ce, P, N, clo, chi, lo, hi, excl, cc)
             Ps.append(P)
             Ns.append(N)
             Ts.append(T + off)
             off += len(P)
+            sizes.append((len(P), len(T)))
             hows.append(how)
         if not Ps:
             raise TuleError("the body has no surface inside its bounds", op="to_mesh",
@@ -809,8 +894,18 @@ class Implicit(Looks):
         # the field's own gradient as the vertex normals (Fidget's, from the meshing): exact shading, where
         # normals averaged from the triangles wobble with dual contouring's vertex placement (drawing still
         # splits them at creases)
-        m = Mesh(np.vstack(Ps), np.vstack(Ts), normals=np.vstack(Ns), name=self.name, color=self.color, welded=True)
-        how = hows[0] if len(hows) == 1 else (f"meshed in {len(hows)} closed pieces (cells "
+        PP, TT, NN = np.vstack(Ps), np.vstack(Ts), np.vstack(Ns)
+        joined = ""
+        if len(hows) > 1:
+            planes = _zip_seams(e_mesh, PP, TT, NN, chunks, lo, hi)
+            got = _union_pieces(e_mesh, PP, TT, NN, sizes, planes, builtins.min(c[3] for c in chunks))
+            if got is None:
+                joined = " stacked (the union failed: inner faces kept)"
+            else:
+                PP, TT, NN = got
+                joined = " joined into one solid"
+        m = Mesh(PP, TT, normals=NN, name=self.name, color=self.color, welded=True)
+        how = hows[0] if len(hows) == 1 else (f"meshed in {len(hows)} pieces{joined} (cells "
                                               f"{', '.join(sorted({f'{c[3]:g}' for c in chunks}, key=float))} mm), {hows[-1].split(' (')[0]}")
         m.history = self.history + (how,)
         for tag, fn in self._tags.items():
@@ -819,11 +914,12 @@ class Implicit(Looks):
             except TuleError as err:
                 raise TuleError(f"tag {tag!r} selects nothing on the mesh", op="to_mesh",
                                 hint="check the predicate against mesh.faces (bounds, tol=)") from err
+        m._sdf_expr = e_mesh  # for shade: with rest=, the mesh is of another field outside the fine boxes
         return m
 
-    def _mesh_piece(self, e, lo, hi, cell, fg):
+    def _mesh_piece(self, e, lo, hi, cell, fg, tol=None):
         """(points, triangles, normals, how) of the closed surface of ``e`` in the box lo–hi, or None if
-        empty there."""
+        empty there. ``tol``: Fidget's collapse tolerance (mm; None: a quarter of the cell)."""
         half = float((hi - lo).max()) / 2 + 2 * cell
         depth = builtins.max(1, int(math.ceil(math.log2(2 * half / cell))))
         got = 2 * half / 2 ** depth
@@ -834,10 +930,20 @@ class Implicit(Looks):
         if fg is not None and not _has_grid(e):
             if depth > 12:
                 raise TuleError(f"cells of {cell:g} mm across {2 * half:.4g} mm are too many", op="to_mesh")
-            vb, tb, nb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth, normals=True)
+            if getattr(fg, "MESH_TOL", False):
+                vb, tb, nb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth, normals=True,
+                                     tol=float(0.25 * cell if tol is None else tol))
+            else:  # an older tule_fidget: Fidget's own (relative) collapse rule
+                vb, tb, nb = fg.mesh(_ops(e), [float(c) for c in center], float(half), depth, normals=True)
             P = np.frombuffer(vb, np.float32).reshape(-1, 3).astype(np.float64)
             T = np.frombuffer(tb, np.uint32).reshape(-1, 3).astype(np.int64)
             N = np.frombuffer(nb, np.float32).reshape(-1, 3).copy()
+            # crease vertices onto their creases, folds relaxed out (see _tidy), normals where they moved
+            P0 = P
+            P = _tidy(e, P, T, got)
+            moved = np.flatnonzero(np.any(P != P0, axis=1))
+            if len(moved):
+                N[moved] = _field_normals(e, P[moved], got)
             how = f"meshed by Fidget (dual contouring, cells {got:.3g} mm: detail under a cell lost)"
         else:
             if fg is None:
@@ -867,11 +973,401 @@ def _field_normals(e: Expr, P: np.ndarray, cell: float) -> np.ndarray:
         return np.zeros((0, 3), np.float32)
     fg = _fidget()
     if fg is not None and not _has_grid(e):
-        raw = fg.normals(_ops(e), np.ascontiguousarray(P, np.float32).tobytes(), float(0.05 * cell))
+        raw = _fg_points(fg.normals, _ops(e), P, float(0.05 * cell))
         return np.frombuffer(raw, np.float32).reshape(-1, 3).copy()
     g = evaluate(e, P, grad=True)[:, 1:]
     n = np.linalg.norm(g, axis=1, keepdims=True)
     return np.nan_to_num(g / np.maximum(n, 1e-12)).astype(np.float32)
+
+
+def _planes(e: Expr, Q: np.ndarray):
+    """The field's tangent planes at points: (offset, unit normal, has a gradient). The surface near q is
+    n·(x − q) + offset = 0 (the value over the gradient's length: a first-order step to it)."""
+    g = evaluate(e, Q, grad=True)
+    G = g[:, 1:]
+    gl = np.linalg.norm(G, axis=1)
+    ok = np.isfinite(gl) & (gl > 1e-9) & np.isfinite(g[:, 0])
+    gl = np.where(ok, gl, 1.0)
+    f, n = np.where(ok, g[:, 0] / gl, 0.0), np.where(ok[:, None], G / gl[:, None], 0.0)
+    if not ok.all():  # an exact distance has no gradient on its surface (a box's face): central differences
+        bad = np.flatnonzero(~ok & np.isfinite(g[:, 0]))
+        if len(bad):
+            n[bad] = _field_normals(e, Q[bad], 0.1)
+            f[bad] = g[bad, 0]
+            ok[bad] = np.einsum("ij,ij->i", n[bad], n[bad]) > 0.5
+    return f, n, ok
+
+
+def _onto_surface(e: Expr, X: np.ndarray, steps: int = 3) -> np.ndarray:
+    """Points moved onto the surface along the gradient (Newton steps)."""
+    for _ in range(steps):
+        f, n, _ = _planes(e, X)
+        X = X - f[:, None] * n
+    return X
+
+
+def _qef(AtA: np.ndarray, Atd: np.ndarray, X0: np.ndarray, rel: float = 0.02):
+    """The points nearest X0 (k, 3) that best meet each one's planes (∑ n nᵀ, ∑ n d for planes n·x = d),
+    directions the planes don't pin (eigenvalues under ``rel`` of the largest) left as they are; and how
+    many directions they pin (1 on a smooth surface, 2 on a crease, 3 at a corner)."""
+    w, U = np.linalg.eigh(AtA)
+    big = w > rel * w[:, -1:]
+    inv = np.where(big, 1.0 / np.where(big, w, 1.0), 0.0)
+    r = Atd - np.einsum("kij,kj->ki", AtA, X0)
+    return X0 + np.einsum("kij,kj,klj,kl->ki", U, inv, U, r), big.sum(1)
+
+
+def _folded(e: Expr, P: np.ndarray, T: np.ndarray, N: np.ndarray) -> np.ndarray:
+    """Triangles that face against the field's gradient at their centre (folds of the mesh)."""
+    from .mesh import tri_normals
+
+    Fn, _ = tri_normals(P, T)
+    Gm = N[T].sum(1)
+    cand = np.flatnonzero(np.einsum("ij,ij->i", Fn, Gm) < 0.5 * np.linalg.norm(Gm, axis=1))
+    bad = np.zeros(len(T), bool)
+    if len(cand):
+        _, gc, _ = _planes(e, P[T[cand]].mean(1))
+        bad[cand] = np.einsum("ij,ij->i", Fn[cand], gc) < 0
+    return bad
+
+
+# _tidy's planes: a direction they pin less than this (eigenvalue to the largest) is left free. Small enough
+# that two planes 5° apart pin their meeting line (a gentle kink), in the snap and in the fold relax alike
+GENTLE = 0.002
+
+
+def _tidy(e: Expr, P: np.ndarray, T: np.ndarray, cell, rounds: int = 20) -> np.ndarray:
+    """Dual contouring's vertices cleaned up against the field (the triangles stay):
+
+    * near a crease, a vertex off it (a cell that saw one of the two surfaces) is moved onto it: the point
+      nearest it on the planes the field has around it (the corners' sides), as dual contouring places a
+      vertex. Off the crease such a vertex makes ragged teeth along it, and its triangles straddle it;
+    * where triangles fold over (face against the gradient: dents on smooth surfaces, notches at creases),
+      the vertices around them are relaxed toward their neighbours' mean, on the surface (along it, and back
+      onto it), crease vertices along their crease, until nothing folds (or ``rounds`` is reached).
+
+    Vertices move at most a cell (creases) or two cells (folds). ``cell``: a number, or one per vertex (a
+    mesh of pieces at different cells: its local edge length)."""
+    from scipy.sparse import coo_matrix
+
+    from .mesh import edge_table
+
+    P = np.array(P, dtype=np.float64)
+    n = len(P)
+    if not len(T):
+        return P
+    cell = np.broadcast_to(np.asarray(cell, dtype=np.float64), (n,))
+    fv, Nv, okv = _planes(e, P)
+    # vertices off the surface stay as they are (and so do their triangles): a piece's cap where a band
+    # or chunk meets the next one, meshed against another field than this one
+    okv &= np.abs(fv) < 0.25 * cell
+    tri = P[T]
+    size = np.linalg.norm(tri - np.roll(tri, 1, axis=1), axis=2).max(1)
+    off = np.abs(evaluate(e, tri.mean(1))) > 0.1 * size + 1e-9  # a triangle well inside or outside
+    okv[T[off].reshape(-1)] = False
+    on = okv.copy()
+    # vertices of triangles whose corners' normals disagree (by 5°): near a crease, or folded. A gentle kink
+    # counts: an 8° change of slope that the triangles cross shades as a ragged band in smooth shading
+    Nt = Nv[T]
+    cos5 = math.cos(math.radians(5))
+    d = np.minimum(np.minimum(np.einsum("ij,ij->i", Nt[:, 0], Nt[:, 1]), np.einsum("ij,ij->i", Nt[:, 1], Nt[:, 2])),
+                   np.einsum("ij,ij->i", Nt[:, 2], Nt[:, 0]))
+    near = np.zeros(n, bool)
+    near[T[d < cos5].reshape(-1)] = True
+    # their corners' sides: the field's plane a third of the way to each triangle's centre
+    ct = np.flatnonzero(near[T].any(1))
+    cv, ctt = T[ct].reshape(-1), np.repeat(ct, 3)
+    keep = near[cv]
+    cv, ctt = cv[keep], ctt[keep]
+    q = P[cv] + 0.3 * (P[T[ctt]].mean(1) - P[cv])
+    fq, nq, okq = _planes(e, q)
+    # a sample well off the surface isn't on one of its sides (a closed piece's cap inside the body)
+    okq &= np.abs(fq) < 0.5 * np.linalg.norm(q - P[cv], axis=1) + 1e-9
+    cv, q, fq, nq = cv[okq], q[okq], fq[okq], nq[okq]
+    spread = np.ones(n)
+    np.minimum.at(spread, cv, np.einsum("ij,ij->i", nq, Nv[cv]))
+    sel = near & okv & (spread < cos5)
+    idx = np.flatnonzero(sel)
+    loc = np.full(n, -1)
+    loc[idx] = np.arange(len(idx))
+    r = sel[cv]
+    cv, q, fq, nq = cv[r], q[r], fq[r], nq[r]
+    AtA = np.zeros((len(idx), 3, 3))
+    Atd = np.zeros((len(idx), 3))
+    dq = np.einsum("ij,ij->i", nq, q) - fq
+    np.add.at(AtA, loc[cv], nq[:, :, None] * nq[:, None, :])
+    np.add.at(Atd, loc[cv], nq * dq[:, None])
+    nv = Nv[idx]
+    AtA += nv[:, :, None] * nv[:, None, :]
+    Atd += nv * (np.einsum("ij,ij->i", nv, P[idx]) - fv[idx])[:, None]
+    crease = np.zeros(n, bool)
+    if len(idx):
+        X, rank = _qef(AtA, Atd, P[idx], rel=GENTLE)
+        # a crease point is on the surface; where the planes are a curved surface's (big triangles on a
+        # tight curve), their meeting line is off it (by the sagitta): no crease there
+        ok = (np.linalg.norm(X - P[idx], axis=1) < cell[idx]) & (np.abs(evaluate(e, X)) < 0.05 * cell[idx])
+        P[idx[ok]] = X[ok]
+        crease[idx[ok & (rank >= 2)]] = True
+        fv[idx], Nv[idx], okv[idx] = _planes(e, P[idx])
+    # folds out
+    tri_on = on[T].all(1)
+    bad = _folded(e, P, T, Nv) & tri_on
+    if not bad.any():
+        return P
+    E, _, _ = edge_table(T)
+    adj = coo_matrix((np.ones(2 * len(E)), (np.r_[E[:, 0], E[:, 1]], np.r_[E[:, 1], E[:, 0]])), shape=(n, n)).tocsr()
+    deg = np.maximum(np.asarray(adj.sum(1)).ravel(), 1)
+    vt = coo_matrix((np.ones(3 * len(T)), (T.reshape(-1), np.repeat(np.arange(len(T)), 3))), shape=(n, len(T))).tocsr()
+    best, stale = int(bad.sum()), 0
+    P0 = P.copy()
+    for _ in range(rounds):
+        S = np.zeros(n, bool)
+        S[T[bad].reshape(-1)] = True
+        for _ in range(2):  # two rings around
+            S |= adj @ S.astype(float) > 0
+        act = np.flatnonzero(S & okv & on)
+        L = (adj[act] @ P) / deg[act, None] - P[act]
+        cr = crease[act]
+        nn = Nv[act]
+        L[~cr] -= np.einsum("ij,ij->i", L[~cr], nn[~cr])[:, None] * nn[~cr]
+        X = P[act] + 0.8 * L
+        if cr.any():
+            k = loc[act[cr]]
+            X[cr], _ = _qef(AtA[k], Atd[k], X[cr], rel=GENTLE)
+        X[~cr] = _onto_surface(e, X[~cr], 2)
+        far = np.linalg.norm(X - P0[act], axis=1) > 2 * cell[act]  # in all, not per round
+        X[far] = P[act[far]]
+        old = P[act].copy(), fv[act], Nv[act], okv[act]
+        P[act] = X
+        fv[act], Nv[act], okv[act] = _planes(e, P[act])
+        tri = np.unique(vt[act].indices)
+        now = _folded(e, P, T[tri], Nv) & tri_on[tri]
+        # a move that folds a triangle that wasn't (a long step across a big flat triangle) is taken back
+        worse = tri[now & ~bad[tri]]
+        if len(worse):
+            back = np.zeros(n, bool)
+            back[T[worse].reshape(-1)] = True
+            k = back[act]
+            P[act[k]], fv[act[k]], Nv[act[k]], okv[act[k]] = old[0][k], old[1][k], old[2][k], old[3][k]
+            now = _folded(e, P, T[tri], Nv) & tri_on[tri]
+        bad[tri] = now
+        left = int(bad.sum())
+        if not left:
+            break
+        best, stale = (left, 0) if left < best else (best, stale + 1)
+        if stale >= 3:  # what is left doesn't unfold this way (slivers along a crease, no area)
+            break
+    return P
+
+
+def _keep_in_place(e: Expr, P: np.ndarray, N: np.ndarray, clo, chi, lo, hi, excl, cell: float) -> None:
+    """A piece's vertices that dual contouring placed past its own box (into the next piece), or inside a
+    box meshed as another piece, moved back onto that box's face (in place). Its surface is clipped there,
+    but a vertex can sit up to a cell off; past the face, the pieces overlap, and once they are joined the
+    overlap fills in the other piece's detail (a cooling channel bridged by the coarse rest's wall)."""
+    moved = np.zeros(len(P), bool)
+    for ax in range(3):  # its own box's inner faces (not the body's outer bounds)
+        if clo[ax] > lo[ax]:
+            k = P[:, ax] < clo[ax]
+            P[k, ax], moved = clo[ax], moved | k
+        if chi[ax] < hi[ax]:
+            k = P[:, ax] > chi[ax]
+            P[k, ax], moved = chi[ax], moved | k
+    for blo, bhi in excl:  # out of the boxes meshed before it, across the nearest face
+        inside = np.all((P > blo) & (P < bhi), axis=1)
+        if not inside.any():
+            continue
+        Q = P[inside]
+        d = np.hstack([Q - blo, bhi - Q])  # depth past each face
+        f = d.argmin(1)
+        ok = d[np.arange(len(Q)), f] < 2 * cell  # a vertex deeper in is not a placement error
+        ax, hi_side = f % 3, f >= 3
+        Q[ok, ax[ok]] = np.where(hi_side[ok], bhi[ax[ok]], blo[ax[ok]])
+        P[inside] = Q
+        idx = np.flatnonzero(inside)[ok]
+        moved[idx] = True
+    if moved.any():
+        N[moved] = _field_normals(e, P[moved], cell)
+
+
+def _zip_seams(e: Expr, P: np.ndarray, T: np.ndarray, N: np.ndarray, chunks, lo, hi) -> list:
+    """Where closed pieces meet (a fine band and the rest, chunks of a big region), each piece's outline on
+    the shared plane is moved onto the body's own outline there (in place): along the plane, onto the
+    surface. Each piece places those vertices from its own cells; meshed at different cells the two
+    outlines differ by a fraction of the coarse cell, and the step between them shows as a dark seam."""
+    from .mesh import tri_normals
+
+    planes = set()
+    for _, clo, chi, _ in chunks:
+        for ax in range(3):
+            for c in (clo[ax], chi[ax]):
+                if lo[ax] < c < hi[ax]:
+                    planes.add((ax, float(c)))
+    if not planes:
+        return []
+    tol = 0.02 * builtins.min(c[3] for c in chunks)
+    Fn, _ = tri_normals(P, T)
+    for ax, c in sorted(planes):
+        on = np.abs(P[:, ax] - c) < tol
+        if not on.any():
+            continue
+        P[on, ax] = c  # exactly on the plane: the pieces' caps coincide there, and the union removes them
+        tri_on = on[T].all(1) & (np.abs(Fn[:, ax]) > 0.99)  # the pieces' caps on this plane
+        cap = np.zeros(len(P), bool)
+        cap[T[tri_on].reshape(-1)] = True
+        side = np.zeros(len(P), bool)
+        side[T[~tri_on].reshape(-1)] = True
+        idx = np.flatnonzero(on & cap & side)  # the outlines: on a cap and on the surface beside it
+        if not len(idx):
+            continue
+        good, X = _onto_outline(e, P[idx], ax, c, 2 * builtins.max(c[3] for c in chunks))
+        P[idx[good]] = X[good]
+        N[idx[good]] = _field_normals(e, X[good], tol * 50)
+    return sorted(planes)
+
+
+def _onto_outline(e: Expr, X0: np.ndarray, ax: int, c: float, reach: float):
+    """Points on the plane x[ax] = c moved along it onto the body's outline there (Newton steps on the
+    in-plane gradient): (moved and closer to the surface, the points)."""
+    X = X0.copy()
+    for _ in range(4):
+        g = evaluate(e, X, grad=True)
+        G = g[:, 1:].copy()
+        G[:, ax] = 0
+        gg = np.einsum("ij,ij->i", G, G)
+        ok = gg > 1e-12
+        X[ok] -= (g[ok, 0] / gg[ok])[:, None] * G[ok]
+        X[:, ax] = c
+    good = (np.linalg.norm(X - X0, axis=1) < reach) & (np.abs(evaluate(e, X)) < np.abs(evaluate(e, X0)) + 1e-6)
+    return good, X
+
+
+def _union_pieces(e: Expr, P: np.ndarray, T: np.ndarray, N: np.ndarray, sizes, planes, cell: float):
+    """The closed pieces (stacked in P, T, N; ``sizes``: each one's (points, triangles)) as one closed solid:
+    their manifold3d union, which removes the caps where they meet face to face on ``planes`` and joins
+    their surfaces along the outlines there (no crack to see through, no inner faces). (P, T, N), or None
+    if manifold3d is missing or a piece isn't a closed manifold."""
+    try:
+        import manifold3d as m3
+    except ImportError:
+        return None
+    mans, p0, t0 = [], 0, 0
+    for n_p, n_t in sizes:
+        props = np.hstack([P[p0:p0 + n_p], N[p0:p0 + n_p].astype(np.float64)])
+        tris = (T[t0:t0 + n_t] - p0).astype(np.uint64)
+        man = m3.Manifold(m3.Mesh64(vert_properties=np.ascontiguousarray(props), tri_verts=np.ascontiguousarray(tris)))
+        if man.status() != m3.Error.NoError:
+            return None
+        mans.append(man)
+        p0, t0 = p0 + n_p, t0 + n_t
+    out = m3.Manifold.batch_boolean(mans, m3.OpType.Add)
+    if out.status() != m3.Error.NoError or out.is_empty():
+        return None
+    o = out.to_mesh64()
+    V = np.asarray(o.vert_properties, dtype=np.float64)
+    T2 = np.asarray(o.tri_verts, dtype=np.int64).reshape(-1, 3)
+    # manifold3d splits a vertex where its properties (the normals) differ on either side: one again
+    to_ = np.arange(len(V))
+    mf, mt = np.asarray(o.merge_from_vert, dtype=np.int64), np.asarray(o.merge_to_vert, dtype=np.int64)
+    if len(mf):
+        to_[mf] = mt
+        used, T2 = np.unique(to_[T2], return_inverse=True)
+        T2 = T2.reshape(-1, 3)
+        V = V[used]
+    P2, N2 = V[:, :3].copy(), V[:, 3:6].astype(np.float32)
+    # the union cuts new vertices where the pieces' outlines cross (on their chords): onto the outline
+    for ax, c in planes:
+        on = np.flatnonzero(P2[:, ax] == c)
+        if len(on):
+            good, X = _onto_outline(e, P2[on], ax, c, cell)
+            P2[on[good]] = X[good]
+    # and the normals there are interpolated: the field's own
+    near = np.zeros(len(P2), bool)
+    for ax, c in planes:
+        near |= np.abs(P2[:, ax] - c) < 0.5 * cell
+    if near.any():
+        N2[near] = _field_normals(e, P2[near], cell)
+    return P2, T2, N2
+
+
+def _shade(e: Expr, P: np.ndarray, T: np.ndarray, N: np.ndarray, cell: float, angle: float = 15.0):
+    """Vertices split along the field's creases, each side with its own normal: (P, T, N).
+
+    An edge is a crease where the field's normals just either side of it (a fifth of the way to each
+    triangle's centre) differ by more than ``angle`` degrees, and by most of what they differ at the
+    centres (on a smooth but curved surface they part slowly with the distance; across a crease at once).
+    The corners round each vertex join across the edges that aren't creases; each group gets a vertex.
+    Normals: the field's at the vertex, except at a split vertex and next to a gentle kink (under
+    ``angle``, not split), where they are the mean of the field's normals just inside each corner, so a
+    vertex on one side of a crease never lends its normal to the other side's triangles."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    from .mesh import edge_table
+
+    from .mesh import tri_normals
+
+    P = np.asarray(P, dtype=np.float64)
+    T = np.asarray(T, dtype=np.int64)
+    m = len(T)
+    if not m:
+        return P, T, np.asarray(N, np.float32)
+    C = P[T].mean(1)
+    Fn, _ = tri_normals(P, T)
+    tri = P[T]
+    size = np.linalg.norm(tri - np.roll(tri, 1, axis=1), axis=2).max(1)
+    # triangles well off the surface (a closed piece's cap inside the body, where a band or chunk meets the
+    # next one): there the field's normal is the far surface's, and the triangle's own is the right one
+    off = np.abs(evaluate(e, C)) > 0.1 * size + 1e-9
+
+    def side(Q, t):
+        """The field's normals at points Q inside triangles t (their own normal on triangles off the surface)."""
+        n = _field_normals(e, Q, cell).astype(np.float64)
+        n[off[t]] = Fn[t[off[t]]]
+        return n
+
+    E, tris, count = edge_table(T)
+    inner = count == 2
+    a, b, t1, t2 = E[inner, 0], E[inner, 1], tris[inner, 0], tris[inner, 1]
+    mid = (P[a] + P[b]) / 2
+    nq = side(np.concatenate([mid + 0.2 * (C[t1] - mid), mid + 0.2 * (C[t2] - mid)]), np.r_[t1, t2])
+    nc = side(C, np.arange(m))
+
+    def ang(u, w):
+        return np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", u, w), -1, 1)))
+
+    near, far = ang(nq[:len(a)], nq[len(a):]), ang(nc[t1], nc[t2])
+    sharp = (near > angle) & ((near > 0.5 * far) | (near > 40))
+    soft = near > 3.0
+
+    def corner(t, v):
+        return t * 3 + np.argmax(T[t] == v[:, None], axis=1)
+
+    j = ~sharp
+    i1 = np.concatenate([corner(t1[j], a[j]), corner(t1[j], b[j])])
+    i2 = np.concatenate([corner(t2[j], a[j]), corner(t2[j], b[j])])
+    _, lab = connected_components(coo_matrix((np.ones(len(i1)), (i1, i2)), shape=(3 * m, 3 * m)), directed=False)
+    cv = T.reshape(-1)
+    _, first, inv = np.unique(lab, return_index=True, return_inverse=True)
+    gv = cv[first]  # the vertex of each group
+    split = np.bincount(gv, minlength=len(P)) > 1
+    kink = np.zeros(len(P), bool)
+    kink[np.r_[a[soft], b[soft]]] = True
+    # a vertex of a triangle off the surface (such a cap) may not have a field normal of its own either
+    kink[T[off].reshape(-1)] = True
+    NC = np.asarray(N, dtype=np.float64)[cv]
+    ci = np.flatnonzero((split | kink)[cv])
+    if len(ci):
+        v = P[cv[ci]]
+        ns = side(v + 0.2 * (C[ci // 3] - v), ci // 3)
+        acc = np.zeros((len(first), 3))
+        np.add.at(acc, inv[ci], ns)
+        ln = np.linalg.norm(acc, axis=1)
+        good = ln[inv[ci]] > 1e-6
+        NC[ci[good]] = (acc / np.maximum(ln, 1e-12)[:, None])[inv[ci[good]]]
+    N2 = np.zeros((len(first), 3))
+    N2[inv] = NC
+    return P[gv], inv.reshape(-1, 3), N2.astype(np.float32)
 
 
 def _marching(e: Expr, lo, hi, cell: float):

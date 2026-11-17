@@ -22,10 +22,11 @@ codegen-units = 4
 # Fidget 0.5.1 plus our fixes for NaN gradients at sqrt(0) (exact distance fields meshed with
 # coincident vertices, zero-area triangles and folds) and NaN vertices from zero gradients, and
 # vertex normals from the field, no folds where octree cell sizes change, and
-# exact boxes that keep their edges.
+# exact boxes that keep their edges; merged cells that use all their samples, an absolute collapse
+# tolerance (mesh(tol=)) and quads split by a diagonal.
 # Offered upstream from the fork's manifold-fixes branch; back to crates.io once released.
 [patch.crates-io]
-fidget = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }
-fidget-core = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }
-fidget-jit = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }
-fidget-mesh = { git = "https://github.com/Janos95/fidget", rev = "964f7492826809230a00185f091b8474c8acc2c3" }
+fidget = { git = "https://github.com/Janos95/fidget", rev = "471030894846c785c4517309e56cc90e1b4c3ad5" }
+fidget-core = { git = "https://github.com/Janos95/fidget", rev = "471030894846c785c4517309e56cc90e1b4c3ad5" }
+fidget-jit = { git = "https://github.com/Janos95/fidget", rev = "471030894846c785c4517309e56cc90e1b4c3ad5" }
+fidget-mesh = { git = "https://github.com/Janos95/fidget", rev = "471030894846c785c4517309e56cc90e1b4c3ad5" }
